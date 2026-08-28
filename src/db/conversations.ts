@@ -1,0 +1,955 @@
+/**
+ * Conversation and message persistence.
+ *
+ * The only module that writes SQL for chat data. Everything above it works with
+ * the types declared here, so the storage shape — JSON content blocks, a
+ * denormalised text column, float sequence keys — stays an implementation detail.
+ *
+ * Two conventions worth knowing before reading the queries:
+ *
+ *   - Content is stored as JSON `ContentBlock[]`, which is what gets sent to the
+ *     gateway, plus a flattened `text` column that FTS indexes and the list
+ *     previews read. Both are written by the same statement so they cannot drift.
+ *   - `seq` is a float. Appending uses `max(seq) + 1`; inserting between two
+ *     messages averages their keys. Renumbering a conversation to keep integers
+ *     tidy would rewrite every row for no benefit.
+ */
+
+import { database, localDay } from '@/db/schema';
+import { buildFtsQuery, buildLikePattern, excerpt, LIKE_ESCAPE } from '@/db/search';
+import { newId } from '@/lib/id';
+import { log } from '@/lib/log';
+import { estimateCost } from '@/lib/tokens';
+import type { ModelPricing } from '@/lib/tokens';
+import type {
+  ContentBlock,
+  ReasoningConfig,
+  ReasoningEffort,
+  SamplingParams,
+  StopReason,
+  TokenUsage,
+  UnifiedMessage,
+  UnifiedRole,
+} from '@/transports/types';
+
+/* -------------------------------------------------------------------------- */
+/* Types                                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Everything a conversation remembers about how to send its next request.
+ *
+ * Stored as one JSON column. Nothing queries these, and a column per control
+ * would mean a migration every time Phase 2 adds a knob.
+ */
+export interface ConversationConfig {
+  params?: Partial<SamplingParams>;
+  reasoning?: ReasoningConfig;
+  /** Skill ids enabled for this conversation. Phase 4. */
+  skills?: string[];
+  /** MCP server ids enabled for this conversation. Phase 5. */
+  servers?: string[];
+  /** Overrides the global context strategy for this conversation. */
+  contextStrategy?: 'warn' | 'drop_oldest' | 'summarise';
+  /**
+   * Rolling summary of turns the `summarise` strategy dropped.
+   *
+   * `throughSeq` records how far it covers, so a later trim can extend it rather
+   * than re-summarising the whole history on every message.
+   */
+  summary?: { throughSeq: number; text: string };
+  /** Remembered expand/collapse choice for the reasoning pane. */
+  showThinking?: boolean;
+}
+
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  pinned: boolean;
+  archived: boolean;
+  systemPrompt?: string;
+  profileId: string;
+  model: string;
+  config: ConversationConfig;
+  forkedFromId?: string;
+  forkedFromMessageId?: string;
+  lastMessageAt?: number;
+  preview?: string;
+  tags: string[];
+  /** Populated by {@link listConversations}; absent on a single read. */
+  messageCount?: number;
+}
+
+/** Per-message provenance the transcript shows and the request builder reads. */
+export interface MessageMeta {
+  /** Params the gateway rejected, surfaced under the message. */
+  droppedParams?: string[];
+  /** Reasoning settings actually sent, so the transcript reflects history. */
+  effort?: ReasoningEffort;
+  budgetTokens?: number;
+  /** True when this single message overrode the conversation's model. */
+  modelOverride?: boolean;
+  /** Set when the user edited an existing message rather than writing a new one. */
+  editedAt?: number;
+  /** Set on a regenerated reply, pointing at the message it replaced. */
+  regeneratedFrom?: string;
+  /** Skills the model pulled in during this turn. Phase 4. */
+  skillsInvoked?: string[];
+  /** Number of tool round trips this turn took. Phase 5. */
+  toolRounds?: number;
+  /** True when the reply was cut short by the stop button. */
+  aborted?: boolean;
+  /** The base URL used, when it differed from the profile's primary. */
+  failedOverTo?: string;
+}
+
+export interface StoredMessage {
+  id: string;
+  conversationId: string;
+  seq: number;
+  role: UnifiedRole;
+  createdAt: number;
+  content: ContentBlock[];
+  text: string;
+  model?: string;
+  usage?: TokenUsage;
+  stopReason?: StopReason;
+  /** The gateway's own message, verbatim. Never a generic string. */
+  error?: string;
+  meta?: MessageMeta;
+  excluded: boolean;
+}
+
+export interface NewMessage {
+  role: UnifiedRole;
+  content: ContentBlock[];
+  model?: string;
+  usage?: TokenUsage;
+  stopReason?: StopReason;
+  error?: string;
+  meta?: MessageMeta;
+  /** Overrides the append-at-end default. Used when forking. */
+  seq?: number;
+  createdAt?: number;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Row mapping                                                                 */
+/* -------------------------------------------------------------------------- */
+
+interface ConversationRow {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  pinned: number;
+  archived: number;
+  system_prompt: string | null;
+  profile_id: string;
+  model: string;
+  config: string;
+  forked_from_id: string | null;
+  forked_from_message_id: string | null;
+  last_message_at: number | null;
+  preview: string | null;
+  tags: string | null;
+  message_count?: number;
+}
+
+interface MessageRow {
+  id: string;
+  conversation_id: string;
+  seq: number;
+  role: string;
+  created_at: number;
+  content: string;
+  text: string;
+  model: string | null;
+  usage: string | null;
+  stop_reason: string | null;
+  error: string | null;
+  meta: string | null;
+  excluded: number;
+}
+
+/**
+ * Parses a JSON column, falling back rather than throwing.
+ *
+ * A single unreadable row should cost that row's metadata, not the whole
+ * conversation. The rows this guards are ones the app wrote itself, so a failure
+ * means corruption or a schema change — both worth a log line.
+ */
+function parseJson<T>(value: string | null, fallback: T, what: string): T {
+  if (value === null || value === '') return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    log.warn('db', `Unreadable ${what} column; using a default`);
+    return fallback;
+  }
+}
+
+/**
+ * Separator used to fold a conversation's tags into one column.
+ *
+ * U+0001 rather than a comma: tags are free text, and `group_concat`'s default
+ * comma would make the single tag `a,b` indistinguishable from the two tags `a`
+ * and `b`. A control character cannot be typed into the tag field.
+ *
+ * Written as an escape rather than a literal control character, which is
+ * invisible in a diff and easy for an editor to eat. Must stay in step with the
+ * `char(1)` argument passed to `group_concat` in the queries below.
+ */
+const TAG_SEPARATOR = '\u0001';
+
+function toConversation(row: ConversationRow): Conversation {
+  const conversation: Conversation = {
+    id: row.id,
+    title: row.title,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    pinned: row.pinned !== 0,
+    archived: row.archived !== 0,
+    profileId: row.profile_id,
+    model: row.model,
+    config: parseJson<ConversationConfig>(row.config, {}, 'conversation config'),
+    tags: row.tags ? row.tags.split(TAG_SEPARATOR).filter(Boolean) : [],
+  };
+  if (row.system_prompt !== null) conversation.systemPrompt = row.system_prompt;
+  if (row.forked_from_id !== null) conversation.forkedFromId = row.forked_from_id;
+  if (row.forked_from_message_id !== null) conversation.forkedFromMessageId = row.forked_from_message_id;
+  if (row.last_message_at !== null) conversation.lastMessageAt = row.last_message_at;
+  if (row.preview !== null) conversation.preview = row.preview;
+  if (row.message_count !== undefined) conversation.messageCount = row.message_count;
+  return conversation;
+}
+
+function toMessage(row: MessageRow): StoredMessage {
+  const message: StoredMessage = {
+    id: row.id,
+    conversationId: row.conversation_id,
+    seq: row.seq,
+    role: row.role === 'assistant' ? 'assistant' : 'user',
+    createdAt: row.created_at,
+    content: parseJson<ContentBlock[]>(row.content, [], 'message content'),
+    text: row.text,
+    excluded: row.excluded !== 0,
+  };
+  if (row.model !== null) message.model = row.model;
+  if (row.usage !== null) message.usage = parseJson<TokenUsage>(row.usage, { input: 0, output: 0 }, 'usage');
+  if (row.stop_reason !== null) message.stopReason = row.stop_reason as StopReason;
+  if (row.error !== null) message.error = row.error;
+  if (row.meta !== null) message.meta = parseJson<MessageMeta>(row.meta, {}, 'message meta');
+  return message;
+}
+
+/**
+ * The searchable, previewable text of a block list.
+ *
+ * Thinking is excluded: searching your own history for a phrase and landing on
+ * the model's scratchpad rather than its answer is noise, and the reasoning pane
+ * is collapsed by default anyway. Images contribute a marker so a conversation
+ * can be found by the fact that it had one.
+ */
+export function flattenContent(blocks: readonly ContentBlock[]): string {
+  const parts: string[] = [];
+  for (const block of blocks) {
+    switch (block.type) {
+      case 'text':
+        parts.push(block.text);
+        break;
+      case 'document':
+        if (block.name) parts.push(block.name);
+        if (block.text) parts.push(block.text);
+        break;
+      case 'image':
+        parts.push('[image]');
+        break;
+      case 'tool_use':
+        parts.push(`[tool ${block.name}]`);
+        break;
+      case 'tool_result':
+        parts.push(block.content);
+        break;
+      case 'thinking':
+        break;
+    }
+  }
+  return parts.join('\n\n').trim();
+}
+
+/** First non-empty line, trimmed to fit a list row. */
+function previewOf(text: string): string {
+  const line = text
+    .split('\n')
+    .map((l) => l.replace(/^#+\s*/, '').trim())
+    .find((l) => l.length > 0);
+  if (!line) return '';
+  return line.length > 160 ? `${line.slice(0, 159)}…` : line;
+}
+
+/**
+ * The title a conversation gets before its first message.
+ *
+ * Exported because the chat store checks against it to decide whether a title is
+ * still automatic and therefore safe to overwrite with a derived one.
+ */
+export const DEFAULT_TITLE = 'New conversation';
+
+/**
+ * A title derived from the first user message.
+ *
+ * Local and instant, rather than asking a model to name the conversation: that
+ * would cost a request and some credits on a free tier for something the user
+ * can rename in two taps.
+ */
+export function deriveTitle(text: string): string {
+  const line = previewOf(text);
+  if (!line) return 'New conversation';
+  const clipped = line.length > 60 ? `${line.slice(0, 59).trimEnd()}…` : line;
+  return clipped;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Conversations                                                              */
+/* -------------------------------------------------------------------------- */
+
+export interface NewConversation {
+  title?: string;
+  profileId: string;
+  model: string;
+  systemPrompt?: string;
+  config?: ConversationConfig;
+  tags?: string[];
+  forkedFromId?: string;
+  forkedFromMessageId?: string;
+}
+
+export async function createConversation(input: NewConversation): Promise<Conversation> {
+  const { db } = await database();
+  const now = Date.now();
+  const id = newId('conv_');
+
+  await db.runAsync(
+    `INSERT INTO conversations
+       (id, title, created_at, updated_at, pinned, archived, system_prompt, profile_id, model,
+        config, forked_from_id, forked_from_message_id, last_message_at, preview)
+     VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+    [
+      id,
+      input.title ?? DEFAULT_TITLE,
+      now,
+      now,
+      input.systemPrompt ?? null,
+      input.profileId,
+      input.model,
+      JSON.stringify(input.config ?? {}),
+      input.forkedFromId ?? null,
+      input.forkedFromMessageId ?? null,
+    ],
+  );
+
+  if (input.tags?.length) await setTags(id, input.tags);
+
+  const created = await getConversation(id);
+  if (!created) throw new Error('Conversation vanished immediately after insert');
+  return created;
+}
+
+export async function getConversation(id: string): Promise<Conversation | null> {
+  const { db } = await database();
+  const row = await db.getFirstAsync<ConversationRow>(
+    `SELECT c.*, (SELECT group_concat(tag, char(1)) FROM conversation_tags WHERE conversation_id = c.id) AS tags
+       FROM conversations c WHERE c.id = ?`,
+    [id],
+  );
+  return row ? toConversation(row) : null;
+}
+
+export interface ListOptions {
+  archived?: boolean;
+  tag?: string;
+  profileId?: string;
+  limit?: number;
+}
+
+/**
+ * The conversation list, pinned first then newest.
+ *
+ * Tags and message counts are correlated subqueries rather than joins, so one
+ * conversation with three tags stays one row and the pinned/updated index is
+ * still usable for ordering.
+ */
+export async function listConversations(options: ListOptions = {}): Promise<Conversation[]> {
+  const { db } = await database();
+  const where: string[] = ['c.archived = ?'];
+  const params: (string | number)[] = [options.archived ? 1 : 0];
+
+  if (options.profileId) {
+    where.push('c.profile_id = ?');
+    params.push(options.profileId);
+  }
+  if (options.tag) {
+    where.push('EXISTS (SELECT 1 FROM conversation_tags t WHERE t.conversation_id = c.id AND t.tag = ?)');
+    params.push(options.tag);
+  }
+
+  const limit = options.limit ?? 500;
+  const rows = await db.getAllAsync<ConversationRow>(
+    `SELECT c.*,
+            (SELECT group_concat(tag, char(1)) FROM conversation_tags WHERE conversation_id = c.id) AS tags,
+            (SELECT count(*) FROM messages WHERE conversation_id = c.id) AS message_count
+       FROM conversations c
+      WHERE ${where.join(' AND ')}
+      ORDER BY c.pinned DESC, c.updated_at DESC
+      LIMIT ?`,
+    [...params, limit],
+  );
+  return rows.map(toConversation);
+}
+
+export interface ConversationPatch {
+  title?: string;
+  systemPrompt?: string | null;
+  model?: string;
+  profileId?: string;
+  pinned?: boolean;
+  archived?: boolean;
+  config?: ConversationConfig;
+}
+
+/**
+ * Updates a conversation, touching `updated_at` only when something changed.
+ *
+ * That condition is load-bearing: the list is ordered by `updated_at`, so
+ * bumping it on a no-op write would reshuffle the list every time a screen
+ * mounted and re-saved identical config.
+ */
+export async function updateConversation(id: string, patch: ConversationPatch): Promise<void> {
+  const { db } = await database();
+  const sets: string[] = [];
+  const params: (string | number | null)[] = [];
+
+  if (patch.title !== undefined) {
+    sets.push('title = ?');
+    params.push(patch.title);
+  }
+  if (patch.systemPrompt !== undefined) {
+    sets.push('system_prompt = ?');
+    params.push(patch.systemPrompt);
+  }
+  if (patch.model !== undefined) {
+    sets.push('model = ?');
+    params.push(patch.model);
+  }
+  if (patch.profileId !== undefined) {
+    sets.push('profile_id = ?');
+    params.push(patch.profileId);
+  }
+  if (patch.pinned !== undefined) {
+    sets.push('pinned = ?');
+    params.push(patch.pinned ? 1 : 0);
+  }
+  if (patch.archived !== undefined) {
+    sets.push('archived = ?');
+    params.push(patch.archived ? 1 : 0);
+  }
+  if (patch.config !== undefined) {
+    sets.push('config = ?');
+    params.push(JSON.stringify(patch.config));
+  }
+
+  if (!sets.length) return;
+
+  sets.push('updated_at = ?');
+  params.push(Date.now(), id);
+  await db.runAsync(`UPDATE conversations SET ${sets.join(', ')} WHERE id = ?`, params);
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  const { db } = await database();
+  // Messages and tags cascade; `PRAGMA foreign_keys = ON` is set at open time.
+  await db.runAsync('DELETE FROM conversations WHERE id = ?', [id]);
+}
+
+export async function setPinned(id: string, pinned: boolean): Promise<void> {
+  const { db } = await database();
+  // Pinning deliberately does not touch `updated_at`: it changes where the row
+  // sorts, and also bumping the timestamp would reorder the pinned group too.
+  await db.runAsync('UPDATE conversations SET pinned = ? WHERE id = ?', [pinned ? 1 : 0, id]);
+}
+
+export async function setTags(id: string, tags: readonly string[]): Promise<void> {
+  const { db } = await database();
+  const cleaned = [...new Set(tags.map((t) => t.trim()).filter(Boolean))];
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('DELETE FROM conversation_tags WHERE conversation_id = ?', [id]);
+    for (const tag of cleaned) {
+      await db.runAsync('INSERT INTO conversation_tags (conversation_id, tag) VALUES (?, ?)', [id, tag]);
+    }
+  });
+}
+
+/** Every tag in use, with how many conversations carry it. */
+export async function allTags(): Promise<{ tag: string; count: number }[]> {
+  const { db } = await database();
+  return db.getAllAsync<{ tag: string; count: number }>(
+    `SELECT tag, count(*) AS count FROM conversation_tags GROUP BY tag ORDER BY count DESC, tag ASC`,
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Messages                                                                   */
+/* -------------------------------------------------------------------------- */
+
+export async function listMessages(conversationId: string): Promise<StoredMessage[]> {
+  const { db } = await database();
+  const rows = await db.getAllAsync<MessageRow>(
+    'SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq ASC',
+    [conversationId],
+  );
+  return rows.map(toMessage);
+}
+
+export async function getMessage(id: string): Promise<StoredMessage | null> {
+  const { db } = await database();
+  const row = await db.getFirstAsync<MessageRow>('SELECT * FROM messages WHERE id = ?', [id]);
+  return row ? toMessage(row) : null;
+}
+
+async function nextSeq(conversationId: string): Promise<number> {
+  const { db } = await database();
+  const row = await db.getFirstAsync<{ max: number | null }>(
+    'SELECT max(seq) AS max FROM messages WHERE conversation_id = ?',
+    [conversationId],
+  );
+  return (row?.max ?? 0) + 1;
+}
+
+export async function appendMessage(conversationId: string, input: NewMessage): Promise<StoredMessage> {
+  const { db } = await database();
+  const id = newId('msg_');
+  const seq = input.seq ?? (await nextSeq(conversationId));
+  const createdAt = input.createdAt ?? Date.now();
+  const text = flattenContent(input.content);
+
+  await db.runAsync(
+    `INSERT INTO messages
+       (id, conversation_id, seq, role, created_at, content, text, model, usage, stop_reason, error, meta, excluded)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+    [
+      id,
+      conversationId,
+      seq,
+      input.role,
+      createdAt,
+      JSON.stringify(input.content),
+      text,
+      input.model ?? null,
+      input.usage ? JSON.stringify(input.usage) : null,
+      input.stopReason ?? null,
+      input.error ?? null,
+      input.meta ? JSON.stringify(input.meta) : null,
+    ],
+  );
+
+  await touchConversation(conversationId, createdAt, text);
+
+  return {
+    id,
+    conversationId,
+    seq,
+    role: input.role,
+    createdAt,
+    content: input.content,
+    text,
+    excluded: false,
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.usage !== undefined ? { usage: input.usage } : {}),
+    ...(input.stopReason !== undefined ? { stopReason: input.stopReason } : {}),
+    ...(input.error !== undefined ? { error: input.error } : {}),
+    ...(input.meta !== undefined ? { meta: input.meta } : {}),
+  };
+}
+
+export interface MessagePatch {
+  content?: ContentBlock[];
+  usage?: TokenUsage;
+  stopReason?: StopReason;
+  error?: string | null;
+  meta?: MessageMeta;
+  model?: string;
+  excluded?: boolean;
+}
+
+/**
+ * Updates a message in place.
+ *
+ * `content` and `text` are always written together — a `content` update that
+ * skipped `text` would leave the search index pointing at the old wording, which
+ * is exactly the kind of bug that only shows up weeks later in a search result.
+ */
+export async function updateMessage(id: string, patch: MessagePatch): Promise<void> {
+  const { db } = await database();
+  const sets: string[] = [];
+  const params: (string | number | null)[] = [];
+
+  if (patch.content !== undefined) {
+    sets.push('content = ?', 'text = ?');
+    params.push(JSON.stringify(patch.content), flattenContent(patch.content));
+  }
+  if (patch.usage !== undefined) {
+    sets.push('usage = ?');
+    params.push(JSON.stringify(patch.usage));
+  }
+  if (patch.stopReason !== undefined) {
+    sets.push('stop_reason = ?');
+    params.push(patch.stopReason);
+  }
+  if (patch.error !== undefined) {
+    sets.push('error = ?');
+    params.push(patch.error);
+  }
+  if (patch.meta !== undefined) {
+    sets.push('meta = ?');
+    params.push(JSON.stringify(patch.meta));
+  }
+  if (patch.model !== undefined) {
+    sets.push('model = ?');
+    params.push(patch.model);
+  }
+  if (patch.excluded !== undefined) {
+    sets.push('excluded = ?');
+    params.push(patch.excluded ? 1 : 0);
+  }
+
+  if (!sets.length) return;
+  params.push(id);
+  await db.runAsync(`UPDATE messages SET ${sets.join(', ')} WHERE id = ?`, params);
+}
+
+export async function deleteMessage(id: string): Promise<void> {
+  const { db } = await database();
+  const message = await getMessage(id);
+  await db.runAsync('DELETE FROM messages WHERE id = ?', [id]);
+  if (message) await refreshPreview(message.conversationId);
+}
+
+/**
+ * Deletes a message and everything after it.
+ *
+ * The primitive behind edit-and-resend and regenerate: both mean "rewind to
+ * here and go again". Deleting rather than hiding is deliberate — a hidden tail
+ * would keep showing up in search results for a conversation that no longer
+ * contains it.
+ */
+export async function deleteMessagesFrom(conversationId: string, seq: number, inclusive = true): Promise<number> {
+  const { db } = await database();
+  const result = await db.runAsync(
+    `DELETE FROM messages WHERE conversation_id = ? AND seq ${inclusive ? '>=' : '>'} ?`,
+    [conversationId, seq],
+  );
+  await refreshPreview(conversationId);
+  return result.changes;
+}
+
+/**
+ * Copies a conversation up to and including one message.
+ *
+ * Used by "fork from here". The copy carries the same model, system prompt and
+ * config, because forking to explore a different answer with different settings
+ * means changing them *after* the fork, not losing them at it.
+ */
+export async function forkConversation(
+  conversationId: string,
+  throughMessageId: string,
+  titleSuffix = ' (fork)',
+): Promise<Conversation> {
+  const source = await getConversation(conversationId);
+  if (!source) throw new Error('Cannot fork a conversation that does not exist');
+  const through = await getMessage(throughMessageId);
+  if (!through) throw new Error('Cannot fork from a message that does not exist');
+
+  const messages = (await listMessages(conversationId)).filter((m) => m.seq <= through.seq);
+
+  const fork = await createConversation({
+    title: `${source.title}${titleSuffix}`,
+    profileId: source.profileId,
+    model: source.model,
+    ...(source.systemPrompt !== undefined ? { systemPrompt: source.systemPrompt } : {}),
+    config: source.config,
+    tags: source.tags,
+    forkedFromId: source.id,
+    forkedFromMessageId: throughMessageId,
+  });
+
+  for (const message of messages) {
+    await appendMessage(fork.id, {
+      role: message.role,
+      content: message.content,
+      seq: message.seq,
+      createdAt: message.createdAt,
+      ...(message.model !== undefined ? { model: message.model } : {}),
+      ...(message.usage !== undefined ? { usage: message.usage } : {}),
+      ...(message.stopReason !== undefined ? { stopReason: message.stopReason } : {}),
+      ...(message.meta !== undefined ? { meta: message.meta } : {}),
+    });
+  }
+
+  const refreshed = await getConversation(fork.id);
+  return refreshed ?? fork;
+}
+
+/** The messages a request should carry, in wire form. */
+export function toUnifiedMessages(messages: readonly StoredMessage[]): UnifiedMessage[] {
+  return messages
+    .filter((message) => !message.excluded && message.content.length > 0)
+    .map((message) => ({ role: message.role, content: message.content }));
+}
+
+async function touchConversation(conversationId: string, at: number, text: string): Promise<void> {
+  const { db } = await database();
+  const preview = previewOf(text);
+  await db.runAsync(
+    `UPDATE conversations SET updated_at = ?, last_message_at = ?, preview = ? WHERE id = ?`,
+    [at, at, preview || null, conversationId],
+  );
+}
+
+/** Recomputes the denormalised preview from the newest surviving message. */
+async function refreshPreview(conversationId: string): Promise<void> {
+  const { db } = await database();
+  const row = await db.getFirstAsync<{ text: string; created_at: number }>(
+    'SELECT text, created_at FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1',
+    [conversationId],
+  );
+  await db.runAsync('UPDATE conversations SET preview = ?, last_message_at = ? WHERE id = ?', [
+    row ? previewOf(row.text) || null : null,
+    row ? row.created_at : null,
+    conversationId,
+  ]);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Search                                                                     */
+/* -------------------------------------------------------------------------- */
+
+export interface SearchHit {
+  messageId: string;
+  conversationId: string;
+  conversationTitle: string;
+  role: UnifiedRole;
+  createdAt: number;
+  /** A one-line window centred on the match. */
+  snippet: string;
+  /** Which pass found it, shown in the UI so a slow search is explicable. */
+  via: 'fts' | 'like';
+}
+
+interface SearchRow {
+  id: string;
+  conversation_id: string;
+  title: string;
+  role: string;
+  created_at: number;
+  text: string;
+}
+
+/**
+ * Full-text search over message content.
+ *
+ * Runs the FTS index first, then falls back to a `LIKE` scan when FTS returns
+ * nothing. The fallback is not redundancy — FTS5's `unicode61` tokenizer makes a
+ * run of Chinese into a single token, so a substring query like 分析 genuinely
+ * cannot match 数据分析报告 through the index. The gateway accepts Chinese, so
+ * that case is real. It also covers a build without FTS5 at all.
+ */
+export async function searchMessages(query: string, limit = 100): Promise<SearchHit[]> {
+  const { db, ftsAvailable } = await database();
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+
+  const select = `SELECT m.id, m.conversation_id, c.title, m.role, m.created_at, m.text
+                    FROM messages m JOIN conversations c ON c.id = m.conversation_id`;
+
+  if (ftsAvailable) {
+    const match = buildFtsQuery(trimmed);
+    if (match) {
+      try {
+        const rows = await db.getAllAsync<SearchRow>(
+          `${select}
+             JOIN messages_fts f ON f.rowid = m.rowid
+            WHERE messages_fts MATCH ?
+            ORDER BY f.rank, m.created_at DESC
+            LIMIT ?`,
+          [match, limit],
+        );
+        if (rows.length) return rows.map((row) => toHit(row, trimmed, 'fts'));
+      } catch (error) {
+        // A MATCH syntax error should degrade to the slow path, not blank the
+        // screen. `buildFtsQuery` is quoted precisely to make this unreachable.
+        log.warn('db', 'FTS query failed; falling back to a LIKE scan', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+
+  const pattern = buildLikePattern(trimmed);
+  if (!pattern) return [];
+  const rows = await db.getAllAsync<SearchRow>(
+    `${select}
+      WHERE m.text LIKE ? ESCAPE '${LIKE_ESCAPE}'
+      ORDER BY m.created_at DESC
+      LIMIT ?`,
+    [pattern, limit],
+  );
+  return rows.map((row) => toHit(row, trimmed, 'like'));
+}
+
+function toHit(row: SearchRow, query: string, via: 'fts' | 'like'): SearchHit {
+  return {
+    messageId: row.id,
+    conversationId: row.conversation_id,
+    conversationTitle: row.title,
+    role: row.role === 'assistant' ? 'assistant' : 'user',
+    createdAt: row.created_at,
+    snippet: excerpt(row.text, query),
+    via,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Usage                                                                      */
+/* -------------------------------------------------------------------------- */
+
+export interface UsageInput {
+  profileId: string;
+  model: string;
+  usage: TokenUsage;
+  conversationId?: string;
+  pricing?: ModelPricing;
+  at?: number;
+}
+
+/**
+ * Records one completed turn's usage.
+ *
+ * Written from the API's own `usage`, never from an estimate, and the cost is
+ * frozen at the pricing in force when the request ran — editing a model's price
+ * later should not silently rewrite last month's spend.
+ */
+export async function recordUsage(input: UsageInput): Promise<void> {
+  const { db } = await database();
+  const at = input.at ?? Date.now();
+  const cost = estimateCost(input.usage, input.pricing);
+  await db.runAsync(
+    `INSERT INTO usage_events
+       (at, day, profile_id, model, input, output, thinking, cache_read, cache_write, cost, conversation_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      at,
+      localDay(at),
+      input.profileId,
+      input.model,
+      input.usage.input ?? 0,
+      input.usage.output ?? 0,
+      input.usage.thinking ?? null,
+      input.usage.cacheRead ?? null,
+      input.usage.cacheWrite ?? null,
+      cost ? cost.total : null,
+      input.conversationId ?? null,
+    ],
+  );
+}
+
+export interface UsageBucket {
+  key: string;
+  input: number;
+  output: number;
+  thinking: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** Null when no event in the bucket had pricing. */
+  cost: number | null;
+  /** True when some events in the bucket had no pricing, so cost is partial. */
+  partialCost: boolean;
+  requests: number;
+}
+
+interface UsageRow {
+  key: string;
+  input: number;
+  output: number;
+  thinking: number;
+  cache_read: number;
+  cache_write: number;
+  cost: number | null;
+  priced: number;
+  requests: number;
+}
+
+function toBucket(row: UsageRow): UsageBucket {
+  return {
+    key: row.key,
+    input: row.input,
+    output: row.output,
+    thinking: row.thinking,
+    cacheRead: row.cache_read,
+    cacheWrite: row.cache_write,
+    cost: row.priced > 0 ? (row.cost ?? 0) : null,
+    partialCost: row.priced > 0 && row.priced < row.requests,
+    requests: row.requests,
+  };
+}
+
+const USAGE_AGGREGATE = `
+  sum(input) AS input,
+  sum(output) AS output,
+  coalesce(sum(thinking), 0) AS thinking,
+  coalesce(sum(cache_read), 0) AS cache_read,
+  coalesce(sum(cache_write), 0) AS cache_write,
+  sum(cost) AS cost,
+  sum(CASE WHEN cost IS NULL THEN 0 ELSE 1 END) AS priced,
+  count(*) AS requests`;
+
+export async function usageByDay(days = 30): Promise<UsageBucket[]> {
+  const { db } = await database();
+  const rows = await db.getAllAsync<UsageRow>(
+    `SELECT day AS key, ${USAGE_AGGREGATE}
+       FROM usage_events GROUP BY day ORDER BY day DESC LIMIT ?`,
+    [days],
+  );
+  return rows.map(toBucket);
+}
+
+export async function usageByModel(): Promise<UsageBucket[]> {
+  const { db } = await database();
+  const rows = await db.getAllAsync<UsageRow>(
+    `SELECT model AS key, ${USAGE_AGGREGATE}
+       FROM usage_events GROUP BY model ORDER BY sum(input) + sum(output) DESC`,
+  );
+  return rows.map(toBucket);
+}
+
+export async function usageTotals(): Promise<UsageBucket> {
+  const { db } = await database();
+  const row = await db.getFirstAsync<UsageRow>(
+    `SELECT 'all' AS key, ${USAGE_AGGREGATE} FROM usage_events`,
+  );
+  return row && row.requests > 0
+    ? toBucket(row)
+    : {
+        key: 'all',
+        input: 0,
+        output: 0,
+        thinking: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: null,
+        partialCost: false,
+        requests: 0,
+      };
+}

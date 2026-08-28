@@ -1,0 +1,25 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    // TypeScript 6 no longer auto-includes every installed `@types` package here,
+    // so the global-providing ones are named explicitly. `react` and the Expo
+    // modules are imported rather than global, so they don't belong in this list.
+    "types": ["jest"],
+    // No `baseUrl`: it is deprecated in TypeScript 6. Without it, `paths` resolve
+    // relative to this file, which is what we want anyway.
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ],
+  "exclude": ["node_modules", "android", "ios", "dist", ".expo"]
+}
