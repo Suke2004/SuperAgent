@@ -5,7 +5,7 @@
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
+    "android": "expo run:android",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
@@ -28,6 +28,7 @@
     "expo-secure-store": "~57.0.1",
     "expo-sqlite": "~57.0.1",
     "expo-status-bar": "~57.0.1",
+    "expo-updates": "57.0.18",
     "fflate": "^0.8.3",
     "js-yaml": "^5.3.0",
     "marked": "^18.0.10",
