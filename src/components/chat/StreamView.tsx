@@ -19,7 +19,8 @@ import { StyleSheet, View } from 'react-native';
 
 import { CodeBlock } from '@/components/markdown/CodeBlock';
 import { Markdown } from '@/components/markdown/Markdown';
-import { Badge, Body, Button, Inline, Note, Spinner } from '@/components/ui';
+import { Glyph } from '@/components/Glyph';
+import { Badge, Body, Button, Inline, Note } from '@/components/ui';
 import { estimateTextTokens } from '@/lib/tokens';
 import { formatDuration, formatRate } from '@/lib/when';
 import type { RetryState, StreamPhase, StreamState } from '@/stores/chat';
@@ -173,81 +174,103 @@ export function StreamView({
   const remaining = useRetryCountdown(failed ? undefined : stream.retry);
 
   const phase = stream.aborting ? 'Stopping' : PHASE_LABEL[stream.phase];
+  const shownRate = rate ? (reported === undefined ? `~${rate}` : rate) : undefined;
 
   return (
-    <View style={{ gap: t.spacing.sm }}>
-      <Inline gap="sm">
-        {failed ? <Badge label="Failed" tone="danger" /> : <Spinner label={phase} />}
-        <Body size="xs" tone="faint" mono>
-          {formatDuration(elapsed)}
-        </Body>
-        {ttft !== undefined ? (
-          <Body size="xs" tone="faint" mono accessibilityLabel={`First byte after ${formatDuration(ttft)}`}>
-            {`${formatDuration(ttft)} to first byte`}
-          </Body>
-        ) : null}
-        {rate ? (
+    // Same gutter as a stored assistant turn, so the live reply does not shift
+    // sideways the moment it is saved. The mark in the gutter is the only moving
+    // thing on the screen: it turns while the model works and stops when it stops.
+    <View style={{ flexDirection: 'row', gap: t.spacing.md }}>
+      <Glyph
+        size={20}
+        state={failed ? 'error' : 'thinking'}
+        style={{ marginTop: 2 }}
+        label={failed ? 'Jarvis, failed turn' : 'Jarvis is working'}
+      />
+      <View style={{ flex: 1, minWidth: 0, gap: t.spacing.sm }}>
+        <Inline gap="sm">
+          {failed ? (
+            <Badge label="Failed" tone="danger" />
+          ) : (
+            <Body size="xs" tone="dim" live>
+              {phase}
+            </Body>
+          )}
           <Body size="xs" tone="faint" mono>
-            {reported === undefined ? `~${rate}` : rate}
+            {formatDuration(elapsed)}
           </Body>
+          {ttft !== undefined ? (
+            <Body size="xs" tone="faint" mono accessibilityLabel={`First byte after ${formatDuration(ttft)}`}>
+              {`${formatDuration(ttft)} to first byte`}
+            </Body>
+          ) : null}
+          {/* While streaming, the rate rides on the Stop pill instead — one reading of
+              it per screen. Once the turn has failed there is no pill to carry it. */}
+          {failed && shownRate ? (
+            <Body size="xs" tone="faint" mono>
+              {shownRate}
+            </Body>
+          ) : null}
+          <Badge label={stream.model} tone="neutral" />
+        </Inline>
+
+        {/* The backoff, named and counted down. Live so a screen reader hears the wait
+            start rather than discovering it on the next swipe. */}
+        {stream.retry && !failed ? (
+          <Note tone="warning" live>
+            {`Attempt ${stream.retry.attempt} failed: ${stream.retry.message} · retrying${
+              remaining ? ` in ${remaining}s` : ' now'
+            }.`}
+          </Note>
         ) : null}
-        <Badge label={stream.model} tone="neutral" />
-      </Inline>
 
-      {/* The backoff, named and counted down. Live so a screen reader hears the wait
-          start rather than discovering it on the next swipe. */}
-      {stream.retry && !failed ? (
-        <Note tone="warning" live>
-          {`Attempt ${stream.retry.attempt} failed: ${stream.retry.message} · retrying${
-            remaining ? ` in ${remaining}s` : ' now'
-          }.`}
-        </Note>
-      ) : null}
+        {stream.thinking && showThinking ? <LiveThinking text={stream.thinking} /> : null}
+        {stream.text ? <Markdown source={stream.text} /> : null}
 
-      {stream.thinking && showThinking ? <LiveThinking text={stream.thinking} /> : null}
-      {stream.text ? <Markdown source={stream.text} /> : null}
+        {stream.toolCalls.map((call) => (
+          <PartialTool key={call.id} name={call.name} partialJson={call.partialJson} />
+        ))}
 
-      {stream.toolCalls.map((call) => (
-        <PartialTool key={call.id} name={call.name} partialJson={call.partialJson} />
-      ))}
+        {stream.failover ? (
+          <Note tone="warning">
+            {`${stream.failover.from} was unreachable; retrying against ${stream.failover.to}.`}
+          </Note>
+        ) : null}
 
-      {stream.failover ? (
-        <Note tone="warning">
-          {`${stream.failover.from} was unreachable; retrying against ${stream.failover.to}.`}
-        </Note>
-      ) : null}
+        {stream.droppedParams.map((dropped) => (
+          <Note key={dropped.param} tone="warning">
+            {`${dropped.param} was rejected and dropped: ${dropped.message}`}
+          </Note>
+        ))}
 
-      {stream.droppedParams.map((dropped) => (
-        <Note key={dropped.param} tone="warning">
-          {`${dropped.param} was rejected and dropped: ${dropped.message}`}
-        </Note>
-      ))}
+        {/* Verbatim. The gateway's wording names the actual problem. */}
+        {stream.error ? <Note tone="danger" mono>{stream.error}</Note> : null}
 
-      {/* Verbatim. The gateway's wording names the actual problem. */}
-      {stream.error ? <Note tone="danger" mono>{stream.error}</Note> : null}
-
-      <Inline gap="sm">
-        {failed ? (
-          <>
-            {onRetry ? <Button label="Try again" onPress={onRetry} variant="secondary" size="sm" /> : null}
-            {onEditRequest ? (
-              <Button label="Edit request" onPress={onEditRequest} variant="ghost" size="sm" />
-            ) : null}
-            <Button label="Dismiss" onPress={onDismiss} variant="ghost" size="sm" />
-          </>
-        ) : (
-          <Button
-            label={stream.aborting ? 'Stopping…' : 'Stop'}
-            onPress={onStop}
-            variant="secondary"
-            size="sm"
-            disabled={stream.aborting}
-            {...(stream.aborting
-              ? { disabledReason: 'Waiting for the connection to close.' }
-              : {})}
-          />
-        )}
-      </Inline>
+        <Inline gap="sm">
+          {failed ? (
+            <>
+              {onRetry ? <Button label="Try again" onPress={onRetry} variant="secondary" size="sm" /> : null}
+              {onEditRequest ? (
+                <Button label="Edit request" onPress={onEditRequest} variant="ghost" size="sm" />
+              ) : null}
+              <Button label="Dismiss" onPress={onDismiss} variant="ghost" size="sm" />
+            </>
+          ) : (
+            <Button
+              label={
+                stream.aborting ? 'Stopping…' : shownRate ? `Stop · ${shownRate}` : 'Stop'
+              }
+              onPress={onStop}
+              variant="secondary"
+              size="sm"
+              disabled={stream.aborting}
+              {...(stream.aborting
+                ? { disabledReason: 'Waiting for the connection to close.' }
+                : {})}
+            />
+          )}
+        </Inline>
+      </View>
     </View>
   );
 }

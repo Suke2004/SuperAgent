@@ -18,6 +18,7 @@ import { memo } from 'react';
 import { Pressable, View } from 'react-native';
 
 import { ContentBlocks } from '@/components/chat/ContentBlocks';
+import { Glyph } from '@/components/Glyph';
 import { Badge, Body, Inline, MIN_TARGET, Note, verticalSlop } from '@/components/ui';
 import type { StoredMessage } from '@/db/conversations';
 import { estimateCost, formatCost, formatUsage } from '@/lib/tokens';
@@ -216,24 +217,27 @@ function MessageViewInner({
             backgroundColor: t.colors.userBubble,
             borderRadius: t.radius.lg,
             paddingHorizontal: t.spacing.md,
-            paddingVertical: t.spacing.sm,
+            paddingVertical: t.spacing.md,
           }}
         >
           {body}
         </View>
-      ) : (
-        <View
-          style={
-            isToolTurn
-              ? {
-                  borderLeftWidth: 2,
-                  borderLeftColor: t.colors.border,
-                  paddingLeft: t.spacing.sm,
-                }
-              : null
-          }
-        >
+      ) : isToolTurn ? (
+        <View style={{ borderLeftWidth: 2, borderLeftColor: t.colors.border, paddingLeft: t.spacing.sm }}>
           {body}
+        </View>
+      ) : (
+        // The assistant's answer has no bubble — it sits on the page, so a long reply
+        // reads as a document. The mark in the gutter is what marks it as the
+        // assistant's, and it is still: a stored message is not thinking.
+        <View style={{ flexDirection: 'row', gap: t.spacing.md }}>
+          <Glyph
+            size={20}
+            state={message.error ? 'error' : 'idle'}
+            style={{ marginTop: 2 }}
+            {...(message.error ? { label: 'Jarvis, failed turn' } : {})}
+          />
+          <View style={{ flex: 1, minWidth: 0 }}>{body}</View>
         </View>
       )}
     </Pressable>

@@ -558,7 +558,7 @@ export default function ChatScreen() {
           // to the wrong one costs real money, so it is on screen.
           headerTitle: () => (
             <View style={{ gap: 1 }}>
-              <Body size="md" weight="700" numberOfLines={1}>
+              <Body size="md" weight="400" numberOfLines={1} style={{ fontFamily: t.serifFont }}>
                 {conversation.title}
               </Body>
               <Inline gap="xs">
@@ -644,6 +644,8 @@ export default function ChatScreen() {
           baseTokens={baseTokens}
           window={capabilities?.contextWindow ?? 0}
           reserved={reserved}
+          model={conversation.model}
+          onPressModel={() => setModelMenu(true)}
           {...(calibration ? { calibration } : {})}
           {...(blocked ? { disabledReason: blocked } : {})}
         />
