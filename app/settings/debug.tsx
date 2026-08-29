@@ -10,7 +10,7 @@ import * as Clipboard from 'expo-clipboard';
 import { useEffect, useState } from 'react';
 import { Pressable, View } from 'react-native';
 
-import { Badge, Body, Button, Empty, Inline, Note, Screen, Section, Stack } from '@/components/ui';
+import { Badge, Body, Button, Empty, Inline, MIN_TARGET, Note, Screen, Section, Stack } from '@/components/ui';
 import { debugLog, safeStringify } from '@/lib/log';
 import type { DebugEntry, RequestEntry } from '@/lib/log';
 import { useSettings } from '@/stores/settings';
@@ -25,16 +25,43 @@ function statusTone(entry: RequestEntry): 'success' | 'danger' | 'warning' | 'ne
   return 'success';
 }
 
-function EntryCard({ entry }: { entry: DebugEntry }) {
+/**
+ * One log entry, collapsed to a line until asked.
+ *
+ * Every row here is expandable and nothing said so: no role, no state, and no
+ * chevron, so the only way to find the bodies and headers was to tap a row that
+ * looked like static text and see what happened. A screen reader had it worse —
+ * "429 12:04 anthropic POST https://…" with no hint that there was anything else.
+ *
+ * `defaultOpen` exists because the newest entry is the reason the screen was opened.
+ * State is per-mounted-card and cards are keyed by entry id, so a newer entry
+ * arriving opens itself without collapsing whatever the user was already reading.
+ */
+function EntryCard({ entry, defaultOpen = false }: { entry: DebugEntry; defaultOpen?: boolean }) {
   const t = useTheme();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const time = new Date(entry.at).toLocaleTimeString();
+
+  /** `▾`/`▸` plus the state on the row itself, because the glyph alone is decoration. */
+  const chevron = (
+    <Body size="xs" tone="faint" accessibilityLabel={open ? 'Expanded' : 'Collapsed'}>
+      {open ? '▾' : '▸'}
+    </Body>
+  );
 
   if (entry.kind === 'message') {
     const tone = entry.level === 'error' ? 'danger' : entry.level === 'warn' ? 'warning' : 'neutral';
+    const expandable = entry.data !== undefined;
     return (
-      <Pressable onPress={() => setOpen((v) => !v)} style={{ paddingVertical: t.spacing.sm, gap: 4 }}>
+      <Pressable
+        onPress={expandable ? () => setOpen((v) => !v) : undefined}
+        accessibilityRole={expandable ? 'button' : undefined}
+        accessibilityState={expandable ? { expanded: open } : undefined}
+        accessibilityHint={expandable ? (open ? 'Hides the logged data' : 'Shows the logged data') : undefined}
+        style={{ paddingVertical: t.spacing.sm, gap: 4, minHeight: expandable ? MIN_TARGET : undefined }}
+      >
         <Inline gap="sm">
+          {expandable ? chevron : null}
           <Badge label={entry.level} tone={tone} />
           <Body size="xs" tone="faint">
             {time}
@@ -56,8 +83,15 @@ function EntryCard({ entry }: { entry: DebugEntry }) {
   }
 
   return (
-    <Pressable onPress={() => setOpen((v) => !v)} style={{ paddingVertical: t.spacing.sm, gap: 4 }}>
+    <Pressable
+      onPress={() => setOpen((v) => !v)}
+      accessibilityRole="button"
+      accessibilityState={{ expanded: open }}
+      accessibilityHint={open ? 'Hides the headers and bodies' : 'Shows the headers, request and response bodies'}
+      style={{ paddingVertical: t.spacing.sm, gap: 4, minHeight: MIN_TARGET }}
+    >
       <Inline gap="sm">
+        {chevron}
         <Badge
           label={entry.status !== undefined ? String(entry.status) : entry.error ? 'error' : '…'}
           tone={statusTone(entry)}
@@ -173,7 +207,7 @@ export default function DebugScreen() {
                 borderTopColor: t.colors.border,
               }}
             >
-              <EntryCard entry={entry} />
+              <EntryCard entry={entry} defaultOpen={index === 0} />
             </View>
           ))
         )}

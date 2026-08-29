@@ -337,6 +337,14 @@ describe('formatting', () => {
     expect(formatUsage({ input: 10, output: 5, cacheRead: 0 })).not.toContain('cache');
   });
 
+  it('names a missing input or output count rather than printing zero', () => {
+    // `0 in` for an unreported prompt count reads as a free turn.
+    expect(formatUsage({ output: 830 })).toBe('input not reported · 830 out');
+    expect(formatUsage({ input: 1_200 })).toBe('1.2k in · output not reported');
+    // A real zero is still a zero.
+    expect(formatUsage({ input: 0, output: 0 })).toBe('0 in · 0 out');
+  });
+
   it('produces an empty string for empty usage', () => {
     expect(formatUsage({})).toBe('');
   });

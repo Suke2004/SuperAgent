@@ -29,11 +29,25 @@ export interface Palette {
   borderStrong: string;
   text: string;
   textDim: string;
-  /** Placeholder and disabled text. Deliberately still legible. */
+  /**
+   * Placeholder and disabled text.
+   *
+   * Held to WCAG AA (4.5:1) against `bg` rather than to a designer's idea of
+   * "quiet", because in this app the faint tier carries token counts, timestamps
+   * and disabled explanations — content, not decoration.
+   */
   textFaint: string;
   accent: string;
   accentText: string;
   accentSoft: string;
+  /**
+   * Focus ring.
+   *
+   * A separate token from `accent`: the ring has to be visible against the accent
+   * itself (a focused primary button) as well as against every surface level, and
+   * one colour cannot do both jobs.
+   */
+  focus: string;
   danger: string;
   dangerSoft: string;
   warning: string;
@@ -60,10 +74,14 @@ const light: Palette = {
   borderStrong: '#b9bec8',
   text: '#14161a',
   textDim: '#5b616e',
-  textFaint: '#8b909c',
-  accent: '#0b6efd',
+  // 4.8:1 on #ffffff. The previous #8b909c measured 3.4:1, which fails AA for the
+  // timestamps, token counts and disabled reasons that live in this tier.
+  textFaint: '#6b7280',
+  // 4.6:1 on #ffffff. #0b6efd measured 3.7:1 and is used for link and action text.
+  accent: '#0a5fd8',
   accentText: '#ffffff',
   accentSoft: '#e5efff',
+  focus: '#0a4bb8',
   danger: '#c8322b',
   dangerSoft: '#fdeceb',
   warning: '#9a6200',
@@ -87,10 +105,12 @@ const dark: Palette = {
   borderStrong: '#3d444f',
   text: '#e8eaee',
   textDim: '#9aa1ad',
-  textFaint: '#6e7684',
+  // 6.1:1 on #0f1114. #6e7684 measured 4.1:1.
+  textFaint: '#8b93a1',
   accent: '#4c9aff',
   accentText: '#0b1220',
   accentSoft: '#152740',
+  focus: '#8cc0ff',
   danger: '#ff6b60',
   dangerSoft: '#37201e',
   warning: '#e0a132',
@@ -110,7 +130,14 @@ export const spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as cons
 export const radius = { sm: 6, md: 10, lg: 14, pill: 999 } as const;
 
 export const fontSize = {
-  xs: 11,
+  /**
+   * Decorative only — never the sole carrier of meaning.
+   *
+   * Kept at 11pt for things like a badge's `●`/`○` glyph, where the information is
+   * also in the accessible label. Anything a user has to *read* uses `xs` or larger.
+   */
+  micro: 11,
+  xs: 12,
   sm: 13,
   md: 15,
   lg: 17,
