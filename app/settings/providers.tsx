@@ -5,17 +5,39 @@
  * as separate profiles rather than as a toggle on one, because they are genuinely
  * different endpoints with different capabilities — and having both visible from the
  * first launch is what makes the /v1 distinction obvious instead of surprising.
+ *
+ * Every profile used to appear three times on this screen: once to edit, once to
+ * activate, once to delete. Three lists of the same four things, and the only way to
+ * know which one you were in was the heading you had already scrolled past. Now each
+ * profile is one row — pressing it makes it active, the Edit link opens everything
+ * else, and deleting lives on the profile's own screen where the consequences can be
+ * spelled out.
  */
 
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Alert, Pressable, View } from 'react-native';
 
-import { Badge, Body, Button, Field, Inline, Note, Row, Screen, Section, Segmented, Stack } from '@/components/ui';
+import {
+  Badge,
+  Body,
+  Button,
+  Field,
+  Inline,
+  MIN_TARGET,
+  Note,
+  Row,
+  Screen,
+  Section,
+  Segmented,
+  Stack,
+  verticalSlop,
+} from '@/components/ui';
 import { invalidateTransports } from '@/lib/gateway';
+import { verifyProfile } from '@/lib/verify';
 import { AGENTROUTER_ORIGIN, useProviders } from '@/stores/providers';
 import { useTheme } from '@/theme';
-import type { TransportKind } from '@/transports/types';
+import type { ConnectionTestResult, TransportKind } from '@/transports/types';
 
 const KIND_OPTIONS = [
   { value: 'anthropic' as TransportKind, label: 'Anthropic' },
@@ -56,11 +78,33 @@ export default function ProvidersScreen() {
   const [baseUrl, setBaseUrl] = useState('');
   const [kind, setKind] = useState<TransportKind>('anthropic');
 
+  /**
+   * What the connection test made of the profile that was just saved.
+   *
+   * Rendered on the screen rather than only announced in an alert: this is the one
+   * moment where "did that work?" is the whole question, and an alert that has been
+   * dismissed cannot be re-read.
+   */
+  const [setupResult, setSetupResult] = useState<{
+    profileId: string;
+    outcome: ConnectionTestResult;
+    discovered: number;
+    adopted: string | null;
+  } | null>(null);
+
+  /**
+   * The name a blank field will get, shown as the placeholder rather than left to be
+   * discovered after saving. One less field to fill in that anyone would fill in the
+   * same way.
+   */
+  const derivedName = useMemo(() => (baseUrl.trim() ? customProfileName(baseUrl.trim()) : ''), [baseUrl]);
+
   async function saveSetup() {
     const key = setupKey.trim();
     if (!key) return;
 
     setSavingSetup(true);
+    setSetupResult(null);
     let createdId: string | null = null;
     try {
       let id: string;
@@ -93,31 +137,27 @@ export default function ProvidersScreen() {
         setName('');
         setBaseUrl('');
       }
-      Alert.alert('Provider ready', `${useProviders.getState().byId(id)?.name ?? 'Provider'} is now active.`);
+
+      // Tested here, not left for the user to go and find. Saving a key and then
+      // discovering on the first message that the URL was wrong, or that the seeded
+      // default model is not served, is two screens and a failed turn of feedback
+      // for something the app can answer in one request — and the test is also
+      // where the model list comes from, so skipping it left the pickers empty.
+      const verified = await verifyProfile(id);
+      setSetupResult({ profileId: id, ...verified });
+      const label = useProviders.getState().byId(id)?.name ?? 'Provider';
+      Alert.alert(
+        verified.outcome.ok ? 'Provider ready' : 'Saved, but the test failed',
+        verified.outcome.ok
+          ? `${label} is active.${verified.discovered ? ` ${verified.discovered} model${verified.discovered === 1 ? '' : 's'} found.` : ''}`
+          : `${label} is saved and active, but: ${verified.outcome.summary}`,
+      );
     } catch (error) {
       if (createdId) removeProfile(createdId);
       Alert.alert('Could not save provider', error instanceof Error ? error.message : 'The API key could not be saved.');
     } finally {
       setSavingSetup(false);
     }
-  }
-
-  function confirmRemove(id: string, label: string) {
-    if (profiles.length <= 1) {
-      Alert.alert('Keep at least one', 'Deleting the last profile would leave nothing to send requests to.');
-      return;
-    }
-    Alert.alert('Delete profile', `Delete "${label}" and its stored API key?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => {
-          removeProfile(id);
-          invalidateTransports(id);
-        },
-      },
-    ]);
   }
 
   return (
@@ -139,13 +179,6 @@ export default function ProvidersScreen() {
           ) : (
             <Stack gap="md">
               <Field
-                label="Profile name (optional)"
-                value={name}
-                onChangeText={setName}
-                placeholder="My gateway"
-                autoCapitalize="words"
-              />
-              <Field
                 label="Base URL"
                 value={baseUrl}
                 onChangeText={setBaseUrl}
@@ -153,6 +186,16 @@ export default function ProvidersScreen() {
                 mono
                 keyboardType="url"
                 hint="Paste the origin. The /v1 suffix is added or removed to match the selected transport."
+              />
+              {/* Below the URL, because its placeholder is derived from it: with a
+                  host typed in there is nothing left to decide here. */}
+              <Field
+                label="Profile name (optional)"
+                value={name}
+                onChangeText={setName}
+                placeholder={derivedName || 'My gateway'}
+                autoCapitalize="words"
+                {...(derivedName ? { hint: `Left blank, this profile is called "${derivedName}".` } : {})}
               />
             </Stack>
           )}
@@ -187,50 +230,75 @@ export default function ProvidersScreen() {
             }
             onPress={() => void saveSetup()}
           />
+
+          {/* The test the save just ran, in place. `Alert` says the same thing, but
+              it is gone as soon as it is dismissed and it is a no-op on web. */}
+          {setupResult ? (
+            <Stack gap="sm">
+              <Note tone={setupResult.outcome.ok ? 'success' : 'danger'} live>
+                {setupResult.outcome.ok
+                  ? `Connected.${setupResult.discovered ? ` ${setupResult.discovered} model${setupResult.discovered === 1 ? '' : 's'} discovered.` : ' The gateway did not list any models — pick one by id in the chat.'}`
+                  : `Saved and active, but the connection test failed: ${setupResult.outcome.summary}`}
+              </Note>
+              {setupResult.adopted ? (
+                <Note tone="info">
+                  {`The default model was changed to ${setupResult.adopted}, because the gateway does not serve the one this app guessed.`}
+                </Note>
+              ) : null}
+              {setupResult.outcome.ok ? null : (
+                <Button
+                  label="Open profile to fix it"
+                  onPress={() => router.push(`/settings/provider/${setupResult.profileId}`)}
+                />
+              )}
+            </Stack>
+          ) : null}
         </Stack>
       </Section>
 
+      {/*
+        One row per profile. Pressing it makes it active — the thing done most often,
+        so it gets the whole row — and Edit opens everything else, deletion included.
+      */}
       <Section
-        title="Saved profiles"
-        note="Tap a profile to edit its URL, key and transport, or to run a connection test. The radio marks the one new conversations use."
+        title="Profiles"
+        note="Tap a profile to make new conversations use it. Edit opens its URL, key, transport, connection test and delete."
       >
-        {profiles.map((profile, index) => (
-          <Row
-            key={profile.id}
-            first={index === 0}
-            chevron
-            label={profile.name}
-            subtitle={`${profile.kind === 'anthropic' ? 'Anthropic' : 'OpenAI'} · ${profile.baseUrl}`}
-            onPress={() => router.push(`/settings/provider/${profile.id}`)}
-            right={
-              <Inline gap="xs" wrap={false}>
-                {profile.hasKey ? <Badge label="Key" tone="success" /> : <Badge label="No key" tone="danger" />}
-                {profile.id === activeId ? <Badge label="Active" tone="accent" /> : null}
-              </Inline>
-            }
-          />
-        ))}
-      </Section>
-
-      <Section title="Switch active profile">
-        {profiles.map((profile, index) => (
-          <Row
-            key={profile.id}
-            first={index === 0}
-            label={profile.name}
-            value={profile.id === activeId ? 'In use' : ''}
-            onPress={() => {
-              setActive(profile.id);
-              invalidateTransports();
-            }}
-            right={
-              <Badge
-                label={profile.id === activeId ? '●' : '○'}
-                tone={profile.id === activeId ? 'accent' : 'neutral'}
-              />
-            }
-          />
-        ))}
+        {profiles.map((profile, index) => {
+          const active = profile.id === activeId;
+          return (
+            <Row
+              key={profile.id}
+              first={index === 0}
+              role="radio"
+              checked={active}
+              label={profile.name}
+              subtitle={`${profile.kind === 'anthropic' ? 'Anthropic' : 'OpenAI'} · ${profile.baseUrl}`}
+              accessibilityLabel={`${profile.name}, ${profile.hasKey ? 'key saved' : 'no key saved'}`}
+              accessibilityHint={active ? 'Already in use by new conversations' : 'Makes new conversations use this profile'}
+              onPress={() => {
+                setActive(profile.id);
+                invalidateTransports();
+              }}
+              right={
+                <Inline gap="xs" wrap={false}>
+                  {profile.hasKey ? null : <Badge label="No key" tone="danger" />}
+                  {active ? <Badge label="In use" tone="accent" /> : null}
+                  <Pressable
+                    onPress={() => router.push(`/settings/provider/${profile.id}`)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Edit ${profile.name}`}
+                    hitSlop={verticalSlop(MIN_TARGET)}
+                  >
+                    <Body tone="accent" size="sm">
+                      Edit
+                    </Body>
+                  </Pressable>
+                </Inline>
+              }
+            />
+          );
+        })}
       </Section>
 
       <View style={{ alignItems: 'flex-start' }}>
@@ -242,19 +310,6 @@ export default function ProvidersScreen() {
           }}
         />
       </View>
-
-      <Section title="Danger zone">
-        {profiles.map((profile, index) => (
-          <Row
-            key={profile.id}
-            first={index === 0}
-            destructive
-            label={`Delete ${profile.name}`}
-            subtitle="Also removes the API key from the Android Keystore"
-            onPress={() => confirmRemove(profile.id, profile.name)}
-          />
-        ))}
-      </Section>
 
       <Note>
         A duplicated profile starts without a key. Keystore entries are keyed by profile id, and sharing one key

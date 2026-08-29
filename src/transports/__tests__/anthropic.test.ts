@@ -37,7 +37,11 @@ function request(overrides: Partial<ChatRequest> = {}): ChatRequest {
   };
 }
 
-function transport(responders: Parameters<typeof createMockFetch>[0], baseUrl = BASE_URL) {
+function transport(
+  responders: Parameters<typeof createMockFetch>[0],
+  baseUrl = BASE_URL,
+  options: { defaultModel?: string } = {},
+) {
   const mock = createMockFetch(responders);
   const client = new AnthropicTransport({
     kind: 'anthropic',
@@ -45,6 +49,7 @@ function transport(responders: Parameters<typeof createMockFetch>[0], baseUrl = 
     apiKey: 'sk-test-key',
     fetchImpl: mock.fetch,
     retryPolicy: NO_RETRY_POLICY,
+    ...options,
   });
   return { client, mock };
 }
@@ -828,5 +833,61 @@ describe('AnthropicTransport.testConnection', () => {
     const result = await client.testConnection();
     expect(result.steps[2]?.error?.kind).toBe('content_blocked');
     expect(result.summary).toContain('Chinese, English, French, German or Russian');
+  });
+
+  it('probes the profile’s configured model when the gateway lists it', async () => {
+    const { client, mock } = transport(
+      [
+        jsonResponse({ data: [{ id: 'claude-opus-4-6' }, { id: 'claude-opus-5' }] }),
+        jsonResponse({ content: [{ type: 'text', text: 'Hi' }], stop_reason: 'end_turn' }),
+      ],
+      BASE_URL,
+      { defaultModel: 'claude-opus-5' },
+    );
+
+    const result = await client.testConnection();
+
+    expect(result.ok).toBe(true);
+    expect(result.probedModel).toBe('claude-opus-5');
+    expect(mock.bodies()[1]).toMatchObject({ model: 'claude-opus-5' });
+    expect(result.steps.map((step) => step.label)).not.toContain('Configured model');
+  });
+
+  it('prefers the configured model over the built-in one when discovery fails', async () => {
+    // Discovery is a convenience; the configured model is what every real message
+    // will use, so that is what a probe has to prove.
+    const { client, mock } = transport(
+      [
+        gatewayErrorResponse('404 page not found', 404),
+        jsonResponse({ content: [{ type: 'text', text: 'Hi' }], stop_reason: 'end_turn' }),
+      ],
+      BASE_URL,
+      { defaultModel: 'claude-opus-5' },
+    );
+
+    const result = await client.testConnection();
+
+    expect(result.ok).toBe(true);
+    expect(result.probedModel).toBe('claude-opus-5');
+    expect(mock.bodies()[1]).toMatchObject({ model: 'claude-opus-5' });
+  });
+
+  it('names the mismatch when the gateway does not serve the configured model', async () => {
+    const { client, mock } = transport(
+      [
+        jsonResponse({ data: [{ id: 'claude-opus-4-6' }] }),
+        jsonResponse({ content: [{ type: 'text', text: 'Hi' }], stop_reason: 'end_turn' }),
+      ],
+      BASE_URL,
+      { defaultModel: 'claude-opus-5' },
+    );
+
+    const result = await client.testConnection();
+
+    expect(result.probedModel).toBe('claude-opus-4-6');
+    expect(mock.bodies()[1]).toMatchObject({ model: 'claude-opus-4-6' });
+    const step = result.steps.find((s) => s.label === 'Configured model');
+    expect(step).toMatchObject({ status: 'failed' });
+    expect(step?.detail).toContain('claude-opus-5');
   });
 });

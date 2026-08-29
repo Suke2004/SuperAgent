@@ -183,8 +183,8 @@ export default function ModelDetail() {
         </Section>
 
         <Section
-          title="Pricing"
-          note="Per million tokens, in whatever currency your gateway bills. Left blank, the usage dashboard reports tokens without a cost estimate rather than guessing."
+          title="Pricing (estimate)"
+          note="Per million tokens, in whatever currency your gateway bills. Typed in by hand: the gateway does not publish its rates, so nothing here is checked against what it actually charges — every cost in the app is an estimate from these two numbers. Left blank, usage is reported in tokens with no cost at all rather than a guess."
         >
           <Stack gap="md" style={{ padding: t.spacing.md }}>
             <Inline gap="md" wrap={false}>

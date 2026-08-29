@@ -25,24 +25,41 @@ import { FlashList } from '@shopify/flash-list';
 import * as Clipboard from 'expo-clipboard';
 import { Stack as NavStack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Modal, Pressable, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { OfflineBadge, OfflineBanner } from '@/components/OfflineBanner';
+import { useDialogKeys } from '@/components/dialog';
 import { PromptSheet, Sheet } from '@/components/Sheet';
 import type { SheetAction } from '@/components/Sheet';
 import { Composer } from '@/components/chat/Composer';
 import { MessageView } from '@/components/chat/MessageView';
 import { StreamView } from '@/components/chat/StreamView';
-import { Body, Button, Empty, Field, Note, Segmented, Spinner, Stack, Stepper, SwitchRow } from '@/components/ui';
-import { mergeParams } from '@/chat/request';
+import {
+  Body,
+  Button,
+  Empty,
+  Field,
+  Inline,
+  Note,
+  Segmented,
+  Spinner,
+  Stack,
+  Stepper,
+  SwitchRow,
+} from '@/components/ui';
+import { hasBlockingIssue, mergeParams, validateConfig } from '@/chat/request';
+import type { ConfigIssue } from '@/chat/request';
 import { parseTags } from '@/chat/list';
 import { toUnifiedMessages } from '@/db/conversations';
 import type { StoredMessage } from '@/db/conversations';
-import { estimateMessagesTokens, estimateTextTokens } from '@/lib/tokens';
+import { estimateMessagesTokens, estimateTextTokens, formatCost, formatTokens, estimateCost } from '@/lib/tokens';
 import { useChat, useConversation, useDraft, useMessages, useStream } from '@/stores/chat';
+import { useCalibration } from '@/stores/calibration';
 import { capabilitiesFor, entryKey, pickableModelIds, useModels } from '@/stores/models';
 import { useProviders } from '@/stores/providers';
 import { useSettings } from '@/stores/settings';
+import { availableEfforts, controlSupport } from '@/transports/support';
 import { useTheme } from '@/theme';
 
 /** Which one-line prompt is open, and what it is editing. */
@@ -81,11 +98,14 @@ export default function ChatScreen() {
   const [prompt, setPrompt] = useState<Prompt | null>(null);
   const [convMenu, setConvMenu] = useState(false);
   const [modelMenu, setModelMenu] = useState(false);
+  const [profileMenu, setProfileMenu] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
+  const [costFor, setCostFor] = useState<StoredMessage | null>(null);
   const [configDraft, setConfigDraft] = useState<{
     maxTokens: string;
     temperature: string;
     topP: string;
+    topK: string;
     reasoningEnabled: boolean;
     effort: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     budgetTokens: number;
@@ -145,8 +165,110 @@ export default function ChatScreen() {
 
   const onAction = useCallback((message: StoredMessage) => setMenuFor(message), []);
 
-  const renderItem = useCallback(
-    ({ item }: { item: StoredMessage }) => {
+  // What this model's own reported prompt counts say about the estimator. Subscribed
+  // to rather than read once, so the gauge tightens as soon as a turn lands.
+  const calibration = useCalibration((s) =>
+    conversation ? s.byModel[entryKey(conversation.profileId, model)] : undefined,
+  );
+  const onExplainCost = useCallback((message: StoredMessage) => setCostFor(message), []);
+
+  /**
+   * The draft's problems, recomputed on every keystroke.
+   *
+   * `validateConfig` already knew all of this; it was simply never called from the
+   * sheet, so a temperature of 5 or a thinking budget above `max_tokens` was only
+   * discovered when the gateway rejected the next message — one screen and one
+   * round trip away from the field that caused it.
+   */
+  const configIssues = useMemo<ConfigIssue[]>(() => {
+    if (!configDraft || !capabilities || !profile) return [];
+    const maxTokens = Number.parseInt(configDraft.maxTokens, 10);
+    const temperature = Number.parseFloat(configDraft.temperature);
+    const topP = Number.parseFloat(configDraft.topP);
+    const topK = Number.parseInt(configDraft.topK, 10);
+    return validateConfig({
+      transport: profile.kind,
+      capabilities,
+      params: {
+        maxTokens: Number.isFinite(maxTokens) ? maxTokens : 0,
+        ...(Number.isFinite(temperature) ? { temperature } : {}),
+        ...(Number.isFinite(topP) ? { topP } : {}),
+        ...(Number.isFinite(topK) ? { topK } : {}),
+      },
+      reasoning: {
+        enabled: configDraft.reasoningEnabled,
+        effort: configDraft.effort,
+        ...(profile.kind === 'anthropic' ? { budgetTokens: configDraft.budgetTokens } : {}),
+      },
+    });
+  }, [configDraft, capabilities, profile]);
+
+  // Errors win over warnings on the same control: one line under a field, and the
+  // blocking one is the one that has to be read.
+  const issueFor = useCallback(
+    (field: ConfigIssue['field']): string | undefined => {
+      const forField = configIssues.filter((issue) => issue.field === field);
+      const worst = forField.find((issue) => issue.level === 'error') ?? forField[0];
+      return worst?.message;
+    },
+    [configIssues],
+  );
+  const configBlocked = hasBlockingIssue(configIssues);
+
+  // Escape and a Tab trap for the controls modal, same as the sheets get. Stable
+  // identity, or the effect would re-run on every keystroke and steal focus back to
+  // the first field mid-edit.
+  const closeConfig = useCallback(() => setConfigOpen(false), []);
+  const configTrap = useDialogKeys(configOpen && configDraft !== null, closeConfig);
+
+  // Which sampling controls this transport and model can actually use. The sheet
+  // used to hard-code `profile.kind === 'openai'` for Top P and offered no Top K at
+  // all, which is backwards on both counts: the Anthropic Messages API takes both.
+  const topPSupport = useMemo(
+    () => controlSupport('topP', profile?.kind ?? 'openai', capabilities ?? undefined),
+    [profile?.kind, capabilities],
+  );
+  const topKSupport = useMemo(
+    () => controlSupport('topK', profile?.kind ?? 'openai', capabilities ?? undefined),
+    [profile?.kind, capabilities],
+  );
+  const efforts = useMemo(
+    () => availableEfforts(profile?.kind ?? 'openai', capabilities ?? undefined),
+    [profile?.kind, capabilities],
+  );
+
+  /**
+   * The arithmetic behind one row's `~$…`, spelled out.
+   *
+   * Built here rather than in the sheet because it needs the pricing entry for the
+   * *message's* model, which only this screen can look up.
+   */
+  const costExplanation = useMemo<string | undefined>(() => {
+    if (!costFor) return undefined;
+    const usage = costFor.usage;
+    const modelId = costFor.model ?? model;
+    const pricing = entries[entryKey(conversation?.profileId ?? '', modelId)]?.pricing;
+    const cost = usage ? estimateCost(usage, pricing) : null;
+    if (!cost || !pricing || !usage) {
+      return `No rates are saved for ${modelId}, so no cost is shown for this message.`;
+    }
+    const inputTokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+    return [
+      `${modelId}: $${pricing.inputPerMTok} per million input tokens, $${pricing.outputPerMTok} per million output.`,
+      `${formatTokens(inputTokens)} in × input rate = $${formatCost(cost.input)}. ${formatTokens(usage.output ?? 0)} out × output rate = $${formatCost(cost.output)}. Total ~$${formatCost(cost.total)}.`,
+      usage.cacheRead || usage.cacheWrite
+        ? 'Cached tokens are charged at the full input rate here: both vendors discount them, but a gateway\'s own markup is not knowable from the app, so this figure is an upper bound.'
+        : '',
+      usage.input === undefined || usage.output === undefined
+        ? 'The gateway did not report every token count, so the missing side is treated as zero and the real cost is higher.'
+        : '',
+      'These rates are typed in by hand in Settings → Models. Nothing verifies them against what the gateway actually bills — treat the number as an estimate, not an invoice.',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+  }, [costFor, entries, conversation?.profileId, model]);
+
+  const renderItem = useCallback(    ({ item }: { item: StoredMessage }) => {
       const pricing = entries[entryKey(conversation?.profileId ?? '', item.model ?? model)]?.pricing;
       return (
         <MessageView
@@ -154,11 +276,12 @@ export default function ChatScreen() {
           now={now}
           thinkingExpanded={thinkingExpanded}
           onAction={onAction}
+          onExplainCost={onExplainCost}
           {...(pricing ? { pricing } : {})}
         />
       );
     },
-    [entries, conversation?.profileId, model, now, thinkingExpanded, onAction],
+    [entries, conversation?.profileId, model, now, thinkingExpanded, onAction, onExplainCost],
   );
 
   // FlashList only re-renders rows when `data` or `extraData` changes identity, and
@@ -190,11 +313,36 @@ export default function ChatScreen() {
   const streaming = stream !== undefined && stream.error === undefined;
   const blocked = profile && !profile.hasKey
     ? `No API key saved for ${profile.name}. Settings → Providers → ${profile.name}.`
-    : undefined;
+    : !profile
+      ? 'This conversation\'s provider profile no longer exists. Pick another one from the ⋯ menu before sending.'
+      : undefined;
 
   /* ---------------------------------------------------------------------- */
   /* Actions                                                                 */
   /* ---------------------------------------------------------------------- */
+
+  /**
+   * Opens the sampling controls seeded from what the conversation currently sends.
+   *
+   * A function rather than an inline handler because the failure banner opens it
+   * too: "the gateway rejected temperature" is only actionable if the thing that
+   * set the temperature is one tap away.
+   */
+  const openModelControls = (): void => {
+    const params = conversation.config.params ?? {};
+    const reasoning = conversation.config.reasoning;
+    setConfigDraft({
+      maxTokens: String(params.maxTokens ?? 8192),
+      temperature: params.temperature === undefined ? '' : String(params.temperature),
+      topP: params.topP === undefined ? '' : String(params.topP),
+      topK: params.topK === undefined ? '' : String(params.topK),
+      reasoningEnabled: reasoning?.enabled ?? false,
+      effort: reasoning?.effort ?? 'medium',
+      budgetTokens: reasoning?.budgetTokens ?? 16_384,
+    });
+    setConvMenu(false);
+    setConfigOpen(true);
+  };
 
   const confirmDelete = (message: StoredMessage): void => {
     Alert.alert('Delete this message?', 'It is removed from the transcript and from the database.', [
@@ -288,22 +436,16 @@ export default function ChatScreen() {
     },
     { label: 'Model', subtitle: conversation.model, onPress: () => setModelMenu(true) },
     {
+      // Present always, not only when the profile is missing: a conversation started
+      // on the wrong gateway is a normal mistake, and this is where it is fixed.
+      label: 'Provider profile',
+      subtitle: profile ? profile.name : 'Missing — this conversation cannot send until you pick one',
+      onPress: () => setProfileMenu(true),
+    },
+    {
       label: 'Model controls',
       subtitle: 'Sampling and reasoning for the next message',
-      onPress: () => {
-        const params = conversation.config.params ?? {};
-        const reasoning = conversation.config.reasoning;
-        setConfigDraft({
-          maxTokens: String(params.maxTokens ?? 8192),
-          temperature: params.temperature === undefined ? '' : String(params.temperature),
-          topP: params.topP === undefined ? '' : String(params.topP),
-          reasoningEnabled: reasoning?.enabled ?? false,
-          effort: reasoning?.effort ?? (profile?.kind === 'openai' ? 'medium' : 'medium'),
-          budgetTokens: reasoning?.budgetTokens ?? 16_384,
-        });
-        setConvMenu(false);
-        setConfigOpen(true);
-      },
+      onPress: openModelControls,
     },
     { label: 'Rename', subtitle: conversation.title, onPress: () => setPrompt({ kind: 'rename' }) },
     {
@@ -324,6 +466,16 @@ export default function ChatScreen() {
     label: candidate,
     ...(candidate === conversation.model ? { subtitle: 'Current' } : {}),
     onPress: () => void useChat.getState().setModel(id, candidate),
+  }));
+
+  const profileActions: SheetAction[] = profiles.map((candidate) => ({
+    label: candidate.name,
+    subtitle:
+      candidate.id === conversation.profileId
+        ? 'Current'
+        : `${candidate.kind === 'anthropic' ? '/v1/messages' : '/chat/completions'} · ${candidate.baseUrl}`,
+    ...(candidate.hasKey ? {} : { disabled: true, disabledReason: 'No API key saved for this profile.' }),
+    onPress: () => void useChat.getState().setProfile(id, candidate.id),
   }));
 
   const promptProps = ((): {
@@ -389,10 +541,34 @@ export default function ChatScreen() {
   /* ---------------------------------------------------------------------- */
 
   return (
-    <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
+    // One keyboard mechanism, not two. Android resizes the window itself
+    // (`softwareKeyboardLayoutMode: 'resize'` in app.json), so adding padding on top
+    // of that moves the composer twice — once by the OS and once by React — and
+    // leaves a gap the height of the keyboard. iOS does not resize, so there it is
+    // this view's job.
+    <KeyboardAvoidingView
+      {...(Platform.OS === 'ios' ? { behavior: 'padding' as const } : {})}
+      style={{ flex: 1 }}
+    >
       <NavStack.Screen
         options={{
           title: conversation.title,
+          // The model is the single most consequential thing about a conversation and
+          // it was only visible two taps deep, in the ⋯ menu. Sending a long prompt
+          // to the wrong one costs real money, so it is on screen.
+          headerTitle: () => (
+            <View style={{ gap: 1 }}>
+              <Body size="md" weight="700" numberOfLines={1}>
+                {conversation.title}
+              </Body>
+              <Inline gap="xs">
+                <Body size="xs" tone="faint" numberOfLines={1} accessibilityLabel={`Model ${conversation.model}`}>
+                  {conversation.model}
+                </Body>
+                <OfflineBadge />
+              </Inline>
+            </View>
+          ),
           headerRight: () => (
             <Pressable
               onPress={() => setConvMenu(true)}
@@ -415,6 +591,11 @@ export default function ChatScreen() {
         renderItem={renderItem}
         maintainVisibleContentPosition={{ startRenderingFromBottom: true, autoscrollToBottomThreshold: 0.2 }}
         contentContainerStyle={{ padding: t.spacing.md }}
+        // Dragging the transcript puts the keyboard away with the gesture instead of
+        // requiring a separate tap, and a tap on a message action still lands rather
+        // than being swallowed by the dismiss.
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
         ItemSeparatorComponent={() => <View style={{ height: t.spacing.lg }} />}
         ListEmptyComponent={
           stream ? null : (
@@ -433,7 +614,13 @@ export default function ChatScreen() {
                 onStop={() => abort(id)}
                 onDismiss={() => dismissError(id)}
                 {...(stream.error !== undefined
-                  ? { onRetry: () => { dismissError(id); void useChat.getState().regenerate(id, messages[messages.length - 1]?.id ?? ''); } }
+                  ? {
+                      onRetry: () => { dismissError(id); void useChat.getState().regenerate(id, messages[messages.length - 1]?.id ?? ''); },
+                      // A rejected parameter is fixable, and the fix is in a sheet the
+                      // banner can open. Without this the user has to guess which of
+                      // the ⋯ entries owns `temperature`.
+                      onEditRequest: openModelControls,
+                    }
                   : {})}
               />
             </View>
@@ -441,7 +628,12 @@ export default function ChatScreen() {
         }
       />
 
-      <View style={{ paddingBottom: insets.bottom }}>
+      <View style={{ paddingBottom: insets.bottom, gap: t.spacing.sm }}>
+        {/* Above the composer rather than at the top of the screen: it is a
+            statement about what will happen when you press send. */}
+        <View style={{ paddingHorizontal: t.spacing.md }}>
+          <OfflineBanner />
+        </View>
         <Composer
           value={draft}
           onChangeText={(text) => setDraft(id, text)}
@@ -452,6 +644,7 @@ export default function ChatScreen() {
           baseTokens={baseTokens}
           window={capabilities?.contextWindow ?? 0}
           reserved={reserved}
+          {...(calibration ? { calibration } : {})}
           {...(blocked ? { disabledReason: blocked } : {})}
         />
       </View>
@@ -480,6 +673,34 @@ export default function ChatScreen() {
         onClose={() => setModelMenu(false)}
       />
 
+      <Sheet
+        visible={profileMenu}
+        title="Provider profile"
+        subtitle="The model list and the wire format both come from this. Switching does not resend anything."
+        actions={profileActions}
+        onClose={() => setProfileMenu(false)}
+      />
+
+      {/* Where `~$0.0042` comes from, said once, on demand.
+          The number is arithmetic on a price table this app cannot verify: the
+          gateway does not publish rates, so the table is hand-entered and may be
+          stale, wrong for a re-routed model, or missing the gateway's own markup.
+          A row that shows a dollar figure without a way to learn that is claiming
+          more than it knows. */}
+      <Sheet
+        visible={costFor !== null}
+        title="Estimated cost"
+        {...(costExplanation ? { body: costExplanation } : {})}
+        actions={[
+          {
+            label: 'Edit model pricing',
+            subtitle: 'Settings → Models, where these rates are entered by hand.',
+            onPress: () => router.push('/settings/models'),
+          },
+        ]}
+        onClose={() => setCostFor(null)}
+      />
+
       {/* Mounted only while open, so the draft is seeded from the stored value
           every time rather than surviving a cancel. */}
       {promptProps ? (
@@ -499,35 +720,105 @@ export default function ChatScreen() {
         />
       ) : null}
 
-      <Modal visible={configOpen && configDraft !== null} animationType="slide" transparent onRequestClose={() => setConfigOpen(false)}>
+      <Modal visible={configOpen && configDraft !== null} animationType="slide" transparent onRequestClose={closeConfig}>
         <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.45)' }}>
-          <View style={{ maxHeight: '90%', backgroundColor: t.colors.bg, borderTopLeftRadius: t.radius.lg, borderTopRightRadius: t.radius.lg, padding: t.spacing.lg }}>
+          <View
+            ref={configTrap}
+            accessibilityViewIsModal
+            style={{ maxHeight: '90%', backgroundColor: t.colors.bg, borderTopLeftRadius: t.radius.lg, borderTopRightRadius: t.radius.lg, padding: t.spacing.lg }}
+          >
             {configDraft ? (
               <Stack gap="md">
                 <Body size="lg" weight="700">Model controls</Body>
-                <Field label="Max output tokens" value={configDraft.maxTokens} onChangeText={(v) => setConfigDraft((d) => d ? { ...d, maxTokens: v } : d)} keyboardType="number-pad" mono />
-                <Field label="Temperature" value={configDraft.temperature} onChangeText={(v) => setConfigDraft((d) => d ? { ...d, temperature: v } : d)} keyboardType="decimal-pad" placeholder="Default" mono />
-                {profile?.kind === 'openai' ? <Field label="Top P" value={configDraft.topP} onChangeText={(v) => setConfigDraft((d) => d ? { ...d, topP: v } : d)} keyboardType="decimal-pad" placeholder="Default" mono /> : null}
+                <Field
+                  label="Max output tokens"
+                  value={configDraft.maxTokens}
+                  onChangeText={(v) => setConfigDraft((d) => (d ? { ...d, maxTokens: v } : d))}
+                  keyboardType="number-pad"
+                  mono
+                  {...(issueFor('maxTokens') ? { error: issueFor('maxTokens') } : {})}
+                />
+                <Field
+                  label="Temperature"
+                  value={configDraft.temperature}
+                  onChangeText={(v) => setConfigDraft((d) => (d ? { ...d, temperature: v } : d))}
+                  keyboardType="decimal-pad"
+                  placeholder="Default"
+                  mono
+                  hint="0 to 2. Left blank, the gateway's own default is used."
+                  {...(issueFor('temperature') ? { error: issueFor('temperature') } : {})}
+                />
+                {topPSupport.supported ? (
+                  <Field
+                    label="Top P"
+                    value={configDraft.topP}
+                    onChangeText={(v) => setConfigDraft((d) => (d ? { ...d, topP: v } : d))}
+                    keyboardType="decimal-pad"
+                    placeholder="Default"
+                    mono
+                    {...(issueFor('topP') ? { error: issueFor('topP') } : {})}
+                  />
+                ) : null}
+                {/* Shown on the Anthropic path, where `top_k` is a real field, and
+                    hidden on the OpenAI path rather than offered and silently
+                    dropped — a control that does nothing is worse than no control. */}
+                {topKSupport.supported ? (
+                  <Field
+                    label="Top K"
+                    value={configDraft.topK}
+                    onChangeText={(v) => setConfigDraft((d) => (d ? { ...d, topK: v } : d))}
+                    keyboardType="number-pad"
+                    placeholder="Default"
+                    mono
+                    hint="Anthropic only. Limits sampling to the K most likely tokens."
+                  />
+                ) : null}
                 <SwitchRow label="Reasoning / thinking" value={configDraft.reasoningEnabled} onChange={(v) => setConfigDraft((d) => d ? { ...d, reasoningEnabled: v } : d)} />
                 {configDraft.reasoningEnabled ? (
                   <>
                     <Segmented
-                      options={(profile?.kind === 'openai' ? ['minimal', 'low', 'medium', 'high'] : ['low', 'medium', 'high', 'xhigh', 'max']).map((v) => ({ value: v as typeof configDraft.effort, label: v }))}
+                      label="Reasoning effort"
+                      options={efforts.map((v) => ({ value: v as typeof configDraft.effort, label: v }))}
                       value={configDraft.effort}
                       onChange={(v) => setConfigDraft((d) => d ? { ...d, effort: v } : d)}
                     />
+                    {issueFor('reasoningEffort') ? <Note tone="danger" live>{issueFor('reasoningEffort')}</Note> : null}
                     {profile?.kind === 'anthropic' ? <Stepper label="Thinking budget" value={configDraft.budgetTokens} onChange={(v) => setConfigDraft((d) => d ? { ...d, budgetTokens: v } : d)} step={1024} min={1024} max={127999} format={(v) => v.toLocaleString()} /> : null}
+                    {issueFor('thinkingBudget') ? <Note tone="danger" live>{issueFor('thinkingBudget')}</Note> : null}
                   </>
                 ) : null}
+                {/* Warnings that belong to no single field, so they cannot be shown
+                    under one. Errors are already under their control. */}
+                {configIssues
+                  .filter((issue) => issue.level === 'warning' && issue.message !== issueFor(issue.field))
+                  .map((issue) => (
+                    <Note key={`${issue.field}:${issue.message}`} tone="warning">
+                      {issue.message}
+                    </Note>
+                  ))}
                 <Note>These settings apply to the next message. Unsupported fields are omitted by the transport.</Note>
                 <Stack gap="sm">
-                  <Button label="Save controls" variant="primary" full onPress={() => {
+                  <Button
+                    label="Save controls"
+                    variant="primary"
+                    full
+                    disabled={configBlocked}
+                    {...(configBlocked
+                      ? { disabledReason: 'Fix the errors above first — the gateway would reject this combination.' }
+                      : {})}
+                    onPress={() => {
                     const d = configDraft;
                     const maxTokens = Number.parseInt(d.maxTokens, 10);
                     const temperature = Number.parseFloat(d.temperature);
                     const topP = Number.parseFloat(d.topP);
+                    const topK = Number.parseInt(d.topK, 10);
                     void useChat.getState().setConfig(id, {
-                      params: { maxTokens: Number.isFinite(maxTokens) ? maxTokens : undefined, ...(Number.isFinite(temperature) ? { temperature } : {}), ...(Number.isFinite(topP) ? { topP } : {}) },
+                      params: {
+                        maxTokens: Number.isFinite(maxTokens) ? maxTokens : undefined,
+                        ...(Number.isFinite(temperature) ? { temperature } : {}),
+                        ...(Number.isFinite(topP) ? { topP } : {}),
+                        ...(Number.isFinite(topK) ? { topK } : {}),
+                      },
                       reasoning: { enabled: d.reasoningEnabled, effort: d.effort, ...(profile?.kind === 'anthropic' ? { budgetTokens: d.budgetTokens } : {}) },
                     });
                     setConfigOpen(false);

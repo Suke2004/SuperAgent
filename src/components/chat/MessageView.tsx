@@ -18,7 +18,7 @@ import { memo } from 'react';
 import { Pressable, View } from 'react-native';
 
 import { ContentBlocks } from '@/components/chat/ContentBlocks';
-import { Badge, Body, Inline, Note } from '@/components/ui';
+import { Badge, Body, Inline, MIN_TARGET, Note, verticalSlop } from '@/components/ui';
 import type { StoredMessage } from '@/db/conversations';
 import { estimateCost, formatCost, formatUsage } from '@/lib/tokens';
 import type { ModelPricing } from '@/lib/tokens';
@@ -94,20 +94,48 @@ function Footer({
   message,
   now,
   pricing,
+  onExplainCost,
 }: {
   message: StoredMessage;
   now: number;
   pricing?: ModelPricing;
+  onExplainCost?: (message: StoredMessage) => void;
 }) {
   const usage = message.usage;
   const cost = usage ? estimateCost(usage, pricing) : null;
   const parts = [formatWhen(message.createdAt, now)];
-  if (usage) parts.push(formatUsage(usage));
-  if (cost) parts.push(`$${formatCost(cost.total)}`);
+  const reported = usage ? formatUsage(usage) : '';
+  if (reported) parts.push(reported);
+  // Assistant turns always have a token cost; an assistant row with no usage means
+  // the gateway did not say what it was, and that is worth one word rather than a
+  // silent gap that reads like a free reply.
+  else if (message.role === 'assistant' && !message.error) parts.push('tokens not reported');
+  if (cost) parts.push(`~$${formatCost(cost.total)}`);
+
+  const label = parts.join('  ·  ');
+
+  // The cost is an estimate from a hand-maintained price table, and the `~` alone
+  // does not say so. Tapping it opens the explanation rather than putting a
+  // paragraph of caveat in every row.
+  if (cost && onExplainCost) {
+    return (
+      <Pressable
+        onPress={() => onExplainCost(message)}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}. Estimated cost.`}
+        accessibilityHint="Explains how this estimate was calculated"
+        hitSlop={verticalSlop(MIN_TARGET)}
+      >
+        <Body size="xs" tone="faint">
+          {label}
+        </Body>
+      </Pressable>
+    );
+  }
 
   return (
     <Body size="xs" tone="faint">
-      {parts.join('  ·  ')}
+      {label}
     </Body>
   );
 }
@@ -118,12 +146,14 @@ function MessageViewInner({
   pricing,
   thinkingExpanded,
   onAction,
+  onExplainCost,
 }: {
   message: StoredMessage;
   now: number;
   pricing?: ModelPricing;
   thinkingExpanded: boolean;
   onAction?: (message: StoredMessage) => void;
+  onExplainCost?: (message: StoredMessage) => void;
 }) {
   const t = useTheme();
 
@@ -153,16 +183,25 @@ function MessageViewInner({
         <Note tone="warning">{`Sent via the fallback base URL: ${message.meta.failedOverTo}`}</Note>
       ) : null}
 
-      <Footer message={message} now={now} {...(pricing ? { pricing } : {})} />
+      <Footer
+        message={message}
+        now={now}
+        {...(pricing ? { pricing } : {})}
+        {...(onExplainCost ? { onExplainCost } : {})}
+      />
     </View>
   );
 
   return (
     <Pressable
+      // Tap as well as long-press. A long-press-only affordance is undiscoverable —
+      // there is nothing on screen that hints at it — and it is also the one gesture
+      // a switch-control or screen-reader user is least able to produce.
+      onPress={onAction ? () => onAction(message) : undefined}
       onLongPress={onAction ? () => onAction(message) : undefined}
       delayLongPress={300}
       accessibilityRole={onAction ? 'button' : undefined}
-      accessibilityHint={onAction ? 'Long press for message actions' : undefined}
+      accessibilityHint={onAction ? 'Opens message actions' : undefined}
       style={{
         alignItems: asUser ? 'flex-end' : 'stretch',
         // Excluded messages are still readable — they are part of the record — but

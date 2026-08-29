@@ -35,7 +35,9 @@ const cache = new Map<string, CacheEntry>();
 
 /** Anything that changes the wire behaviour must invalidate the cached transport. */
 function profileSignature(profile: ProviderProfile, baseUrl: string): string {
-  return [profile.kind, baseUrl, JSON.stringify(profile.headers)].join('|');
+  // `defaultModel` is in here because the connection test probes it: a cached
+  // transport built before the model changed would keep testing the old id.
+  return [profile.kind, baseUrl, profile.defaultModel, JSON.stringify(profile.headers)].join('|');
 }
 
 export class MissingKeyError extends GatewayError {
@@ -88,6 +90,7 @@ export async function resolveTransport(options: ResolveOptions = {}): Promise<{
     kind: profile.kind,
     baseUrl,
     apiKey: key,
+    defaultModel: profile.defaultModel,
     headers: profile.headers,
     fetchImpl: streamingFetch,
   });

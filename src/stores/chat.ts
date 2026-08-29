@@ -42,11 +42,12 @@ import type {
   StoredMessage,
 } from '@/db/conversations';
 import { buildRequest, SUMMARY_INSTRUCTION, validateConfig, hasBlockingIssue } from '@/chat/request';
-import { resolveTransport } from '@/lib/gateway';
+import { invalidateTransports, resolveTransport } from '@/lib/gateway';
 import { log } from '@/lib/log';
-import { estimateMessageTokens, selectMessagesWithinBudget } from '@/lib/tokens';
+import { estimateMessageTokens, estimateRequestTokens, selectMessagesWithinBudget } from '@/lib/tokens';
 import { capabilitiesFor, useModels, wireHintsFor } from '@/stores/models';
-import { activeProfile, useProviders } from '@/stores/providers';
+import { useCalibration } from '@/stores/calibration';import { activeProfile, useProviders } from '@/stores/providers';
+import { useReachability } from '@/stores/reachability';
 import { getSetting } from '@/stores/settings';
 import { GatewayError } from '@/transports/errors';
 import { summariseFailure } from '@/transports/index';
@@ -67,12 +68,30 @@ const COMMIT_INTERVAL = 60;
 /* Stream state                                                                */
 /* -------------------------------------------------------------------------- */
 
-export type StreamPhase = 'preparing' | 'summarising' | 'connecting' | 'streaming' | 'saving';
+export type StreamPhase = 'preparing' | 'summarising' | 'connecting' | 'retrying' | 'streaming' | 'saving';
 
 export interface PartialToolCall {
   id: string;
   name: string;
   partialJson: string;
+}
+
+/** What the transport is waiting on, when it is between attempts. */
+export interface RetryState {
+  /** 1-based index of the attempt that just failed. */
+  attempt: number;
+  /** How long the backoff will sleep before attempt `attempt + 1`. */
+  delayMs: number;
+  /** The gateway's own reason, verbatim. */
+  message: string;
+  /**
+   * When the wait started.
+   *
+   * Recorded here rather than derived in the UI: a countdown needs an origin, and
+   * the component only learns about the retry on its next render — which may be
+   * hundreds of milliseconds late, and later still after a re-mount.
+   */
+  at: number;
 }
 
 export interface StreamState {
@@ -86,6 +105,15 @@ export interface StreamState {
   usage: Partial<TokenUsage>;
   droppedParams: { param: string; message: string }[];
   failover?: { from: string; to: string };
+  /** Set while the transport is sleeping between attempts. */
+  retry?: RetryState;
+  /**
+   * When the first byte of the answer arrived, as a millisecond timestamp.
+   *
+   * Kept so the UI can report time-to-first-token rather than a single elapsed
+   * clock that says "Streaming · 0s" for three seconds before anything appears.
+   */
+  firstByteAt?: number;
   /** Set when the turn ended badly. Always the gateway's own words. */
   error?: string;
   /** Set once the user pressed stop. */
@@ -124,6 +152,8 @@ function snapshot(live: LiveStream): StreamState {
     aborting: live.aborting,
   };
   if (live.failover) state.failover = live.failover;
+  if (live.retry) state.retry = live.retry;
+  if (live.firstByteAt) state.firstByteAt = live.firstByteAt;
   if (live.error) state.error = live.error;
   return state;
 }
@@ -172,6 +202,13 @@ export interface ChatState {
   conversations: Conversation[];
   listLoading: boolean;
   listError?: string;
+  /**
+   * The filter the current list was loaded with.
+   *
+   * Kept so a mutation that changes list *membership* — archiving — can re-run the
+   * same query instead of guessing whether the row still belongs.
+   */
+  listOptions?: ListOptions;
 
   /** Loaded transcripts, keyed by conversation id. */
   messages: Record<string, StoredMessage[]>;
@@ -187,8 +224,24 @@ export interface ChatState {
   rename(conversationId: string, title: string): Promise<void>;
   setSystemPrompt(conversationId: string, prompt: string): Promise<void>;
   setModel(conversationId: string, model: string): Promise<void>;
+  /**
+   * Repoints a conversation at another provider profile.
+   *
+   * Needed because a deleted profile leaves its conversations unsendable, and the
+   * transcript is worth keeping — so the fix has to be reachable from the
+   * conversation itself rather than only by not deleting the profile.
+   */
+  setProfile(conversationId: string, profileId: string): Promise<void>;
   setConfig(conversationId: string, patch: Partial<ConversationConfig>): Promise<void>;
   setPinned(conversationId: string, pinned: boolean): Promise<void>;
+  /**
+   * Moves a conversation out of the list without destroying it.
+   *
+   * The only non-destructive way to tidy up that this app had was delete, so
+   * "I am done with this thread" and "this thread should not exist" were the same
+   * button. The column and the query filter were already there.
+   */
+  setArchived(conversationId: string, archived: boolean): Promise<void>;
   setTags(conversationId: string, tags: string[]): Promise<void>;
   remove(conversationId: string): Promise<void>;
 
@@ -213,7 +266,7 @@ export const useChat = create<ChatState>()((set, get) => ({
   streams: {},
 
   async loadList(options) {
-    set({ listLoading: true });
+    set({ listLoading: true, listOptions: options });
     try {
       const conversations = await listConversations(options);
       set({ conversations, listLoading: false, listError: undefined });
@@ -266,6 +319,14 @@ export const useChat = create<ChatState>()((set, get) => ({
     patchConversation(set, conversationId, { model });
   },
 
+  async setProfile(conversationId, profileId) {
+    await updateConversation(conversationId, { profileId });
+    patchConversation(set, conversationId, { profileId });
+    // The cached transport is keyed by profile, and the old key may not exist any
+    // more — which is the usual reason for calling this.
+    invalidateTransports(profileId);
+  },
+
   async setConfig(conversationId, patch) {
     const current = get().conversations.find((c) => c.id === conversationId) ?? (await getConversation(conversationId));
     if (!current) return;
@@ -284,8 +345,19 @@ export const useChat = create<ChatState>()((set, get) => ({
     }));
   },
 
-  async setTags(conversationId, tags) {
-    await dbSetTags(conversationId, tags);
+  async setArchived(conversationId, archived) {
+    // A live stream on a conversation being archived is stopped: the row is about to
+    // leave the list, and a reply arriving into a list the user cannot see is worse
+    // than a turn they can re-send.
+    if (archived) get().abort(conversationId);
+    await updateConversation(conversationId, { archived });
+    // Reloaded rather than patched, because `archived` decides membership of the
+    // list rather than the contents of a row — the last query's own filter is the
+    // only thing that knows whether this row still belongs.
+    await get().loadList(get().listOptions);
+  },
+
+  async setTags(conversationId, tags) {    await dbSetTags(conversationId, tags);
     const cleaned = [...new Set(tags.map((t) => t.trim()).filter(Boolean))];
     patchConversation(set, conversationId, { tags: cleaned });
   },
@@ -458,7 +530,16 @@ function appendToTranscript(set: Setter, conversationId: string, message: Stored
       conversations: state.conversations
         .map((c) =>
           c.id === conversationId
-            ? { ...c, updatedAt: message.createdAt, lastMessageAt: message.createdAt, preview: message.text }
+            ? {
+                ...c,
+                updatedAt: message.createdAt,
+                lastMessageAt: message.createdAt,
+                // Only a message with text may set the preview. A message whose
+                // content is all images or tool calls has an empty `text`, and
+                // writing that through renders "No messages yet" on a conversation
+                // with a screenful of them.
+                ...(message.text ? { preview: message.text } : {}),
+              }
             : c,
         )
         .sort(byPinnedThenRecent),
@@ -582,6 +663,11 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     live.phase = 'connecting';
     publish(true);
 
+    // What the composer's gauge would have said about this exact prompt. Kept so the
+    // gateway's own `prompt_tokens` can be compared against it below — the only
+    // ground truth this app ever gets about its estimator.
+    const estimatedPrompt = estimateRequestTokens(request).total;
+
     let yielded = false;
     const consume = async (transport: Transport): Promise<void> => {
       for await (const event of transport.stream(request, {
@@ -590,10 +676,21 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
           live.droppedParams.push({ param, message });
           publish(true);
         },
+        onRetry: (info) => {
+          // A 20-second backoff labelled "Streaming" is indistinguishable from a
+          // hung request, so the wait gets its own phase and says why.
+          live.phase = 'retrying';
+          live.retry = { ...info, at: Date.now() };
+          publish(true);
+        },
       })) {
         if (!yielded) {
           yielded = true;
           live.phase = 'streaming';
+          live.firstByteAt = Date.now();
+          delete live.retry;
+          // A byte from the gateway is the only proof of reachability worth having.
+          useReachability.getState().markReachable();
         }
         applyEvent(live, event);
         // Text and thinking arrive by the hundred; everything else is rare and
@@ -620,6 +717,8 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       log.warn('chat', `Primary unreachable; retrying on ${fallback.baseUrl}.`, { from: primary.baseUrl });
       useProviders.getState().setFailover({ profileId: profile.id, from: primary.baseUrl, to: fallback.baseUrl });
       live.failover = { from: primary.baseUrl, to: fallback.baseUrl };
+      live.phase = 'connecting';
+      delete live.retry;
       publish(true);
       await consume(fallback.transport);
     }
@@ -646,9 +745,14 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     });
     appendToTranscript(set, conversationId, message);
 
+    // One labelled sample of how wrong the estimator is for this model. Only when
+    // the gateway actually reported a prompt count — an absent one is not a zero.
+    if (usage.input !== undefined) {
+      useCalibration.getState().record(`${profile.id}::${model}`, estimatedPrompt, usage.input);
+    }
+
     const pricing = useModels.getState().get(`${profile.id}::${model}`)?.pricing;
-    await recordUsage({
-      profileId: profile.id,
+    await recordUsage({      profileId: profile.id,
       model,
       usage,
       conversationId,
@@ -667,8 +771,19 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
  * Stores what the turn managed to produce, plus why it stopped.
  *
  * An abort is not an error: the user asked for it, and the partial answer is
- * saved with `stopReason: 'aborted'` so the transcript can say so. Anything else
- * is stored on the message as the gateway's own text.
+ * saved with `stopReason: 'aborted'` so the transcript can say so.
+ *
+ * A failure that produced **nothing** writes no row at all. It used to write an
+ * empty assistant message with the error baked into it, and that stub was a
+ * genuinely expensive mistake: it was permanent (Dismiss cleared the banner, not
+ * the row), it had no text so it overwrote the conversation's preview with an
+ * empty string — a list row reading "No messages yet" next to "6 messages" — and
+ * it stayed in the transcript as an empty bubble forever. There is nothing to keep
+ * in that case; the failure lives in the stream entry, where Dismiss can reach it
+ * and Try again can act on it.
+ *
+ * A failure that produced *partial* content still writes a row, because half an
+ * answer is usually worth reading, and the error is recorded on it.
  */
 async function handleTurnFailure(
   set: Setter,
@@ -688,7 +803,7 @@ async function handleTurnFailure(
   if (options.modelOverride) meta.modelOverride = true;
   if (live.failover) meta.failedOverTo = live.failover.to;
 
-  if (blocks.length || !aborted) {
+  if (blocks.length) {
     const message = await appendMessage(conversationId, {
       role: 'assistant',
       content: blocks,
@@ -707,17 +822,21 @@ async function handleTurnFailure(
   }
 
   log.error('chat', 'Turn failed', { error: detail, kind: gatewayError?.kind });
+  // Only a `network` failure is evidence about reachability. A 401 or a 400 proves
+  // the opposite — the host answered — so it clears the banner rather than raising
+  // it, which is how "unreachable" stays a claim about the connection rather than a
+  // catch-all for "the last request did not work".
+  if (gatewayError?.kind === 'network') useReachability.getState().markUnreachable(detail);
+  else if (gatewayError) useReachability.getState().markReachable();
   // The stream entry survives with the error on it, so the composer can show a
-  // retry affordance without the transcript losing the failure.
+  // retry affordance without the transcript losing the failure. Dismissing it is
+  // now the only record that disappears, which is the point: nothing was written.
   set((state) => {
     const stream = state.streams[conversationId];
     if (!stream) return {};
-    return {
-      streams: {
-        ...state.streams,
-        [conversationId]: { ...stream, phase: 'saving', error: detail, aborting: false },
-      },
-    };
+    const next: StreamState = { ...stream, phase: 'saving', error: detail, aborting: false };
+    delete next.retry;
+    return { streams: { ...state.streams, [conversationId]: next } };
   });
 }
 
@@ -775,8 +894,17 @@ function applyEvent(live: LiveStream, event: StreamEvent): void {
   }
 }
 
-function normaliseUsage(partial: Partial<TokenUsage>): TokenUsage {
-  const usage: TokenUsage = { input: partial.input ?? 0, output: partial.output ?? 0 };
+/**
+ * Copies only the usage fields the gateway actually reported.
+ *
+ * It used to default `input` and `output` to 0, which made "this gateway does not
+ * stream prompt usage" indistinguishable from "this turn cost nothing" — including
+ * in the cost column, where a zero is a claim about money.
+ */
+function normaliseUsage(partial: Partial<TokenUsage>): Partial<TokenUsage> {
+  const usage: Partial<TokenUsage> = {};
+  if (partial.input !== undefined) usage.input = partial.input;
+  if (partial.output !== undefined) usage.output = partial.output;
   if (partial.thinking !== undefined) usage.thinking = partial.thinking;
   if (partial.cacheRead !== undefined) usage.cacheRead = partial.cacheRead;
   if (partial.cacheWrite !== undefined) usage.cacheWrite = partial.cacheWrite;

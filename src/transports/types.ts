@@ -281,6 +281,14 @@ export interface ConnectionTestResult {
   steps: ConnectionTestStep[];
   /** Models discovered during the test, if the models call succeeded. */
   models?: DiscoveredModel[];
+  /**
+   * The model the chat probe actually used.
+   *
+   * Reported so the caller can tell the difference between "your configured model
+   * works" and "your configured model is not served, but this one is" — and offer
+   * to switch rather than leaving the profile pointing at an id the gateway 403s.
+   */
+  probedModel?: string;
   /** Overall human-readable verdict. Never a bare "failed". */
   summary: string;
 }
@@ -297,6 +305,16 @@ export interface TransportConfig {
    */
   baseUrl: string;
   apiKey: string;
+  /**
+   * The model the profile is configured to use.
+   *
+   * Only the connection test reads it, and that is the point: probing a hardcoded
+   * id against a gateway that does not serve it reports `403 Forbidden` for a
+   * working key, which is the single most expensive false negative this app can
+   * produce. Whoever builds the transport already knows the configured model, so
+   * the test asks about that one first.
+   */
+  defaultModel?: string;
   /** Extra headers, e.g. `anthropic-beta`. Never contains the key. */
   headers?: Record<string, string>;
   /** Per-request timeout in ms. */
@@ -309,6 +327,14 @@ export interface StreamOptions {
   signal?: AbortSignal;
   /** Called when the adapter drops a rejected parameter and retries. */
   onParamDropped?: (param: string, message: string) => void;
+  /**
+   * Called before each backoff sleep.
+   *
+   * Exposed because a 20-second wait labelled "Streaming" is indistinguishable
+   * from a hung request: the UI needs to be able to say "rate limited, retrying in
+   * 8s (attempt 2 of 4)".
+   */
+  onRetry?: (info: { attempt: number; delayMs: number; message: string }) => void;
 }
 
 export interface Transport {

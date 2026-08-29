@@ -20,7 +20,7 @@
 
 import { GatewayError, validationError } from './errors';
 import { HttpClient, type FetchLike, type ParamDropInfo, type SendOptions } from './http';
-import type { RetryPolicy } from './retry';
+import type { RetryAttempt, RetryPolicy } from './retry';
 import { parseEventData, type SseEvent } from './sse';
 import {
   createResultAccumulator,
@@ -71,10 +71,14 @@ export class OpenAiTransport implements Transport {
   readonly kind = 'openai' as const;
   readonly baseUrl: string;
 
+  /** The profile's configured model. Read by {@link testConnection} only. */
+  private readonly defaultModel?: string;
+
   private readonly http: HttpClient;
 
   constructor(options: OpenAiTransportOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
+    if (options.defaultModel) this.defaultModel = options.defaultModel;
     this.http = new HttpClient({
       transport: 'openai',
       baseUrl: this.baseUrl,
@@ -263,11 +267,13 @@ export class OpenAiTransport implements Transport {
     }
 
     // Step 3: a one-token completion. Model discovery can succeed while the chat
-    // path fails, so only this proves the transport works end to end.
+    // path fails, so only this proves the transport works end to end. The probe
+    // uses the profile's configured model when the gateway lists it — probing
+    // something else turns a working setup into a 403 the user cannot explain.
     const chatStarted = Date.now();
     let probeModel: string;
     try {
-      probeModel = pickProbeModel(models);
+      probeModel = pickProbeModel(models, this.defaultModel);
     } catch (error) {
       const gatewayError = error instanceof GatewayError ? error : GatewayError.wrap(error);
       steps.push({
@@ -277,6 +283,16 @@ export class OpenAiTransport implements Transport {
         error: gatewayError,
       });
       return { ok: false, steps, models, summary: gatewayError.message };
+    }
+
+    if (this.defaultModel && probeModel !== this.defaultModel) {
+      steps.push({
+        label: 'Configured model',
+        status: 'failed',
+        detail:
+          `${this.defaultModel} is not in the gateway's model list, so it would fail with a permission error. ` +
+          `Probing ${probeModel} instead — switch the profile to a listed model.`,
+      });
     }
 
     try {
@@ -307,6 +323,7 @@ export class OpenAiTransport implements Transport {
         ok: false,
         steps,
         models,
+        probedModel: probeModel,
         summary: `Model discovery worked but ${probeModel} could not be called: ${gatewayError.message}`,
       };
     }
@@ -315,6 +332,7 @@ export class OpenAiTransport implements Transport {
       ok: true,
       steps,
       models,
+      probedModel: probeModel,
       summary: `OpenAI-compatible transport is working. ${models.length} models available.`,
     };
   }
@@ -338,6 +356,12 @@ export class OpenAiTransport implements Transport {
         pending.push({ type: 'param_dropped', param: info.param, message: info.message });
         options.onParamDropped?.(info.param, info.message);
       },
+      ...(options.onRetry
+        ? {
+            onRetry: (info: RetryAttempt) =>
+              options.onRetry?.({ attempt: info.attempt, delayMs: info.delayMs, message: info.error.message }),
+          }
+        : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     };
   }
@@ -768,9 +792,22 @@ export function describeBaseUrlIssue(kind: 'openai' | 'anthropic', baseUrl: stri
   return null;
 }
 
-/** Prefer a known-good Claude default; otherwise the first discovered model. */
-export function pickProbeModel(models: DiscoveredModel[], preferred = 'claude-opus-4-6'): string {
-  if (models.some((model) => model.id === preferred)) return preferred;
+/**
+ * The model the connection test should probe.
+ *
+ * `preferred` is the profile's configured model, and it wins whenever the gateway
+ * actually lists it — testing anything else answers a question nobody asked. When
+ * it is not on the list the first discovered id is used instead, because a gateway
+ * that serves four models and none of them the built-in default is a gateway that
+ * works; reporting `403 Forbidden` for it would be a lie about the key.
+ *
+ * The `claude-` preference only breaks ties among discovered ids: this app exists
+ * for the Claude path, so where the gateway offers both, that is the more useful
+ * thing to have proved.
+ */
+export function pickProbeModel(models: DiscoveredModel[], preferred?: string): string {
+  const wanted = preferred?.trim();
+  if (wanted && models.some((model) => model.id === wanted)) return wanted;
   const claude = models.find((model) => model.id.startsWith('claude-'));
   if (claude) return claude.id;
   const first = models[0];
