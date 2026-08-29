@@ -114,7 +114,14 @@ export interface StoredMessage {
   content: ContentBlock[];
   text: string;
   model?: string;
-  usage?: TokenUsage;
+  /**
+   * Exactly what the gateway reported, with absences preserved.
+   *
+   * `Partial` rather than `TokenUsage`: a gateway that streams no prompt usage must
+   * not be recorded as having billed zero input, because the row then reads as a
+   * free turn instead of an unreported one.
+   */
+  usage?: Partial<TokenUsage>;
   stopReason?: StopReason;
   /** The gateway's own message, verbatim. Never a generic string. */
   error?: string;
@@ -126,7 +133,7 @@ export interface NewMessage {
   role: UnifiedRole;
   content: ContentBlock[];
   model?: string;
-  usage?: TokenUsage;
+  usage?: Partial<TokenUsage>;
   stopReason?: StopReason;
   error?: string;
   meta?: MessageMeta;
@@ -238,7 +245,9 @@ function toMessage(row: MessageRow): StoredMessage {
     excluded: row.excluded !== 0,
   };
   if (row.model !== null) message.model = row.model;
-  if (row.usage !== null) message.usage = parseJson<TokenUsage>(row.usage, { input: 0, output: 0 }, 'usage');
+  // `{}` as the fallback, not `{ input: 0, output: 0 }`: a corrupt usage blob is
+  // unknown usage, and inventing zeros here would present it as a free turn.
+  if (row.usage !== null) message.usage = parseJson<Partial<TokenUsage>>(row.usage, {}, 'usage');
   if (row.stop_reason !== null) message.stopReason = row.stop_reason as StopReason;
   if (row.error !== null) message.error = row.error;
   if (row.meta !== null) message.meta = parseJson<MessageMeta>(row.meta, {}, 'message meta');
@@ -474,8 +483,34 @@ export async function deleteConversation(id: string): Promise<void> {
   await db.runAsync('DELETE FROM conversations WHERE id = ?', [id]);
 }
 
-export async function setPinned(id: string, pinned: boolean): Promise<void> {
+/**
+ * How many conversations still point at a provider profile.
+ *
+ * Asked before a profile is deleted. `profile_id` is a plain column, not a foreign
+ * key — conversations have to survive a profile being edited or re-created — so
+ * nothing at the database level stops a delete from orphaning them, and the count is
+ * the only way the UI can say what the delete will actually cost.
+ */
+export async function countConversationsForProfile(profileId: string): Promise<number> {
   const { db } = await database();
+  const row = await db.getFirstAsync<{ count: number }>(
+    'SELECT count(*) AS count FROM conversations WHERE profile_id = ?',
+    [profileId],
+  );
+  return row?.count ?? 0;
+}
+
+/** Moves every conversation from one profile to another. Returns how many moved. */
+export async function reassignProfile(fromProfileId: string, toProfileId: string): Promise<number> {
+  const { db } = await database();
+  const result = await db.runAsync('UPDATE conversations SET profile_id = ? WHERE profile_id = ?', [
+    toProfileId,
+    fromProfileId,
+  ]);
+  return result.changes;
+}
+
+export async function setPinned(id: string, pinned: boolean): Promise<void> {  const { db } = await database();
   // Pinning deliberately does not touch `updated_at`: it changes where the row
   // sorts, and also bumping the timestamp would reorder the pinned group too.
   await db.runAsync('UPDATE conversations SET pinned = ? WHERE id = ?', [pinned ? 1 : 0, id]);
@@ -576,7 +611,7 @@ export async function appendMessage(conversationId: string, input: NewMessage): 
 
 export interface MessagePatch {
   content?: ContentBlock[];
-  usage?: TokenUsage;
+  usage?: Partial<TokenUsage>;
   stopReason?: StopReason;
   error?: string | null;
   meta?: MessageMeta;
@@ -712,22 +747,42 @@ export function toUnifiedMessages(messages: readonly StoredMessage[]): UnifiedMe
 async function touchConversation(conversationId: string, at: number, text: string): Promise<void> {
   const { db } = await database();
   const preview = previewOf(text);
+  // A message with no text — images only, a tool call, a failed turn — must not
+  // blank the preview. `COALESCE` would not do: the point is to keep the *old*
+  // value, so the column is simply left out of the statement.
+  if (!preview) {
+    await db.runAsync('UPDATE conversations SET updated_at = ?, last_message_at = ? WHERE id = ?', [
+      at,
+      at,
+      conversationId,
+    ]);
+    return;
+  }
   await db.runAsync(
     `UPDATE conversations SET updated_at = ?, last_message_at = ?, preview = ? WHERE id = ?`,
-    [at, at, preview || null, conversationId],
+    [at, at, preview, conversationId],
   );
 }
 
-/** Recomputes the denormalised preview from the newest surviving message. */
+/**
+ * Recomputes the denormalised preview from the newest surviving message.
+ *
+ * "Newest with something to show", not "newest": an attachment-only turn at the end
+ * of a conversation is not a reason to render the row as empty.
+ */
 async function refreshPreview(conversationId: string): Promise<void> {
   const { db } = await database();
-  const row = await db.getFirstAsync<{ text: string; created_at: number }>(
-    'SELECT text, created_at FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1',
+  const newest = await db.getFirstAsync<{ created_at: number }>(
+    'SELECT created_at FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1',
+    [conversationId],
+  );
+  const withText = await db.getFirstAsync<{ text: string }>(
+    "SELECT text FROM messages WHERE conversation_id = ? AND text <> '' ORDER BY seq DESC LIMIT 1",
     [conversationId],
   );
   await db.runAsync('UPDATE conversations SET preview = ?, last_message_at = ? WHERE id = ?', [
-    row ? previewOf(row.text) || null : null,
-    row ? row.created_at : null,
+    withText ? previewOf(withText.text) || null : null,
+    newest ? newest.created_at : null,
     conversationId,
   ]);
 }
@@ -757,6 +812,18 @@ interface SearchRow {
   text: string;
 }
 
+export interface SearchOptions {
+  /**
+   * Restrict hits to conversations carrying this tag.
+   *
+   * Mirrors {@link ListOptions.tag}: the conversation list and the message search
+   * are two halves of one filter, and a query that ignores the active tag reads as
+   * a broken filter rather than a broader search.
+   */
+  tag?: string;
+  limit?: number;
+}
+
 /**
  * Full-text search over message content.
  *
@@ -766,13 +833,21 @@ interface SearchRow {
  * cannot match 数据分析报告 through the index. The gateway accepts Chinese, so
  * that case is real. It also covers a build without FTS5 at all.
  */
-export async function searchMessages(query: string, limit = 100): Promise<SearchHit[]> {
+export async function searchMessages(query: string, options: SearchOptions = {}): Promise<SearchHit[]> {
   const { db, ftsAvailable } = await database();
   const trimmed = query.trim();
   if (!trimmed) return [];
+  const limit = options.limit ?? 100;
 
   const select = `SELECT m.id, m.conversation_id, c.title, m.role, m.created_at, m.text
                     FROM messages m JOIN conversations c ON c.id = m.conversation_id`;
+  // Both passes already join `conversations`, so the tag filter is one predicate
+  // against the row that is there anyway. Without it, picking a tag and then
+  // typing narrows the list above the results but not the results themselves.
+  const tagFilter = options.tag
+    ? ' AND EXISTS (SELECT 1 FROM conversation_tags t WHERE t.conversation_id = c.id AND t.tag = ?)'
+    : '';
+  const tagParams = options.tag ? [options.tag] : [];
 
   if (ftsAvailable) {
     const match = buildFtsQuery(trimmed);
@@ -781,10 +856,10 @@ export async function searchMessages(query: string, limit = 100): Promise<Search
         const rows = await db.getAllAsync<SearchRow>(
           `${select}
              JOIN messages_fts f ON f.rowid = m.rowid
-            WHERE messages_fts MATCH ?
+            WHERE messages_fts MATCH ?${tagFilter}
             ORDER BY f.rank, m.created_at DESC
             LIMIT ?`,
-          [match, limit],
+          [match, ...tagParams, limit],
         );
         if (rows.length) return rows.map((row) => toHit(row, trimmed, 'fts'));
       } catch (error) {
@@ -801,10 +876,10 @@ export async function searchMessages(query: string, limit = 100): Promise<Search
   if (!pattern) return [];
   const rows = await db.getAllAsync<SearchRow>(
     `${select}
-      WHERE m.text LIKE ? ESCAPE '${LIKE_ESCAPE}'
+      WHERE m.text LIKE ? ESCAPE '${LIKE_ESCAPE}'${tagFilter}
       ORDER BY m.created_at DESC
       LIMIT ?`,
-    [pattern, limit],
+    [pattern, ...tagParams, limit],
   );
   return rows.map((row) => toHit(row, trimmed, 'like'));
 }
@@ -828,7 +903,12 @@ function toHit(row: SearchRow, query: string, via: 'fts' | 'like'): SearchHit {
 export interface UsageInput {
   profileId: string;
   model: string;
-  usage: TokenUsage;
+  /**
+   * The gateway's own counts. Unreported fields are stored as 0 in the aggregate
+   * columns — a running total has to be a number — which is why the per-message
+   * row keeps the absence and the dashboard is the place that says "estimated".
+   */
+  usage: Partial<TokenUsage>;
   conversationId?: string;
   pricing?: ModelPricing;
   at?: number;

@@ -45,7 +45,10 @@ function request(overrides: Partial<ChatRequest> = {}): ChatRequest {
   };
 }
 
-function transport(responders: Parameters<typeof createMockFetch>[0]) {
+function transport(
+  responders: Parameters<typeof createMockFetch>[0],
+  options: { defaultModel?: string } = {},
+) {
   const mock = createMockFetch(responders);
   const client = new OpenAiTransport({
     kind: 'openai',
@@ -54,6 +57,7 @@ function transport(responders: Parameters<typeof createMockFetch>[0]) {
     fetchImpl: mock.fetch,
     // Tests must not sleep. Retry behaviour is covered directly in retry.test.ts.
     retryPolicy: NO_RETRY_POLICY,
+    ...options,
   });
   return { client, mock };
 }
@@ -565,14 +569,24 @@ describe('describeBaseUrlIssue', () => {
 });
 
 describe('pickProbeModel', () => {
-  it('prefers the known default, then any Claude, then the first model', () => {
-    expect(pickProbeModel([{ id: 'gpt-4' }, { id: 'claude-opus-4-6' }])).toBe('claude-opus-4-6');
+  it('prefers the configured model whenever the gateway lists it', () => {
+    // The whole point: a working gateway that serves `claude-opus-5` must not be
+    // probed with something else and reported as 403.
+    expect(pickProbeModel([{ id: 'gpt-4' }, { id: 'claude-opus-5' }], 'claude-opus-5')).toBe('claude-opus-5');
+    expect(pickProbeModel([{ id: 'claude-opus-4-6' }, { id: 'gpt-4' }], 'gpt-4')).toBe('gpt-4');
+    expect(pickProbeModel([{ id: 'gpt-4' }, { id: 'claude-opus-5' }], '  claude-opus-5  ')).toBe('claude-opus-5');
+  });
+
+  it('falls back to any Claude, then the first model, when the configured one is absent', () => {
+    expect(pickProbeModel([{ id: 'gpt-4' }, { id: 'claude-opus-4-6' }], 'claude-opus-5')).toBe('claude-opus-4-6');
+    expect(pickProbeModel([{ id: 'gpt-4' }], 'claude-opus-5')).toBe('gpt-4');
     expect(pickProbeModel([{ id: 'gpt-4' }, { id: 'claude-opus-4-8' }])).toBe('claude-opus-4-8');
     expect(pickProbeModel([{ id: 'gpt-4' }])).toBe('gpt-4');
   });
 
   it('explains an empty list rather than throwing something opaque', () => {
     expect(() => pickProbeModel([])).toThrow(/empty model list/);
+    expect(() => pickProbeModel([], 'claude-opus-5')).toThrow(/empty model list/);
   });
 });
 
@@ -942,5 +956,42 @@ describe('OpenAiTransport.testConnection', () => {
     expect(result.ok).toBe(false);
     expect(result.summary).toContain('Model discovery worked');
     expect(result.summary).toContain('content blocked');
+  });
+
+  it('probes the profile’s configured model, not a built-in guess', async () => {
+    const { client, mock } = transport(
+      [
+        jsonResponse({ data: [{ id: 'claude-opus-4-6' }, { id: 'claude-opus-5' }] }),
+        jsonResponse({ choices: [{ message: { content: 'Hi' }, finish_reason: 'stop' }] }),
+      ],
+      { defaultModel: 'claude-opus-5' },
+    );
+
+    const result = await client.testConnection();
+
+    expect(result.ok).toBe(true);
+    expect(result.probedModel).toBe('claude-opus-5');
+    expect(mock.bodies()[1]).toMatchObject({ model: 'claude-opus-5' });
+    // Nothing to warn about: the configured model is the one that was proved.
+    expect(result.steps.map((step) => step.label)).not.toContain('Configured model');
+  });
+
+  it('names the mismatch when the gateway does not serve the configured model', async () => {
+    const { client, mock } = transport(
+      [
+        jsonResponse({ data: [{ id: 'claude-opus-4-6' }] }),
+        jsonResponse({ choices: [{ message: { content: 'Hi' }, finish_reason: 'stop' }] }),
+      ],
+      { defaultModel: 'claude-opus-5' },
+    );
+
+    const result = await client.testConnection();
+
+    expect(result.probedModel).toBe('claude-opus-4-6');
+    expect(mock.bodies()[1]).toMatchObject({ model: 'claude-opus-4-6' });
+    const step = result.steps.find((s) => s.label === 'Configured model');
+    expect(step).toMatchObject({ status: 'failed' });
+    expect(step?.detail).toContain('claude-opus-5');
+    expect(step?.detail).toContain('claude-opus-4-6');
   });
 });

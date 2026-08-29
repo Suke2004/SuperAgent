@@ -32,9 +32,18 @@ export const AGENTROUTER_BACKUP_ORIGIN = 'https://ps.air-outer.com';
  * Claude ids the gateway is known to serve. Everything else is discovered at
  * runtime from `/v1/models`; this list exists only so a fresh install can send a
  * message before the first discovery call.
+ *
+ * These are guesses until discovery runs, which is why {@link adoptDiscoveredModel}
+ * exists: a seeded id the gateway does not serve comes back as a permission error
+ * that reads like a bad key, so the first successful discovery replaces it.
  */
-export const DEFAULT_MODEL = 'claude-opus-4-6';
-export const KNOWN_CLAUDE_MODELS = ['claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8'] as const;
+export const DEFAULT_MODEL = 'claude-opus-5';
+export const KNOWN_CLAUDE_MODELS = [
+  'claude-opus-5',
+  'claude-opus-4-8',
+  'claude-opus-4-7',
+  'claude-opus-4-6',
+] as const;
 
 export interface ProviderProfile {
   id: string;
@@ -244,4 +253,33 @@ export const useProviders = create<ProviderState>()(
 /** Read the active profile outside React. */
 export function activeProfile(): ProviderProfile {
   return useProviders.getState().active();
+}
+
+/**
+ * Point a profile's `defaultModel` at something the gateway actually serves.
+ *
+ * The seeded default is a guess, and a guess the gateway does not serve fails as
+ * `403 Forbidden` — indistinguishable, from the user's side, from a bad key. So
+ * the first discovery that lists models gets to correct it.
+ *
+ * Returns the id it switched to, or `null` when nothing changed, so the caller can
+ * *say* that it happened. Silently rewriting the model the user picked would be
+ * its own bug: only a `defaultModel` the gateway did not list is replaced.
+ */
+export function adoptDiscoveredModel(profileId: string, discovered: readonly string[]): string | null {
+  if (discovered.length === 0) return null;
+  const profile = useProviders.getState().byId(profileId);
+  if (!profile) return null;
+  if (discovered.includes(profile.defaultModel)) return null;
+
+  // Prefer Claude: this app's controls (thinking budgets, effort) only exist on
+  // that path, so where the gateway offers both it is the more useful default.
+  const preferred =
+    KNOWN_CLAUDE_MODELS.find((id) => discovered.includes(id)) ??
+    discovered.find((id) => id.startsWith('claude-')) ??
+    discovered[0];
+  if (!preferred || preferred === profile.defaultModel) return null;
+
+  useProviders.getState().updateProfile(profileId, { defaultModel: preferred });
+  return preferred;
 }

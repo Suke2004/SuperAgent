@@ -23,7 +23,20 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PromptSheet, Sheet } from '@/components/Sheet';
 import type { SheetAction } from '@/components/Sheet';
-import { Badge, Body, Button, Divider, Empty, Field, Inline, Note, Spinner } from '@/components/ui';
+import { OfflineBanner } from '@/components/OfflineBanner';
+import {
+  Badge,
+  Body,
+  Button,
+  Divider,
+  Empty,
+  Field,
+  Inline,
+  MIN_TARGET,
+  Note,
+  Spinner,
+  verticalSlop,
+} from '@/components/ui';
 import { buildRows, filterConversations, parseTags, tagCounts } from '@/chat/list';
 import type { ListRow } from '@/chat/list';
 import { searchMessages } from '@/db/conversations';
@@ -188,34 +201,41 @@ export default function Home() {
   const [now, setNow] = useState(() => Date.now());
   const [query, setQuery] = useState('');
   const [tag, setTag] = useState<string | undefined>(undefined);
-  const [found, setFound] = useState<{ query: string; hits: SearchHit[] } | null>(null);
+  const [found, setFound] = useState<{ query: string; tag?: string; hits: SearchHit[] } | null>(null);
   const [menuFor, setMenuFor] = useState<Conversation | null>(null);
   const [prompt, setPrompt] = useState<{ kind: 'rename' | 'tags'; conversation: Conversation } | null>(null);
   const [keyChecked, setKeyChecked] = useState(false);
   const [starting, setStarting] = useState(false);
+  /**
+   * Whether the list is showing the archive.
+   *
+   * Two lists rather than one list with the archived rows dimmed in it: the point of
+   * archiving is that the row is gone from the place you were looking.
+   */
+  const [showArchived, setShowArchived] = useState(false);
 
   const active = profiles.find((p) => p.id === activeId) ?? profiles[0];
 
-  // Results carry the query that produced them, and both "which hits" and "still
-  // searching" are derived from that one comparison. Storing them separately is how
-  // you end up rendering the previous query's hits under the current query's text.
+  // Results carry the query *and the tag* that produced them, and both "which hits"
+  // and "still searching" are derived from that one comparison. Storing them
+  // separately is how you end up rendering the previous query's hits under the
+  // current query's text; leaving the tag out is how you end up showing hits from
+  // outside the tag you just picked.
   const trimmed = query.trim();
   const searchable = trimmed.length >= MIN_SEARCH_LENGTH;
+  const fresh = found?.query === trimmed && found?.tag === tag;
   // Memoised for its identity, not its cost: the row list below depends on it, and a
   // fresh `[]` each render would rebuild every row on every keystroke.
-  const hits = useMemo(
-    () => (searchable && found?.query === trimmed ? found.hits : NO_HITS),
-    [searchable, found, trimmed],
-  );
-  const searching = searchable && found?.query !== trimmed;
+  const hits = useMemo(() => (searchable && fresh && found ? found.hits : NO_HITS), [searchable, fresh, found]);
+  const searching = searchable && !fresh;
 
   // Re-read on focus: a conversation opened and replied to changes its preview and
   // its place in the order, and both are computed by the query rather than locally.
   useFocusEffect(
     useCallback(() => {
       setNow(Date.now());
-      void loadList();
-    }, [loadList]),
+      void loadList({ archived: showArchived });
+    }, [loadList, showArchived]),
   );
 
   // SecureStore is the source of truth for whether a key exists; the store only
@@ -234,22 +254,24 @@ export default function Home() {
     if (!searchable) return;
     let cancelled = false;
     const timer = setTimeout(() => {
-      void searchMessages(trimmed)
+      // The tag filter belongs in the query, not on top of the results: the hits are
+      // message rows, so there is nothing tag-shaped to filter them by afterwards.
+      void searchMessages(trimmed, { ...(tag ? { tag } : {}) })
         .then((rows) => {
-          if (!cancelled) setFound({ query: trimmed, hits: rows });
+          if (!cancelled) setFound({ query: trimmed, ...(tag ? { tag } : {}), hits: rows });
         })
         .catch(() => {
           // The list above is still correct; a failed full-text pass should not
           // blank the screen. `searchMessages` has already logged it. Recording an
           // empty result against this query stops it retrying on every render.
-          if (!cancelled) setFound({ query: trimmed, hits: [] });
+          if (!cancelled) setFound({ query: trimmed, ...(tag ? { tag } : {}), hits: [] });
         });
     }, SEARCH_DEBOUNCE_MS);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [trimmed, searchable]);
+  }, [trimmed, searchable, tag]);
 
   const filtered = useMemo(
     () => filterConversations(conversations, { query, ...(tag ? { tag } : {}) }),
@@ -287,15 +309,52 @@ export default function Home() {
     }
   }, [openConversation, starting]);
 
+  /**
+   * Delete, but only after offering the reversible version of the same wish.
+   *
+   * Deleting a conversation destroys every message in it and there is no undo, so
+   * the first thing the dialog offers is archiving — which is what "get this out of
+   * my list" actually means most of the time. Delete stays, one tap further away and
+   * still marked destructive.
+   */
   const confirmDelete = (conversation: Conversation): void => {
-    Alert.alert('Delete this conversation?', `"${conversation.title}" and every message in it.`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => void useChat.getState().remove(conversation.id),
-      },
-    ]);
+    Alert.alert(
+      'Delete this conversation?',
+      `"${conversation.title}" and every message in it. This cannot be undone — archiving keeps it and takes it out of the list.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Archive instead',
+          onPress: () => void archive(conversation, true),
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => void useChat.getState().remove(conversation.id),
+        },
+      ],
+    );
+  };
+
+  /**
+   * Archive or restore, with the reverse offered straight away.
+   *
+   * The undo is a toast-shaped `Alert` rather than a real snackbar because that is
+   * the confirmation mechanism this app already has; it is honest about what
+   * happened and one tap from putting it back.
+   */
+  const archive = async (conversation: Conversation, archived: boolean): Promise<void> => {
+    await useChat.getState().setArchived(conversation.id, archived);
+    Alert.alert(
+      archived ? 'Archived' : 'Restored',
+      archived
+        ? `"${conversation.title}" is out of the list. Nothing was deleted — it is under Archived.`
+        : `"${conversation.title}" is back in the list.`,
+      [
+        { text: 'OK', style: 'cancel' },
+        { text: 'Undo', onPress: () => void useChat.getState().setArchived(conversation.id, !archived) },
+      ],
+    );
   };
 
   const menuActions = (conversation: Conversation): SheetAction[] => [
@@ -309,6 +368,13 @@ export default function Home() {
     {
       label: conversation.pinned ? 'Unpin' : 'Pin to the top',
       onPress: () => void useChat.getState().setPinned(conversation.id, !conversation.pinned),
+    },
+    {
+      label: conversation.archived ? 'Restore from the archive' : 'Archive',
+      subtitle: conversation.archived
+        ? 'Puts it back in the list.'
+        : 'Keeps every message; takes the row out of this list.',
+      onPress: () => void archive(conversation, !conversation.archived),
     },
     { label: 'Delete', destructive: true, onPress: () => confirmDelete(conversation) },
   ];
@@ -402,6 +468,10 @@ export default function Home() {
         <Note tone="danger">No provider profiles. Open Settings → Providers and add one.</Note>
       )}
 
+      {/* Above the per-profile notes: if the gateway cannot be reached at all, the
+          missing key three lines down is not the problem to go and fix first. */}
+      <OfflineBanner />
+
       {active && !active.hasKey ? (
         <Note tone="danger">
           No API key saved for this profile. Requests will come back 401, which this gateway also uses for a
@@ -417,19 +487,45 @@ export default function Home() {
 
       {listError ? <Note tone="danger" mono>{listError}</Note> : null}
 
+      {/* The archive switch. A chip rather than a `SwitchRow` because it belongs
+          beside the tag filter — it is the same kind of thing: which rows am I
+          looking at. */}
+      <Inline gap="xs">
+        <Pressable
+          onPress={() => setShowArchived((on) => !on)}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: showArchived }}
+          accessibilityLabel="Show archived conversations"
+          hitSlop={verticalSlop(MIN_TARGET)}
+        >
+          <Badge label={showArchived ? 'Archived · showing' : 'Archived'} tone={showArchived ? 'accent' : 'neutral'} />
+        </Pressable>
+      </Inline>
+
       {tags.length ? (
-        <Inline gap="xs">
-          <Pressable onPress={() => setTag(undefined)} accessibilityRole="button">
-            <View accessibilityState={{ selected: tag === undefined }}>
-              <Badge label="All" tone={tag === undefined ? 'accent' : 'neutral'} />
-            </View>
+        // A tag filter is a single-choice control, so it is announced as one:
+        // `radiogroup` with `radio` children and a `checked` state. Wrapping the
+        // selected state on an inner `View`, as this did, hides it from the
+        // accessibility tree entirely — the chip reads the same either way.
+        <Inline gap="xs" accessibilityRole="radiogroup" accessibilityLabel="Filter by tag">
+          <Pressable
+            onPress={() => setTag(undefined)}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: tag === undefined, selected: tag === undefined }}
+            accessibilityLabel="All tags"
+            accessibilityHint="Clears the tag filter"
+            hitSlop={verticalSlop(MIN_TARGET)}
+          >
+            <Badge label="All" tone={tag === undefined ? 'accent' : 'neutral'} />
           </Pressable>
           {tags.map((entry) => (
             <Pressable
               key={entry.tag}
               onPress={() => setTag(tag === entry.tag ? undefined : entry.tag)}
-              accessibilityRole="button"
-              accessibilityState={{ selected: tag === entry.tag }}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: tag === entry.tag, selected: tag === entry.tag }}
+              accessibilityLabel={`${entry.tag}, ${entry.count} conversation${entry.count === 1 ? '' : 's'}`}
+              hitSlop={verticalSlop(MIN_TARGET)}
             >
               <Badge
                 label={`${entry.tag} · ${entry.count}`}
@@ -442,19 +538,26 @@ export default function Home() {
     </View>
   );
 
+  // "Nothing matched" is a verdict, and it must not be delivered while the message
+  // pass is still running: the list filter resolves synchronously, the SQLite search
+  // does not, so for a few hundred milliseconds every query looked like a miss.
   const empty = query.trim() ? (
-    <Empty
-      title="Nothing matched"
-      body={
-        searching
-          ? 'Still searching the messages…'
-          : 'No conversation title, preview, model or tag contains that, and no message does either.'
-      }
-    />
+    searching ? (
+      <View style={{ alignItems: 'center', paddingVertical: t.spacing.xxl }}>
+        <Spinner label="Searching messages" />
+      </View>
+    ) : (
+      <Empty
+        title="Nothing matched"
+        body="No conversation title, preview, model or tag contains that, and no message does either."
+      />
+    )
   ) : tag ? (
     <Empty title="No conversations with that tag" body="Tap All to clear the filter." />
   ) : listLoading ? (
     <Spinner label="Loading" />
+  ) : showArchived ? (
+    <Empty title="Nothing archived" body="Archive a conversation from its ⋯ menu to keep it without keeping it here." />
   ) : (
     <Empty title="No conversations yet" body="Start one below." />
   );

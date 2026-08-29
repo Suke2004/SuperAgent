@@ -6,9 +6,20 @@
  * and controls that can explain *why* they are disabled rather than just going grey.
  * That last part is a hard requirement from the spec, so `disabledReason` is a
  * first-class prop on the controls rather than something each screen invents.
+ *
+ * Two cross-cutting rules are enforced here rather than per screen, because there
+ * are ~26 focus stops and every one of them used to be invisible:
+ *
+ * - **Every focusable control draws a ring.** {@link useFocusRing} plus
+ *   {@link focusRingStyle} put an `outline` on the control while it holds focus.
+ *   An outline is used rather than a border because it does not participate in
+ *   layout: a focused button must not reflow the row it sits in.
+ * - **Every target clears 48dp.** Android's minimum. Where the visual box is
+ *   deliberately smaller than that (dense settings rows, `sm` buttons), the
+ *   difference is made up with `hitSlop` rather than by inflating the design.
  */
 
-import { forwardRef } from 'react';
+import { forwardRef, useCallback, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ActivityIndicator,
@@ -20,10 +31,78 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import type { StyleProp, TextInputProps, TextStyle, ViewStyle } from 'react-native';
+import type { StyleProp, TextInputProps, TextStyle, ViewProps, ViewStyle } from 'react-native';
 
 import { useTheme } from '@/theme';
 import type { Palette, Theme } from '@/theme';
+
+/* -------------------------------------------------------------------------- */
+/* Focus                                                                       */
+/* -------------------------------------------------------------------------- */
+
+/** Android's minimum touch target, in dp. */
+export const MIN_TARGET = 48;
+
+/**
+ * The style a control wears while it holds focus.
+ *
+ * `outline*` rather than `border*` on purpose: RN 0.76+ implements the W3C outline
+ * box, which is painted outside the layout box. A border would change the control's
+ * size on focus and shove its neighbours sideways.
+ */
+export function focusRingStyle(t: Theme, focused: boolean): ViewStyle {
+  if (!focused) return {};
+  return {
+    outlineStyle: 'solid',
+    outlineColor: t.colors.focus,
+    outlineWidth: 2,
+    outlineOffset: 2,
+  };
+}
+
+/**
+ * Focus state for one control.
+ *
+ * Spread `handlers` onto the `Pressable`/`TextInput` and merge `ring` into its
+ * style. Kept as a hook rather than a wrapper component so the primitives below
+ * stay single elements — several of them are measured or positioned by callers.
+ */
+export function useFocusRing(): {
+  focused: boolean;
+  ring: ViewStyle;
+  handlers: { onFocus: () => void; onBlur: () => void };
+} {
+  const t = useTheme();
+  const [focused, setFocused] = useState(false);
+  const onFocus = useCallback(() => setFocused(true), []);
+  const onBlur = useCallback(() => setFocused(false), []);
+  const ring = useMemo(() => focusRingStyle(t, focused), [focused, t]);
+  return { focused, ring, handlers: { onFocus, onBlur } };
+}
+
+/**
+ * Pad a target out to 48dp when its visual box is smaller.
+ *
+ * Returns `undefined` when no padding is needed, so it can be spread straight into
+ * a `hitSlop` prop without a conditional at every call site.
+ */
+export function targetSlop(width: number, height: number): { top: number; bottom: number; left: number; right: number } | undefined {
+  const vertical = Math.max(0, Math.ceil((MIN_TARGET - height) / 2));
+  const horizontal = Math.max(0, Math.ceil((MIN_TARGET - width) / 2));
+  if (vertical === 0 && horizontal === 0) return undefined;
+  return { top: vertical, bottom: vertical, left: horizontal, right: horizontal };
+}
+
+/**
+ * Vertical-only version of {@link targetSlop}.
+ *
+ * Used for controls that are already wide enough, or that sit next to a sibling
+ * close enough that horizontal slop would steal its taps.
+ */
+export function verticalSlop(height: number): { top: number; bottom: number } | undefined {
+  const vertical = Math.max(0, Math.ceil((MIN_TARGET - height) / 2));
+  return vertical === 0 ? undefined : { top: vertical, bottom: vertical };
+}
 
 /* -------------------------------------------------------------------------- */
 /* Layout                                                                      */
@@ -122,12 +201,21 @@ export function Inline({
   align = 'center',
   children,
   style,
+  accessibilityRole,
+  accessibilityLabel,
 }: {
   gap?: keyof Theme['spacing'];
   wrap?: boolean;
   align?: ViewStyle['alignItems'];
   children: ReactNode;
   style?: StyleProp<ViewStyle>;
+  /**
+   * A row of chips is often a control, not just a layout — a tag filter is a
+   * `radiogroup`. Forwarded so callers do not have to add a wrapper `View` whose
+   * only job is to carry the role.
+   */
+  accessibilityRole?: ViewProps['accessibilityRole'];
+  accessibilityLabel?: string;
 }) {
   const t = useTheme();
   return (
@@ -136,6 +224,8 @@ export function Inline({
         { flexDirection: 'row', gap: t.spacing[gap], alignItems: align, flexWrap: wrap ? 'wrap' : 'nowrap' },
         style,
       ]}
+      {...(accessibilityRole ? { accessibilityRole } : {})}
+      {...(accessibilityLabel ? { accessibilityLabel } : {})}
     >
       {children}
     </View>
@@ -172,6 +262,8 @@ export function Body({
   numberOfLines,
   style,
   selectable,
+  accessibilityLabel,
+  live,
 }: {
   children: ReactNode;
   tone?: TextTone;
@@ -181,6 +273,15 @@ export function Body({
   numberOfLines?: number;
   style?: StyleProp<TextStyle>;
   selectable?: boolean;
+  /**
+   * Spoken text, when the rendered text is compressed for the eye.
+   *
+   * `2.4s to first byte` and `1.2k tok` are readable glances and poor sentences;
+   * this is where the sentence goes.
+   */
+  accessibilityLabel?: string;
+  /** Announce the content when it changes. For values that update in place. */
+  live?: boolean;
 }) {
   const t = useTheme();
   const base: TextStyle = {
@@ -191,7 +292,13 @@ export function Body({
   if (weight !== undefined) base.fontWeight = weight;
   if (mono) base.fontFamily = t.monoFont;
   return (
-    <Text style={[base, style]} numberOfLines={numberOfLines} selectable={selectable}>
+    <Text
+      style={[base, style]}
+      numberOfLines={numberOfLines}
+      selectable={selectable}
+      {...(accessibilityLabel ? { accessibilityLabel } : {})}
+      {...(live ? { accessibilityLiveRegion: 'polite' as const } : {})}
+    >
       {children}
     </Text>
   );
@@ -215,11 +322,14 @@ export function Note({
   children,
   mono,
   selectable = true,
+  /** Announce the content when it appears or changes. For errors and status. */
+  live,
 }: {
   tone?: 'info' | 'warning' | 'danger' | 'success';
   children: ReactNode;
   mono?: boolean;
   selectable?: boolean;
+  live?: boolean;
 }) {
   const t = useTheme();
   const map = {
@@ -246,7 +356,7 @@ export function Note({
         paddingHorizontal: t.spacing.md,
       }}
     >
-      <Text style={textStyle} selectable={selectable}>
+      <Text style={textStyle} selectable={selectable} {...(live ? { accessibilityLiveRegion: 'polite' as const } : {})}>
         {children}
       </Text>
     </View>
@@ -256,9 +366,18 @@ export function Note({
 export function Badge({
   label,
   tone = 'neutral',
+  /**
+   * What a screen reader should say instead of `label`.
+   *
+   * Badges are sometimes glyphs — `●` for "showing", `›` for "more" — and a glyph
+   * read aloud is noise. Passing the words here keeps the dense visual and gives
+   * TalkBack something to say.
+   */
+  srLabel,
 }: {
   label: string;
   tone?: 'neutral' | 'accent' | 'success' | 'warning' | 'danger';
+  srLabel?: string;
 }) {
   const t = useTheme();
   const map = {
@@ -273,12 +392,17 @@ export function Badge({
       style={{
         backgroundColor: map.bg,
         borderRadius: t.radius.sm,
-        paddingHorizontal: 6,
-        paddingVertical: 2,
+        paddingHorizontal: t.spacing.sm,
+        paddingVertical: 3,
         alignSelf: 'flex-start',
       }}
     >
-      <Text style={{ color: map.fg, fontSize: t.fontSize.xs, fontWeight: '700' }}>{label}</Text>
+      <Text
+        style={{ color: map.fg, fontSize: t.fontSize.xs, fontWeight: '700' }}
+        {...(srLabel !== undefined ? { accessibilityLabel: srLabel } : {})}
+      >
+        {label}
+      </Text>
     </View>
   );
 }
@@ -313,6 +437,7 @@ export function Button({
 }) {
   const t = useTheme();
   const off = Boolean(disabled) || Boolean(busy);
+  const { ring, handlers } = useFocusRing();
 
   const palette: Record<ButtonVariant, { bg: string; fg: string; border: string }> = {
     primary: { bg: t.colors.accent, fg: t.colors.accentText, border: t.colors.accent },
@@ -323,6 +448,11 @@ export function Button({
   const c = palette[variant];
   const vPad = size === 'sm' ? t.spacing.xs + 2 : t.spacing.sm + 2;
   const hPad = size === 'sm' ? t.spacing.md : t.spacing.lg;
+  // `md` reaches 48dp on its own. `sm` exists for dense toolbars, so it keeps the
+  // smaller box and makes up the remainder in hitSlop. Vertical only: horizontal
+  // slop would overlap the neighbouring button in an `Inline`.
+  const minHeight = size === 'sm' ? 40 : MIN_TARGET;
+  const slop = verticalSlop(minHeight);
 
   return (
     <View style={[full ? { alignSelf: 'stretch' } : { alignSelf: 'flex-start' }, style]}>
@@ -332,25 +462,36 @@ export function Button({
         accessibilityHint={off ? disabledReason : undefined}
         disabled={off}
         onPress={onPress}
-        style={({ pressed }) => ({
-          backgroundColor: c.bg,
-          borderColor: c.border,
-          borderWidth: variant === 'ghost' ? 0 : StyleSheet.hairlineWidth,
-          borderRadius: t.radius.md,
-          paddingVertical: vPad,
-          paddingHorizontal: hPad,
-          opacity: off ? 0.45 : pressed ? 0.75 : 1,
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: t.spacing.sm,
-        })}
+        {...handlers}
+        {...(slop ? { hitSlop: slop } : {})}
+        style={({ pressed }) => [
+          {
+            backgroundColor: c.bg,
+            borderColor: c.border,
+            borderWidth: variant === 'ghost' ? 0 : StyleSheet.hairlineWidth,
+            borderRadius: t.radius.md,
+            paddingVertical: vPad,
+            paddingHorizontal: hPad,
+            minHeight,
+            // 0.6, not 0.45: a disabled control still has to be readable, because
+            // the label is how the user works out what they are missing.
+            opacity: off ? 0.6 : pressed ? 0.75 : 1,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: t.spacing.sm,
+          },
+          ring,
+        ]}
       >
         {busy ? <ActivityIndicator size="small" color={c.fg} /> : null}
         <Text style={{ color: c.fg, fontSize: t.fontSize.md, fontWeight: '600' }}>{label}</Text>
       </Pressable>
       {off && disabledReason ? (
-        <Text style={{ color: t.colors.textFaint, fontSize: t.fontSize.xs, marginTop: 4, maxWidth: 320 }}>
+        <Text
+          accessibilityLiveRegion="polite"
+          style={{ color: t.colors.textFaint, fontSize: t.fontSize.xs, marginTop: 4, maxWidth: 320 }}
+        >
           {disabledReason}
         </Text>
       ) : null}
@@ -369,6 +510,12 @@ export function Row({
   destructive,
   disabled,
   first,
+  accessibilityLabel,
+  accessibilityHint,
+  selected,
+  role = 'button',
+  checked,
+  expanded,
 }: {
   label: string;
   value?: string;
@@ -380,9 +527,29 @@ export function Row({
   disabled?: boolean;
   /** Suppresses the top divider for the first row in a Section. */
   first?: boolean;
+  /**
+   * Overrides the announced name when the visible `label` is not the whole story —
+   * a row labelled "Status" whose meaning is in its `value`, for instance.
+   */
+  accessibilityLabel?: string;
+  accessibilityHint?: string;
+  /** Set on rows that act as a choice in a list, so the state is announced. */
+  selected?: boolean;
+  /**
+   * Announced role, when "button" is wrong.
+   *
+   * `SwitchRow` makes the whole row the target, so the row *is* the switch; a row
+   * that expands to reveal detail is a `summary`/`button` with `expanded` state.
+   */
+  role?: 'button' | 'switch' | 'checkbox' | 'radio';
+  /** Checked state for `role: 'switch' | 'checkbox' | 'radio'`. */
+  checked?: boolean;
+  /** Expanded state for a row that reveals detail in place. */
+  expanded?: boolean;
 }) {
   const t = useTheme();
   const labelColor = destructive ? t.colors.danger : t.colors.text;
+  const { ring, handlers } = useFocusRing();
 
   const content = (
     <View
@@ -392,13 +559,14 @@ export function Row({
         gap: t.spacing.md,
         paddingHorizontal: t.spacing.md,
         paddingVertical: t.spacing.md,
-        opacity: disabled ? 0.45 : 1,
+        minHeight: MIN_TARGET,
+        opacity: disabled ? 0.6 : 1,
       }}
     >
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={{ color: labelColor, fontSize: t.fontSize.md }}>{label}</Text>
         {subtitle ? (
-          <Text style={{ color: t.colors.textFaint, fontSize: t.fontSize.xs, lineHeight: 16 }}>{subtitle}</Text>
+          <Text style={{ color: t.colors.textFaint, fontSize: t.fontSize.xs, lineHeight: 17 }}>{subtitle}</Text>
         ) : null}
       </View>
       {value ? (
@@ -410,7 +578,15 @@ export function Row({
         </Text>
       ) : null}
       {right}
-      {chevron ? <Text style={{ color: t.colors.textFaint, fontSize: t.fontSize.lg }}>›</Text> : null}
+      {chevron ? (
+        <Text
+          accessibilityElementsHidden
+          importantForAccessibility="no"
+          style={{ color: t.colors.textFaint, fontSize: t.fontSize.lg }}
+        >
+          ›
+        </Text>
+      ) : null}
     </View>
   );
 
@@ -419,9 +595,20 @@ export function Row({
       {first ? null : <Divider />}
       {onPress && !disabled ? (
         <Pressable
-          accessibilityRole="button"
+          accessibilityRole={role}
+          accessibilityLabel={accessibilityLabel ?? label}
+          {...(accessibilityHint !== undefined ? { accessibilityHint } : {})}
+          accessibilityState={{
+            ...(selected !== undefined ? { selected } : {}),
+            ...(checked !== undefined ? { checked } : {}),
+            ...(expanded !== undefined ? { expanded } : {}),
+          }}
           onPress={onPress}
-          style={({ pressed }) => ({ backgroundColor: pressed ? t.colors.surfaceActive : 'transparent' })}
+          {...handlers}
+          style={({ pressed }) => [
+            { backgroundColor: pressed ? t.colors.surfaceActive : 'transparent' },
+            ring,
+          ]}
         >
           {content}
         </Pressable>
@@ -457,11 +644,23 @@ export function SwitchRow({
       {...(sub !== undefined ? { subtitle: sub } : {})}
       first={first}
       disabled={disabled}
+      // The whole row toggles. A bare Switch is ~50×30dp, which is under the 48dp
+      // minimum on the axis that matters, and "tap the label" is what people try
+      // first anyway.
+      {...(disabled ? {} : { onPress: () => onChange(!value) })}
+      role="switch"
+      checked={value}
+      accessibilityLabel={label}
+      {...(sub !== undefined ? { accessibilityHint: sub } : {})}
       right={
         <Switch
           value={value}
           onValueChange={onChange}
           disabled={disabled}
+          // The row already announces the name and state, so the inner Switch is
+          // hidden from the accessibility tree rather than duplicating it.
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
           trackColor={{ false: t.colors.surfaceActive, true: t.colors.accentSoft }}
           thumbColor={value ? t.colors.accent : t.colors.borderStrong}
         />
@@ -483,19 +682,25 @@ export function Segmented<T extends string>({
   value,
   onChange,
   size = 'md',
+  label,
 }: {
   options: readonly SegmentOption<T>[];
   value: T;
   onChange: (next: T) => void;
   size?: 'sm' | 'md';
+  /** Announced as the group's name, so "Anthropic, selected" has a subject. */
+  label?: string;
 }) {
   const t = useTheme();
   const active = options.find((o) => o.value === value);
-  const vPad = size === 'sm' ? 4 : t.spacing.sm;
+  const minHeight = size === 'sm' ? 40 : MIN_TARGET;
+  const slop = verticalSlop(minHeight);
 
   return (
     <View style={{ gap: t.spacing.xs }}>
       <View
+        accessibilityRole="radiogroup"
+        {...(label !== undefined ? { accessibilityLabel: label } : {})}
         style={{
           flexDirection: 'row',
           backgroundColor: t.colors.surfaceAlt,
@@ -505,44 +710,87 @@ export function Segmented<T extends string>({
           borderColor: t.colors.border,
         }}
       >
-        {options.map((option) => {
-          const selected = option.value === value;
-          const off = option.disabledReason !== undefined;
-          return (
-            <Pressable
-              key={option.value}
-              accessibilityRole="button"
-              accessibilityState={{ selected, disabled: off }}
-              accessibilityHint={option.disabledReason}
-              disabled={off}
-              onPress={() => onChange(option.value)}
-              style={{
-                flex: 1,
-                paddingVertical: vPad,
-                borderRadius: t.radius.sm,
-                backgroundColor: selected ? t.colors.bg : 'transparent',
-                opacity: off ? 0.4 : 1,
-                alignItems: 'center',
-              }}
-            >
-              <Text
-                numberOfLines={1}
-                style={{
-                  color: selected ? t.colors.text : t.colors.textDim,
-                  fontSize: size === 'sm' ? t.fontSize.xs : t.fontSize.sm,
-                  fontWeight: selected ? '700' : '500',
-                }}
-              >
-                {option.label}
-              </Text>
-            </Pressable>
-          );
-        })}
+        {options.map((option) => (
+          <Segment
+            key={option.value}
+            option={option}
+            selected={option.value === value}
+            size={size}
+            minHeight={minHeight}
+            {...(slop ? { slop } : {})}
+            onPress={() => onChange(option.value)}
+          />
+        ))}
       </View>
       {active?.disabledReason ? (
-        <Text style={{ color: t.colors.warning, fontSize: t.fontSize.xs }}>{active.disabledReason}</Text>
+        <Text accessibilityLiveRegion="polite" style={{ color: t.colors.warning, fontSize: t.fontSize.xs }}>
+          {active.disabledReason}
+        </Text>
       ) : null}
     </View>
+  );
+}
+
+/**
+ * One segment.
+ *
+ * Extracted so each segment can own its focus state — a hook cannot be called
+ * inside the `options.map` callback.
+ */
+function Segment<T extends string>({
+  option,
+  selected,
+  size,
+  minHeight,
+  slop,
+  onPress,
+}: {
+  option: SegmentOption<T>;
+  selected: boolean;
+  size: 'sm' | 'md';
+  minHeight: number;
+  slop?: { top: number; bottom: number };
+  onPress: () => void;
+}) {
+  const t = useTheme();
+  const { ring, handlers } = useFocusRing();
+  const off = option.disabledReason !== undefined;
+
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityLabel={option.label}
+      accessibilityState={{ selected, checked: selected, disabled: off }}
+      accessibilityHint={option.disabledReason}
+      disabled={off}
+      onPress={onPress}
+      {...handlers}
+      {...(slop ? { hitSlop: slop } : {})}
+      style={[
+        {
+          flex: 1,
+          paddingVertical: size === 'sm' ? t.spacing.sm : t.spacing.md,
+          minHeight,
+          borderRadius: t.radius.sm,
+          backgroundColor: selected ? t.colors.bg : 'transparent',
+          opacity: off ? 0.6 : 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        ring,
+      ]}
+    >
+      <Text
+        numberOfLines={1}
+        style={{
+          color: selected ? t.colors.text : t.colors.textDim,
+          fontSize: size === 'sm' ? t.fontSize.xs : t.fontSize.sm,
+          fontWeight: selected ? '700' : '500',
+        }}
+      >
+        {option.label}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -558,10 +806,11 @@ export interface FieldProps extends Omit<TextInputProps, 'style' | 'onChangeText
 }
 
 export const Field = forwardRef<TextInput, FieldProps>(function Field(
-  { label, value, onChangeText, hint, error, mono, rows, right, ...rest },
+  { label, value, onChangeText, hint, error, mono, rows, right, onFocus, onBlur, ...rest },
   ref,
 ) {
   const t = useTheme();
+  const { focused, ring, handlers } = useFocusRing();
   const multiline = (rows ?? 1) > 1;
   const inputStyle: TextStyle = {
     flex: 1,
@@ -569,10 +818,16 @@ export const Field = forwardRef<TextInput, FieldProps>(function Field(
     fontSize: mono ? t.fontSize.code : t.fontSize.md,
     paddingVertical: t.spacing.sm,
     paddingHorizontal: t.spacing.md,
-    minHeight: multiline ? (rows ?? 3) * 20 + 16 : 42,
+    minHeight: multiline ? (rows ?? 3) * 20 + 16 : MIN_TARGET,
     textAlignVertical: multiline ? 'top' : 'center',
   };
   if (mono) inputStyle.fontFamily = t.monoFont;
+
+  // The label is a visual sibling of the input, which means it is not the input's
+  // *name* — a screen reader lands on an unnamed edit box. There is no
+  // `labelledby` in React Native, so the name is set explicitly, and the hint (or
+  // the validation message, which matters more) becomes the accessibility hint.
+  const describedBy = error ?? hint;
 
   return (
     <View style={{ gap: t.spacing.xs }}>
@@ -580,14 +835,17 @@ export const Field = forwardRef<TextInput, FieldProps>(function Field(
         <Text style={{ color: t.colors.textDim, fontSize: t.fontSize.sm, fontWeight: '600' }}>{label}</Text>
       ) : null}
       <View
-        style={{
-          flexDirection: 'row',
-          alignItems: multiline ? 'flex-start' : 'center',
-          backgroundColor: t.colors.surfaceAlt,
-          borderRadius: t.radius.md,
-          borderWidth: StyleSheet.hairlineWidth,
-          borderColor: error ? t.colors.danger : t.colors.border,
-        }}
+        style={[
+          {
+            flexDirection: 'row',
+            alignItems: multiline ? 'flex-start' : 'center',
+            backgroundColor: t.colors.surfaceAlt,
+            borderRadius: t.radius.md,
+            borderWidth: error || focused ? 1 : StyleSheet.hairlineWidth,
+            borderColor: error ? t.colors.danger : focused ? t.colors.focus : t.colors.border,
+          },
+          ring,
+        ]}
       >
         <TextInput
           ref={ref}
@@ -597,15 +855,30 @@ export const Field = forwardRef<TextInput, FieldProps>(function Field(
           placeholderTextColor={t.colors.textFaint}
           autoCapitalize="none"
           autoCorrect={false}
+          {...(label !== undefined ? { accessibilityLabel: label } : {})}
+          {...(describedBy !== undefined ? { accessibilityHint: describedBy } : {})}
+          // React Native has no `invalid` accessibility state, so the failure is
+          // carried by the hint (read on focus) and by the live-region message
+          // below, which fires the moment validation changes.
           style={inputStyle}
           {...rest}
+          onFocus={(event) => {
+            handlers.onFocus();
+            onFocus?.(event);
+          }}
+          onBlur={(event) => {
+            handlers.onBlur();
+            onBlur?.(event);
+          }}
         />
         {right ? <View style={{ paddingRight: t.spacing.sm }}>{right}</View> : null}
       </View>
       {error ? (
-        <Text style={{ color: t.colors.danger, fontSize: t.fontSize.xs }}>{error}</Text>
+        <Text accessibilityLiveRegion="polite" style={{ color: t.colors.danger, fontSize: t.fontSize.xs }}>
+          {error}
+        </Text>
       ) : hint ? (
-        <Text style={{ color: t.colors.textFaint, fontSize: t.fontSize.xs, lineHeight: 16 }}>{hint}</Text>
+        <Text style={{ color: t.colors.textFaint, fontSize: t.fontSize.xs, lineHeight: 17 }}>{hint}</Text>
       ) : null}
     </View>
   );
@@ -637,26 +910,6 @@ export function Stepper({
 }) {
   const t = useTheme();
   const clamp = (n: number) => Math.min(max, Math.max(min, n));
-  const btn = (text: string, next: number, off: boolean) => (
-    <Pressable
-      accessibilityRole="button"
-      disabled={off}
-      onPress={() => onChange(clamp(next))}
-      style={({ pressed }) => ({
-        width: 36,
-        height: 32,
-        borderRadius: t.radius.sm,
-        alignItems: 'center',
-        justifyContent: 'center',
-        backgroundColor: pressed ? t.colors.surfaceActive : t.colors.surfaceAlt,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderColor: t.colors.border,
-        opacity: off ? 0.35 : 1,
-      })}
-    >
-      <Text style={{ color: t.colors.text, fontSize: t.fontSize.lg }}>{text}</Text>
-    </Pressable>
-  );
 
   return (
     <Row
@@ -667,15 +920,75 @@ export function Stepper({
       right={
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.spacing.sm }}>
           <Text
+            accessibilityLiveRegion="polite"
             style={{ color: t.colors.textDim, fontSize: t.fontSize.sm, minWidth: 62, textAlign: 'right' }}
           >
             {format ? format(value) : String(value)}
           </Text>
-          {btn('−', value - step, Boolean(disabled) || value <= min)}
-          {btn('+', value + step, Boolean(disabled) || value >= max)}
+          <StepButton
+            glyph="−"
+            srLabel={`Decrease ${label}`}
+            disabled={Boolean(disabled) || value <= min}
+            onPress={() => onChange(clamp(value - step))}
+          />
+          <StepButton
+            glyph="+"
+            srLabel={`Increase ${label}`}
+            disabled={Boolean(disabled) || value >= max}
+            onPress={() => onChange(clamp(value + step))}
+          />
         </View>
       }
     />
+  );
+}
+
+/**
+ * One end of a {@link Stepper}.
+ *
+ * `−` and `+` read as nothing useful aloud, so each carries the name of what it
+ * changes. The box stays 40×36 to keep settings rows dense; hitSlop takes it past
+ * 48dp on both axes.
+ */
+function StepButton({
+  glyph,
+  srLabel,
+  disabled,
+  onPress,
+}: {
+  glyph: string;
+  srLabel: string;
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  const t = useTheme();
+  const { ring, handlers } = useFocusRing();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={srLabel}
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+      {...handlers}
+      style={({ pressed }) => [
+        {
+          width: 40,
+          height: 36,
+          borderRadius: t.radius.sm,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: pressed ? t.colors.surfaceActive : t.colors.surfaceAlt,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: t.colors.border,
+          opacity: disabled ? 0.6 : 1,
+        },
+        ring,
+      ]}
+    >
+      <Text style={{ color: t.colors.text, fontSize: t.fontSize.lg }}>{glyph}</Text>
+    </Pressable>
   );
 }
 

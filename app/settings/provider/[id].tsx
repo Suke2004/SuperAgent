@@ -27,12 +27,12 @@ import {
   Segmented,
   Stack,
 } from '@/components/ui';
-import { MissingKeyError, invalidateTransports, resolveTransport } from '@/lib/gateway';
-import { log } from '@/lib/log';
-import { useModels } from '@/stores/models';
+import { countConversationsForProfile, reassignProfile } from '@/db/conversations';
+import { invalidateTransports } from '@/lib/gateway';
+import { verifyProfile } from '@/lib/verify';
+import { useChat } from '@/stores/chat';
 import { KNOWN_CLAUDE_MODELS, useProviders } from '@/stores/providers';
-import { describeBaseUrlIssue, describeNormalisation, summariseFailure } from '@/transports';
-import { GatewayError } from '@/transports/errors';
+import { describeBaseUrlIssue, describeNormalisation } from '@/transports';
 import type { ConnectionTestResult, TransportKind } from '@/transports/types';
 import { useTheme } from '@/theme';
 
@@ -47,13 +47,13 @@ export default function ProviderDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
 
   const profile = useProviders((s) => s.profiles.find((p) => p.id === id));
+  const profiles = useProviders((s) => s.profiles);
   const activeId = useProviders((s) => s.activeId);
   const updateProfile = useProviders((s) => s.updateProfile);
   const setActive = useProviders((s) => s.setActive);
   const saveKey = useProviders((s) => s.saveKey);
   const clearKey = useProviders((s) => s.clearKey);
-  const recordTest = useProviders((s) => s.recordTest);
-  const ingest = useModels((s) => s.ingest);
+  const removeProfile = useProviders((s) => s.removeProfile);
 
   const [name, setName] = useState(profile?.name ?? '');
   const [baseUrl, setBaseUrl] = useState(profile?.baseUrl ?? '');
@@ -66,6 +66,8 @@ export default function ProviderDetail() {
 
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<ConnectionTestResult | null>(null);
+  /** Set when discovery corrected `defaultModel`, so the change is not silent. */
+  const [adopted, setAdopted] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   // Abort an in-flight test if the screen goes away, so a slow gateway can't call
@@ -111,43 +113,88 @@ export default function ProviderDetail() {
     if (!profile) return;
     commit();
     setResult(null);
+    setAdopted(null);
     setTesting(true);
     const controller = new AbortController();
     abortRef.current = controller;
 
     try {
-      const { transport } = await resolveTransport({ profileId: profile.id });
-      const outcome = await transport.testConnection(controller.signal);
+      // Recording the outcome, reachability, model discovery and the corrected
+      // default all live in `verifyProfile` — the setup form runs the same test and
+      // has to have the same consequences. What is left here is what is on screen.
+      const { outcome, adopted: next } = await verifyProfile(profile.id, controller.signal);
       setResult(outcome);
-      recordTest(profile.id, outcome.ok, outcome.summary);
-      if (outcome.models?.length) {
-        const { added } = ingest(profile.id, outcome.models);
-        if (added.length) {
-          log.info('models', `Discovered ${added.length} new model(s) on ${profile.name}.`);
-        }
+      // Mirror an adopted model into the field, or the screen keeps showing the one
+      // the gateway refused.
+      if (next) {
+        setDefaultModel(next);
+        setAdopted(next);
       }
-    } catch (error) {
-      // A missing key is a real, reportable outcome — not a reason to grey the
-      // button out. Report it in the same shape as a gateway failure.
-      const gatewayError = error instanceof GatewayError ? error : GatewayError.wrap(error);
-      const outcome: ConnectionTestResult = {
-        ok: false,
-        steps: [
-          {
-            label: error instanceof MissingKeyError ? 'API key' : 'Request',
-            status: 'failed',
-            detail: gatewayError.message,
-            error: gatewayError,
-          },
-        ],
-        summary: summariseFailure(gatewayError),
-      };
-      setResult(outcome);
-      recordTest(profile.id, false, outcome.summary);
     } finally {
       setTesting(false);
       abortRef.current = null;
     }
+  }
+
+  /**
+   * Deleting this profile, with the conversations that depend on it counted first.
+   *
+   * `profile_id` on a conversation is a plain column, so deleting a profile leaves
+   * every conversation that used it pointing at nothing. The chat screen refuses to
+   * send in that state and says why, but "your 14 conversations can no longer be
+   * sent to" is not something to discover one conversation at a time — so the count
+   * is in the dialog, and moving them somewhere is offered before the delete.
+   */
+  function confirmRemove() {
+    if (!profile) return;
+    const target = profile;
+    if (profiles.length <= 1) {
+      Alert.alert('Keep at least one', 'Deleting the last profile would leave nothing to send requests to.');
+      return;
+    }
+
+    void countConversationsForProfile(target.id).then((count) => {
+      // Where orphans would go: the active profile if it is not the one being
+      // deleted, otherwise the first other one. There is always one, because a
+      // single-profile delete was refused above.
+      const fallback =
+        profiles.find((p) => p.id !== target.id && p.id === activeId) ?? profiles.find((p) => p.id !== target.id);
+
+      const detail =
+        count === 0
+          ? `Delete "${target.name}" and its stored API key?`
+          : `Delete "${target.name}" and its stored API key?\n\n${count} conversation${count === 1 ? '' : 's'} ` +
+            `use${count === 1 ? 's' : ''} this profile. ${count === 1 ? 'It' : 'They'} will keep every message, ` +
+            `but nothing can be sent from ${count === 1 ? 'it' : 'them'} until ${count === 1 ? 'it is' : 'they are'} ` +
+            `pointed at another profile.`;
+
+      const done = (): void => {
+        removeProfile(target.id);
+        invalidateTransports(target.id);
+        void useChat.getState().loadList(useChat.getState().listOptions);
+        router.replace('/settings/providers');
+      };
+
+      const buttons: Parameters<typeof Alert.alert>[2] = [{ text: 'Cancel', style: 'cancel' }];
+      if (count > 0 && fallback) {
+        buttons.push({
+          text: `Move to ${fallback.name}`,
+          onPress: () => {
+            void reassignProfile(target.id, fallback.id).then((moved) => {
+              done();
+              Alert.alert(
+                'Moved',
+                `${moved} conversation${moved === 1 ? '' : 's'} now use ${fallback.name}. Their saved model may not ` +
+                  `be served there — the model picker will say so.`,
+              );
+            });
+          },
+        });
+      }
+      buttons.push({ text: count > 0 ? 'Delete anyway' : 'Delete', style: 'destructive', onPress: done });
+
+      Alert.alert('Delete profile', detail, buttons);
+    });
   }
 
   async function onSaveKey() {
@@ -339,6 +386,11 @@ export default function ProviderDetail() {
           {result ? (
             <Stack gap="sm">
               <Note tone={result.ok ? 'success' : 'danger'}>{result.summary}</Note>
+              {adopted ? (
+                <Note tone="warning">
+                  {`This gateway does not serve the model this profile was set to, so the default model is now ${adopted}. Change it above if you wanted a different one.`}
+                </Note>
+              ) : null}
               {result.steps.map((step, index) => (
                 <View
                   key={`${step.label}-${index}`}
@@ -378,6 +430,11 @@ export default function ProviderDetail() {
                   ) : null}
                 </View>
               ))}
+              {result.probedModel ? (
+                <Body size="sm" tone="dim">
+                  {`Probed with ${result.probedModel}.`}
+                </Body>
+              ) : null}
               {result.models?.length ? (
                 <Body size="sm" tone="dim">
                   {`${result.models.length} model(s) discovered and merged into the registry.`}
@@ -398,6 +455,18 @@ export default function ProviderDetail() {
             setActive(profile.id);
             invalidateTransports();
           }}
+        />
+      </Section>
+
+      {/* Deletion lives here, on the profile it deletes, rather than in a fourth
+          list of every profile on the previous screen. */}
+      <Section title="Danger zone">
+        <Row
+          first
+          destructive
+          label="Delete this profile"
+          subtitle="Also removes the API key from the Android Keystore"
+          onPress={confirmRemove}
         />
       </Section>
     </Screen>

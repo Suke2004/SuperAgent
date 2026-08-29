@@ -90,6 +90,7 @@ export function Composer({
   baseTokens,
   window: contextWindow,
   reserved,
+  calibration,
 }: {
   value: string;
   onChangeText: (text: string) => void;
@@ -104,6 +105,11 @@ export function Composer({
   window: number;
   /** Room held back for the reply — `max_tokens` for this conversation. */
   reserved: number;
+  /**
+   * Correction learned from this model's own reported prompt counts, and how many
+   * turns it is based on. `1` and `0` mean nothing has been measured yet.
+   */
+  calibration?: { factor: number; samples: number };
 }) {
   const t = useTheme();
   const liveCount = useSettings((s) => s.liveTokenCount);
@@ -111,14 +117,16 @@ export function Composer({
   const strategy = useSettings((s) => s.contextStrategy);
   const sendOnEnter = useSettings((s) => s.sendOnEnter);
 
+  const factor = calibration?.factor ?? 1;
+
   const draftTokens = useMemo(
-    () => (liveCount && value ? estimateTextTokens(value) : 0),
-    [liveCount, value],
+    () => (liveCount && value ? Math.round(estimateTextTokens(value) * factor) : 0),
+    [liveCount, value, factor],
   );
 
   const pressure = useMemo(
-    () => contextPressure(baseTokens + draftTokens, contextWindow, reserved, warnAt),
-    [baseTokens, draftTokens, contextWindow, reserved, warnAt],
+    () => contextPressure(Math.round(baseTokens * factor) + draftTokens, contextWindow, reserved, warnAt),
+    [baseTokens, factor, draftTokens, contextWindow, reserved, warnAt],
   );
 
   const empty = value.trim().length === 0;
@@ -141,9 +149,27 @@ export function Composer({
 
       {liveCount ? (
         <Inline gap="sm">
-          <Body size="xs" tone="faint" mono>
-            {`${formatTokens(pressure.used)} / ${formatTokens(pressure.window)}`}
+          <Body
+            size="xs"
+            tone="faint"
+            mono
+            // The `~` is doing real work: this is an estimate, and the gauge below is
+            // only as good as it. Once the model's own reported counts have corrected
+            // it, say so — an uncalibrated 70% and a calibrated 70% deserve different
+            // amounts of trust, and the user is the one who has to decide how much.
+            accessibilityLabel={
+              calibration && calibration.samples > 0
+                ? `About ${formatTokens(pressure.used)} of ${formatTokens(pressure.window)} usable context, calibrated against ${calibration.samples} reported ${calibration.samples === 1 ? 'turn' : 'turns'}`
+                : `About ${formatTokens(pressure.used)} of ${formatTokens(pressure.window)} usable context, estimated`
+            }
+          >
+            {`~${formatTokens(pressure.used)} / ${formatTokens(pressure.window)}`}
           </Body>
+          {calibration && calibration.samples > 0 ? (
+            <Body size="xs" tone="faint">
+              {`calibrated ×${calibration.factor.toFixed(2)}`}
+            </Body>
+          ) : null}
           {draftTokens > 0 ? (
             <Body size="xs" tone="faint" mono>
               {`+${formatTokens(draftTokens)} draft`}
