@@ -195,6 +195,41 @@ describe('buildAnthropicBody', () => {
   it('merges extraBody last', () => {
     expect(buildAnthropicBody(request({ extraBody: { max_tokens: 9 } }), false).max_tokens).toBe(9);
   });
+
+  describe('cache_control', () => {
+    const EPHEMERAL = { type: 'ephemeral' };
+
+    it('sends an unmarked system prompt as a plain string', () => {
+      expect(buildAnthropicBody(request({ system: 'Be brief.' }), false).system).toBe('Be brief.');
+    });
+
+    it('promotes a marked system prompt to block form, the only shape with room for a marker', () => {
+      const body = buildAnthropicBody(request({ system: 'Be brief.', cache: { system: true } }), false);
+      expect(body.system).toEqual([{ type: 'text', text: 'Be brief.', cache_control: EPHEMERAL }]);
+    });
+
+    it('marks only the last tool definition, since breakpoints cover everything before them', () => {
+      const tools = [
+        { name: 'a', description: 'A.', inputSchema: { type: 'object' } },
+        { name: 'b', description: 'B.', inputSchema: { type: 'object' } },
+      ];
+      const body = buildAnthropicBody(request({ tools, cache: { tools: true } }), false);
+      const sent = body.tools as Record<string, unknown>[];
+      expect(sent[0]?.cache_control).toBeUndefined();
+      expect(sent[1]?.cache_control).toEqual(EPHEMERAL);
+    });
+
+    it('leaves the manifest unmarked when caching was not planned', () => {
+      const tools = [{ name: 'a', description: 'A.', inputSchema: { type: 'object' } }];
+      const body = buildAnthropicBody(request({ tools }), false);
+      expect((body.tools as Record<string, unknown>[])[0]?.cache_control).toBeUndefined();
+    });
+
+    it('marks nothing anywhere when the request carries no cache plan', () => {
+      const body = buildAnthropicBody(request({ system: 'Be brief.' }), false);
+      expect(JSON.stringify(body)).not.toContain('cache_control');
+    });
+  });
 });
 
 describe('toAnthropicMessages', () => {
@@ -305,6 +340,71 @@ describe('toAnthropicMessages', () => {
       { role: 'user', content: [{ type: 'text', text: 'c' }] },
     ]);
     expect(messages.map((message) => message.role)).toEqual(['user', 'assistant', 'user']);
+  });
+
+  describe('cacheThrough', () => {
+    const EPHEMERAL = { type: 'ephemeral' };
+
+    const chat = (count: number) =>
+      Array.from({ length: count }, (_, i) => ({
+        role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+        content: [{ type: 'text' as const, text: `m${i}` }],
+      }));
+
+    /** Indices of wire messages whose last block carries a marker. */
+    const marked = (messages: Record<string, unknown>[]): number[] =>
+      messages.flatMap((message, index) => {
+        const content = message.content as Record<string, unknown>[];
+        return content[content.length - 1]?.cache_control ? [index] : [];
+      });
+
+    it('marks nothing when no breakpoint was asked for', () => {
+      expect(marked(toAnthropicMessages(chat(4)))).toEqual([]);
+    });
+
+    it('marks the last block of the requested message, and only that one', () => {
+      const messages = toAnthropicMessages(chat(4), 1);
+      expect(marked(messages)).toEqual([1]);
+      expect((messages[1]?.content as Record<string, unknown>[])[0]?.cache_control).toEqual(EPHEMERAL);
+    });
+
+    it('steps back rather than over-covering when the requested message merged with the tail', () => {
+      // Unified indices 1 and 2 are both user turns, so they become one wire
+      // message ending at 2. Asking to cache through 1 must not mark it: that
+      // would cache the message the user just typed, writing a fresh entry every
+      // turn and reading one that is always an exchange short.
+      const unified = [
+        { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'earlier' }] },
+        { role: 'user' as const, content: [{ type: 'tool_result' as const, toolUseId: 'a', content: 'ok' }] },
+        { role: 'user' as const, content: [{ type: 'text' as const, text: 'and now?' }] },
+      ];
+      const messages = toAnthropicMessages(unified, 1);
+      expect(messages).toHaveLength(2);
+      expect(marked(messages)).toEqual([0]);
+    });
+
+    it('marks nothing when no wire message ends inside the requested prefix', () => {
+      const unified = [
+        { role: 'user' as const, content: [{ type: 'text' as const, text: 'a' }] },
+        { role: 'user' as const, content: [{ type: 'text' as const, text: 'b' }] },
+      ];
+      // The single merged wire message ends at index 1, past the request.
+      expect(marked(toAnthropicMessages(unified, 0))).toEqual([]);
+    });
+
+    it('marks the last wire message when asked to cache through the end', () => {
+      const messages = chat(4);
+      expect(marked(toAnthropicMessages(messages, messages.length - 1))).toEqual([3]);
+    });
+
+    it('ignores an index past the end of the conversation', () => {
+      expect(marked(toAnthropicMessages(chat(2), 99))).toEqual([1]);
+    });
+
+    it('reaches the marker through buildAnthropicBody', () => {
+      const body = buildAnthropicBody(request({ messages: chat(4), cache: { historyThrough: 1 } }), false);
+      expect(marked(body.messages as Record<string, unknown>[])).toEqual([1]);
+    });
   });
 });
 

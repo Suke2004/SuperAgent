@@ -41,8 +41,20 @@ import {
 } from '@/components/ui';
 import { buildRows, filterConversations, parseTags, tagCounts } from '@/chat/list';
 import type { ListRow } from '@/chat/list';
+import { deliverExport, gatherExport } from '@/chat/deliver';
+import type { DeliveryMethod } from '@/chat/deliver';
+import type { ExportFormat } from '@/chat/export';
+import {
+  archiveEffect,
+  plural,
+  pruneSelection,
+  selectAll,
+  summariseSelection,
+  toggleSelected,
+  describeDelete,
+} from '@/chat/selection';
 import { searchMessages } from '@/db/conversations';
-import type { Conversation, SearchHit } from '@/db/conversations';
+import type { Conversation, SearchHit, TagMode } from '@/db/conversations';
 import { splitOnMatches } from '@/db/search';
 import { streamingAvailable } from '@/lib/gateway';
 import { whenBucket } from '@/lib/when';
@@ -95,16 +107,51 @@ function Highlighted({ text, query }: { text: string; query: string }) {
   );
 }
 
+/**
+ * The selection affordance, drawn rather than imported.
+ *
+ * A filled ring with a tick, sized to read at a glance from the same distance as
+ * the row's own glyph. It replaces the mark in the leading slot rather than
+ * sitting beside it: two circles a few pixels apart, one meaningful and one
+ * decorative, is the version of this that gets mis-tapped.
+ */
+function SelectMark({ on }: { on: boolean }) {
+  const t = useTheme();
+  return (
+    <View
+      style={{
+        width: 20,
+        height: 20,
+        borderRadius: 10,
+        marginTop: 2,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderWidth: 1.5,
+        borderColor: on ? t.colors.accentFill : t.colors.border,
+        backgroundColor: on ? t.colors.accentFill : 'transparent',
+      }}
+    >
+      {on ? (
+        <Text style={{ color: t.colors.bg, fontSize: 12, lineHeight: 14, fontWeight: '900' }}>✓</Text>
+      ) : null}
+    </View>
+  );
+}
+
 function ConversationRow({
   conversation,
   now,
   query,
+  selecting,
+  selected,
   onOpen,
   onMenu,
 }: {
   conversation: Conversation;
   now: number;
   query: string;
+  selecting: boolean;
+  selected: boolean;
   onOpen: () => void;
   onMenu: () => void;
 }) {
@@ -116,21 +163,39 @@ function ConversationRow({
       onPress={onOpen}
       onLongPress={onMenu}
       delayLongPress={300}
-      accessibilityRole="button"
-      accessibilityHint="Long press for options"
+      // A checkbox while selecting, a button otherwise. The role is what a screen
+      // reader uses to decide whether to announce a checked state at all, so
+      // leaving it as `button` in selection mode makes the mode invisible to
+      // anyone not looking at the ring.
+      accessibilityRole={selecting ? 'checkbox' : 'button'}
+      {...(selecting ? { accessibilityState: { checked: selected } } : {})}
+      accessibilityHint={selecting ? 'Toggles selection' : 'Long press for options, or to select'}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'flex-start',
         paddingHorizontal: t.spacing.md,
         paddingVertical: t.spacing.md,
         gap: t.spacing.md,
-        backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
+        backgroundColor: pressed
+          ? t.colors.surfaceActive
+          : selected
+            ? t.colors.surface
+            : 'transparent',
       })}
     >
       {/* The mark rather than initials: two letters cut out of a title said less than
           the title itself, which is on the next line anyway. Pinned rows carry it in
           clay, which is the only thing on this screen that needs picking out. */}
-      <Glyph size={18} color={conversation.pinned ? t.colors.accentFill : t.colors.textFaint} style={{ marginTop: 3 }} />
+      {selecting ? (
+        <SelectMark on={selected} />
+      ) : (
+        <Glyph
+          size={18}
+          color={conversation.pinned ? t.colors.accentFill : t.colors.textFaint}
+          style={{ marginTop: 3 }}
+        />
+      )}
+
 
       <View style={{ flex: 1, gap: 3, minWidth: 0 }}>
         <Inline gap="sm">
@@ -184,8 +249,10 @@ export default function Home() {
 
   const conversations = useChat((s) => s.conversations);
   const listLoading = useChat((s) => s.listLoading);
+  const listLoadingMore = useChat((s) => s.listLoadingMore);
   const listError = useChat((s) => s.listError);
   const loadList = useChat((s) => s.loadList);
+  const loadMore = useChat((s) => s.loadMore);
 
   const profiles = useProviders((s) => s.profiles);
   const activeId = useProviders((s) => s.activeId);
@@ -208,6 +275,27 @@ export default function Home() {
    * archiving is that the row is gone from the place you were looking.
    */
   const [showArchived, setShowArchived] = useState(false);
+  /**
+   * The bulk-select state: a set of ids, and `null` for "not selecting".
+   *
+   * `null` rather than an empty set, because "selection mode with nothing
+   * selected" is a real and necessary state — it is what you are in immediately
+   * after tapping Select — and collapsing it into "not selecting" would make the
+   * mode exit itself the moment you deselected the last row.
+   */
+  const [selected, setSelected] = useState<Set<string> | null>(null);
+  const [bulkSheet, setBulkSheet] = useState(false);
+  const [bulkTag, setBulkTag] = useState<TagMode | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  /**
+   * The conversations an open export sheet would write, and their titles.
+   *
+   * Ids are captured when the sheet opens rather than read when a format is
+   * tapped, so a list that reloads underneath — the focus effect does that — can
+   * not change what the sheet is about to export halfway through the decision.
+   */
+  const [exportFor, setExportFor] = useState<{ ids: string[]; label: string } | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
 
   const active = profiles.find((p) => p.id === activeId) ?? profiles[0];
 
@@ -274,6 +362,32 @@ export default function Home() {
   );
 
   const tags = useMemo(() => tagCounts(conversations), [conversations]);
+
+  const selecting = selected !== null;
+
+  /**
+   * The selection as it applies to what is actually on screen.
+   *
+   * Derived rather than pruned in an effect. The raw `selected` set can hold ids
+   * that have since left the list — archiving a selection is the ordinary way
+   * that happens — and every consumer below reads this instead, so a bulk action
+   * can never reach a conversation the user cannot see. Pruning in an effect
+   * would do the same thing one render later, which is one render in which the
+   * count on the button and the rows it would touch disagree.
+   */
+  const picked = useMemo(
+    () => (selected === null ? null : pruneSelection(selected, filtered)),
+    [selected, filtered],
+  );
+  const summary = useMemo(
+    () => summariseSelection(picked ?? new Set<string>(), filtered),
+    [picked, filtered],
+  );
+
+  const exitSelection = useCallback(() => setSelected(null), []);
+
+  /** What the rows read from the closure rather than from `data`. See `extraData`. */
+  const rowContext = useMemo(() => ({ now, picked }), [now, picked]);
 
   const rows = useMemo<Row[]>(() => {
     const out: Row[] = buildRows(filtered, now);
@@ -371,8 +485,220 @@ export default function Home() {
         : 'Keeps every message; takes the row out of this list.',
       onPress: () => void archive(conversation, !conversation.archived),
     },
+    {
+      label: 'Export…',
+      subtitle: 'Markdown or JSON. Attachments and keys are left out.',
+      onPress: () => setExportFor({ ids: [conversation.id], label: conversation.title }),
+    },
+    {
+      label: 'Select…',
+      subtitle: 'Act on several conversations at once.',
+      onPress: () => setSelected(new Set([conversation.id])),
+    },
     { label: 'Delete', destructive: true, onPress: () => confirmDelete(conversation) },
   ];
+
+  /* ---------------------------------------------------------------- bulk ---- */
+
+  /**
+   * Runs a bulk action and reports what it did, not what was asked.
+   *
+   * The count comes back from the store, which gets it from the statement's own
+   * `changes` — so a selection that was partly stale reports the truth rather
+   * than the size of the selection. Selection mode is left on success only: a
+   * failed action leaves the selection intact so it can be retried without
+   * re-tapping twelve rows.
+   */
+  const runBulk = async (label: string, action: () => Promise<number>): Promise<void> => {
+    if (bulkBusy) return;
+    setBulkBusy(true);
+    try {
+      const affected = await action();
+      exitSelection();
+      Alert.alert(label, affected === 0 ? 'Nothing changed.' : `${plural(affected, 'conversation')}.`);
+    } catch (error) {
+      Alert.alert(`Could not ${label.toLowerCase()}`, error instanceof Error ? error.message : String(error));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const bulkArchive = (archived: boolean): void => {
+    const ids = [...(picked ?? [])];
+    const { changing, already } = archiveEffect(summary, archived);
+    if (changing === 0) {
+      Alert.alert(
+        archived ? 'Already archived' : 'Not archived',
+        `All ${plural(already, 'selected conversation')} ${already === 1 ? 'is' : 'are'} already ${archived ? 'in the archive' : 'in the list'}.`,
+      );
+      return;
+    }
+    void runBulk(archived ? 'Archived' : 'Restored', () => useChat.getState().archiveMany(ids, archived));
+  };
+
+  /**
+   * Bulk delete, behind the same offer the single-row version makes.
+   *
+   * Archiving is the first option because it is the reversible version of the
+   * same wish, and at this scale that matters more than it does for one row: a
+   * mis-tapped bulk delete destroys a selection nobody can reconstruct. The body
+   * text comes from `describeDelete`, which names the message count — twelve rows
+   * can be four thousand messages, and the row count alone systematically
+   * understates what is about to go.
+   */
+  const bulkDelete = (): void => {
+    const ids = [...(picked ?? [])];
+    if (!ids.length) return;
+    Alert.alert(`Delete ${plural(summary.count, 'conversation')}?`, describeDelete(summary), [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Archive instead',
+        onPress: () => void runBulk('Archived', () => useChat.getState().archiveMany(ids, true)),
+      },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => void runBulk('Deleted', () => useChat.getState().removeMany(ids)),
+      },
+    ]);
+  };
+
+  /* -------------------------------------------------------------- export ---- */
+
+  /**
+   * Builds an export and hands it to the clipboard or the share sheet.
+   *
+   * The confirmation names the size, because sharing a transcript sends it
+   * somewhere the app cannot see afterwards and "12 conversations, 480 kB" is the
+   * last chance to notice that is more than was intended. It also states that
+   * keys were not included — a promise the exporter's own gating test enforces
+   * rather than one this dialog is trusted on.
+   */
+  const runExport = async (format: ExportFormat, method: DeliveryMethod): Promise<void> => {
+    const target = exportFor;
+    if (!target || exportBusy) return;
+    setExportBusy(true);
+    try {
+      const inputs = await gatherExport(target.ids);
+      if (!inputs.length) {
+        Alert.alert('Nothing to export', 'Those conversations are no longer here.');
+        return;
+      }
+      const outcome = await deliverExport(inputs, format, method);
+      setExportFor(null);
+      exitSelection();
+      if (!outcome.delivered) return;
+      const kb = Math.max(1, Math.round(outcome.result.bytes / 1024));
+      Alert.alert(
+        outcome.method === 'copy' ? 'Copied' : 'Shared',
+        [
+          `${plural(inputs.length, 'conversation')}, ${plural(outcome.result.messages, 'message')}, ${kb} kB.`,
+          outcome.fellBackToClipboard
+            ? 'Too large for the share sheet, so it went to the clipboard instead — paste it wherever you meant to send it.'
+            : null,
+          'Attachments and API keys are not included.',
+        ]
+          .filter(Boolean)
+          .join(' '),
+      );
+    } catch (error) {
+      Alert.alert('Could not export', error instanceof Error ? error.message : String(error));
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const exportActions: SheetAction[] = [
+    {
+      label: 'Share as Markdown',
+      subtitle: 'Readable anywhere. Best for sending to a person.',
+      onPress: () => void runExport('markdown', 'share'),
+    },
+    {
+      label: 'Copy as Markdown',
+      subtitle: 'Straight to the clipboard.',
+      onPress: () => void runExport('markdown', 'copy'),
+    },
+    {
+      label: 'Share as JSON',
+      subtitle: 'Every field, for another program to read.',
+      onPress: () => void runExport('json', 'share'),
+    },
+    {
+      label: 'Copy as JSON',
+      subtitle: 'Straight to the clipboard.',
+      onPress: () => void runExport('json', 'copy'),
+    },
+  ];
+
+  const bulkActions: SheetAction[] = [
+    {
+      label: showArchived ? 'Restore from the archive' : 'Archive',
+      subtitle: `${plural(archiveEffect(summary, !showArchived).changing, 'conversation')} would move. Nothing is deleted.`,
+      onPress: () => bulkArchive(!showArchived),
+    },
+    { label: 'Add tags', subtitle: 'Keeps the tags they already have.', onPress: () => setBulkTag('add') },
+    {
+      label: 'Replace tags',
+      subtitle: summary.tags.length ? `Discards: ${summary.tags.join(', ')}` : 'They carry no tags yet.',
+      onPress: () => setBulkTag('replace'),
+    },
+    ...(summary.tags.length
+      ? [{ label: 'Remove tags', subtitle: summary.tags.join(', '), onPress: () => setBulkTag('remove') } as SheetAction]
+      : []),
+    {
+      label: 'Export…',
+      subtitle: `${plural(summary.messages, 'message')} across ${plural(summary.count, 'conversation')}.`,
+      onPress: () => setExportFor({ ids: [...(picked ?? [])], label: `${plural(summary.count, 'conversation')}` }),
+    },
+    {
+      label: `Delete ${plural(summary.count, 'conversation')}`,
+      subtitle: `${plural(summary.messages, 'message')} would go with them.`,
+      destructive: true,
+      onPress: bulkDelete,
+    },
+  ];
+
+  /**
+   * The bar that replaces the New-conversation footer while selecting.
+   *
+   * It replaces rather than joins it: starting a new conversation mid-selection
+   * would navigate away and silently discard the selection, so the button is not
+   * offered. Cancel is on the left, where a back gesture would be.
+   */
+  const selectionBar = (
+    <View style={{ gap: t.spacing.sm }}>
+      <Inline gap="sm">
+        <Body weight="600" style={{ flex: 1 }}>
+          {summary.count === 0 ? 'Select conversations' : `${plural(summary.count, 'selected', 'selected')}`}
+        </Body>
+        {summary.count ? (
+          <Body size="xs" tone="faint" mono>
+            {plural(summary.messages, 'message')}
+          </Body>
+        ) : null}
+      </Inline>
+      <Inline gap="sm">
+        <Button label="Cancel" size="sm" onPress={exitSelection} />
+        <Button
+          label={summary.count === filtered.length && filtered.length > 0 ? 'None' : 'All'}
+          size="sm"
+          onPress={() =>
+            setSelected(summary.count === filtered.length && filtered.length > 0 ? new Set() : selectAll(filtered))
+          }
+        />
+        <View style={{ flex: 1 }} />
+        <Button
+          label={bulkBusy ? 'Working…' : 'Actions'}
+          variant="primary"
+          size="sm"
+          busy={bulkBusy}
+          disabled={summary.count === 0}
+          onPress={() => setBulkSheet(true)}
+        />
+      </Inline>
+    </View>
+  );
 
   const renderItem = useCallback(
     ({ item }: { item: Row }) => {
@@ -428,12 +754,26 @@ export default function Home() {
           conversation={item.conversation}
           now={now}
           query={query}
-          onOpen={() => openConversation(item.conversation.id)}
-          onMenu={() => setMenuFor(item.conversation)}
+          selecting={selecting}
+          selected={picked?.has(item.conversation.id) ?? false}
+          // While selecting, a tap toggles instead of opening. Long press *enters*
+          // selection with that row already picked, which is the gesture every
+          // list on this platform uses and the reason there is no permanent
+          // Select button competing with the search field.
+          onOpen={() =>
+            selecting
+              ? setSelected((current) => toggleSelected(current ?? new Set(), item.conversation.id))
+              : openConversation(item.conversation.id)
+          }
+          onMenu={() =>
+            selecting
+              ? setSelected((current) => toggleSelected(current ?? new Set(), item.conversation.id))
+              : setMenuFor(item.conversation)
+          }
         />
       );
     },
-    [t, now, query, openConversation],
+    [t, now, query, openConversation, selecting, picked],
   );
 
   const banner = (
@@ -609,30 +949,54 @@ export default function Home() {
 
       <FlashList
         data={rows}
-        extraData={now}
+        // Rows read `now` and the selection from the closure, neither of which is
+        // part of `data`, so FlashList has to be told they changed or recycled
+        // cells keep the previous tick's timestamp and the previous selection's
+        // ticks. Cheap to build and only changes when one of them actually does.
+        extraData={rowContext}
         keyExtractor={(item) => item.key}
         getItemType={(item) => item.kind}
         renderItem={renderItem}
         ListHeaderComponent={banner}
         ListEmptyComponent={<View style={{ padding: t.spacing.md }}>{empty}</View>}
         ItemSeparatorComponent={() => <Divider />}
+        ListFooterComponent={
+          listLoadingMore ? (
+            <View style={{ paddingVertical: t.spacing.lg }}>
+              <Spinner label="Loading more" />
+            </View>
+          ) : null
+        }
+        // Paging is off while a search is running: the query filters what is
+        // already loaded, so fetching the next page mid-search would append rows
+        // the filter immediately hides and make the spinner look stuck.
+        onEndReached={query.trim() ? undefined : () => void loadMore()}
+        onEndReachedThreshold={0.5}
         contentContainerStyle={{ paddingBottom: t.spacing.lg }}
         keyboardShouldPersistTaps="handled"
       />
 
       <Divider />
       <View style={{ paddingHorizontal: t.spacing.md, paddingTop: t.spacing.md, paddingBottom: Math.max(t.spacing.md, insets.bottom), gap: t.spacing.sm }}>
-        <Button
-          label={starting ? 'Starting…' : 'New conversation'}
-          variant="primary"
-          full
-          busy={starting}
-          onPress={() => void startConversation()}
-        />
-        <Inline gap="md">
-          <Button label="Settings" size="sm" onPress={() => router.push('/settings')} />
-          <Button label="Debug log" size="sm" onPress={() => router.push('/settings/debug')} />
-        </Inline>
+        {selecting ? (
+          selectionBar
+        ) : (
+          <>
+            <Button
+              label={starting ? 'Starting…' : 'New conversation'}
+              variant="primary"
+              full
+              busy={starting}
+              onPress={() => void startConversation()}
+            />
+            <Inline gap="md">
+              <Button label="Settings" size="sm" onPress={() => router.push('/settings')} />
+              <Button label="Debug log" size="sm" onPress={() => router.push('/settings/debug')} />
+              <View style={{ flex: 1 }} />
+              <Button label="Select" size="sm" disabled={!filtered.length} onPress={() => setSelected(new Set())} />
+            </Inline>
+          </>
+        )}
       </View>
 
       <Sheet
@@ -642,6 +1006,53 @@ export default function Home() {
         actions={menuFor ? menuActions(menuFor) : []}
         onClose={() => setMenuFor(null)}
       />
+
+      <Sheet
+        visible={bulkSheet}
+        title={`${plural(summary.count, 'conversation')} selected`}
+        subtitle={`${plural(summary.messages, 'message')}${summary.pinned ? ` · ${summary.pinned} pinned` : ''}`}
+        actions={bulkActions}
+        onClose={() => setBulkSheet(false)}
+      />
+
+      <Sheet
+        visible={exportFor !== null}
+        title={exportBusy ? 'Exporting…' : 'Export'}
+        subtitle={
+          exportFor
+            ? `${exportFor.label}. Reasoning and attachment contents are left out; API keys never appear.`
+            : ''
+        }
+        actions={exportActions}
+        onClose={() => setExportFor(null)}
+      />
+
+      {bulkTag ? (
+        <PromptSheet
+          visible
+          title={bulkTag === 'add' ? 'Add tags' : bulkTag === 'remove' ? 'Remove tags' : 'Replace tags'}
+          // Pre-filled only for `replace`, and with what the selection currently
+          // carries, so the destructive mode opens showing what it is about to
+          // discard. Pre-filling `add` or `remove` would suggest those tags are
+          // what you want to add or take away, which is the opposite of the truth.
+          initial={bulkTag === 'replace' ? summary.tags.join(', ') : ''}
+          allowEmpty={bulkTag === 'replace'}
+          hint={
+            bulkTag === 'replace'
+              ? `Comma separated. Replaces every tag on ${plural(summary.count, 'conversation')} — leave empty to clear them.`
+              : 'Comma separated.'
+          }
+          placeholder="work, drafts"
+          onCancel={() => setBulkTag(null)}
+          onConfirm={(text) => {
+            const ids = [...(picked ?? [])];
+            const mode = bulkTag;
+            setBulkTag(null);
+            setBulkSheet(false);
+            void runBulk('Retagged', () => useChat.getState().tagMany(ids, parseTags(text), mode));
+          }}
+        />
+      ) : null}
 
       {prompt ? (
         <PromptSheet

@@ -448,12 +448,18 @@ export function buildAnthropicBody(request: ChatRequest, streaming: boolean): Re
   const { params, reasoning } = request;
   const body: Record<string, unknown> = {
     model: request.model,
-    messages: toAnthropicMessages(request.messages),
+    messages: toAnthropicMessages(request.messages, request.cache?.historyThrough),
     max_tokens: params.maxTokens,
     stream: streaming,
   };
 
-  if (request.system?.trim()) body.system = request.system;
+  // A marked system prompt has to be sent in block form: `cache_control` is a
+  // property of a content block, and the string form has nowhere to put it.
+  if (request.system?.trim()) {
+    body.system = request.cache?.system
+      ? [{ type: 'text', text: request.system, cache_control: EPHEMERAL }]
+      : request.system;
+  }
 
   const budget = resolveThinkingBudget(reasoning, params.maxTokens);
   if (budget !== null) {
@@ -477,11 +483,18 @@ export function buildAnthropicBody(request: ChatRequest, streaming: boolean): Re
   // equivalent. Dropped here; the UI greys them out on this transport.
 
   if (request.tools?.length) {
-    body.tools = request.tools.map((tool) => ({
+    const tools = request.tools.map((tool) => ({
       name: tool.name,
       description: tool.description,
       input_schema: tool.inputSchema,
     }));
+    // One marker on the last definition caches the whole manifest: breakpoints are
+    // cumulative over everything before them in the prefix, and `tools` is first.
+    if (request.cache?.tools) {
+      const last = tools[tools.length - 1];
+      if (last) Object.assign(last, { cache_control: EPHEMERAL });
+    }
+    body.tools = tools;
     if (request.toolChoice) {
       const choice = toAnthropicToolChoice(request.toolChoice);
       if (choice) body.tool_choice = choice;
@@ -490,6 +503,9 @@ export function buildAnthropicBody(request: ChatRequest, streaming: boolean): Re
 
   return { ...body, ...(request.extraBody ?? {}) };
 }
+
+/** The only cache type the API offers. Named so the three call sites cannot drift. */
+const EPHEMERAL = { type: 'ephemeral' } as const;
 
 function toAnthropicToolChoice(choice: NonNullable<ChatRequest['toolChoice']>): unknown | null {
   switch (choice.type) {
@@ -514,11 +530,22 @@ function toAnthropicToolChoice(choice: NonNullable<ChatRequest['toolChoice']>): 
  * Adjacent same-role turns are merged, because tool results arrive as separate
  * unified messages but the API expects them batched into one user turn, and
  * strictly alternating roles.
+ *
+ * `cacheThrough` is an index into `messages`: the last block of the wire message
+ * that ends at or before it gets a `cache_control` marker. "Ends at or before" is
+ * the load-bearing part — if the requested message merged with a later one, marking
+ * that wire message would cache more of the tail than the planner intended, and on
+ * the common path that tail is the message the user just typed, so the entry would
+ * be written fresh every turn and never read. Stepping back to the previous wire
+ * message caches slightly less and caches it repeatedly, which is the whole point.
  */
-export function toAnthropicMessages(messages: UnifiedMessage[]): Record<string, unknown>[] {
-  const out: { role: string; content: Record<string, unknown>[] }[] = [];
+export function toAnthropicMessages(
+  messages: UnifiedMessage[],
+  cacheThrough?: number,
+): Record<string, unknown>[] {
+  const out: { role: string; content: Record<string, unknown>[]; through: number }[] = [];
 
-  for (const message of messages) {
+  for (const [index, message] of messages.entries()) {
     const blocks = message.content.flatMap(toAnthropicBlocks);
     // The API rejects an empty content array, so a message that translated to
     // nothing is skipped rather than sent hollow.
@@ -527,9 +554,21 @@ export function toAnthropicMessages(messages: UnifiedMessage[]): Record<string, 
     const last = out[out.length - 1];
     if (last && last.role === message.role) {
       last.content.push(...blocks);
+      last.through = index;
     } else {
-      out.push({ role: message.role, content: blocks });
+      out.push({ role: message.role, content: blocks, through: index });
     }
+  }
+
+  if (cacheThrough !== undefined) {
+    // The last wire message wholly inside the requested prefix.
+    let target: (typeof out)[number] | undefined;
+    for (const candidate of out) {
+      if (candidate.through <= cacheThrough) target = candidate;
+      else break;
+    }
+    const block = target?.content[target.content.length - 1];
+    if (block) Object.assign(block, { cache_control: EPHEMERAL });
   }
 
   return out.map((message) => ({ role: message.role, content: message.content }));
