@@ -1,0 +1,109 @@
+# Android APK build, by hand or by tag.
+#
+# Distribution for this project is a direct APK — no Play Store, no OTA on merge
+# (see docs/06_Eng_Plan.md §9.3 for what CI deliberately does not do). So this
+# workflow's whole job is: prove the commit passes the gates, then hand EAS a
+# build request and get out of the way.
+name: Build APK
+
+on:
+  # The manual path is the normal one. `profile` is a choice rather than a string
+  # so a typo cannot silently produce a `preview` build labelled `production`.
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: EAS build profile
+        type: choice
+        options: [preview, production]
+        default: preview
+  push:
+    tags: ['v*']
+
+# No `cancel-in-progress` here, unlike ci.yml. A superseded test run is waste;
+# a cancelled build step can leave a queued EAS build with nothing watching it.
+concurrency:
+  group: build-apk-${{ github.ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # 45 rather than CI's 15: `--no-wait` means we do not sit through the EAS
+    # build, but `pnpm install` on a cold cache plus the gates plus EAS project
+    # resolution has a much wider spread than the test job.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same ordering constraint as ci.yml: pnpm must exist before setup-node,
+      # because `cache: pnpm` shells out to `pnpm store path`. Pinned to the
+      # version the project is actually developed and locked against.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.1
+
+      # Node 24 for the same load-bearing reason as ci.yml: the database tests
+      # import `node:sqlite`, which needs --experimental-sqlite on Node 22, so a
+      # Node 22 runner fails the gate below for a reason that has nothing to do
+      # with the commit being built.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # `EXPO_TOKEN` is the only secret this workflow needs, and it is an Expo
+      # account token — not a signing key. The Android keystore stays in EAS. No
+      # gateway API key ever enters CI, because CI has no reason to talk to a
+      # gateway; that is a property worth keeping true by not adding secrets here.
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # The gates run again, and this is the point of the workflow as much as the
+      # build is. They already ran on the pull request, but a tag can point at any
+      # commit — including one that never saw CI, or a commit that was force-pushed
+      # over. Re-running costs under a minute; shipping an unverified APK is a
+      # release you cannot recall from the devices that installed it.
+      #
+      # `--coverage` is included so the `coverageThreshold` floor in jest.config.js
+      # applies to a tagged build too. A release is the worst moment to discover
+      # that the only enforcement of that floor was on a branch nobody tagged.
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test -- --ci --coverage --coverageReporters=text-summary
+
+      # `inputs.profile` is empty on a tag push, so the fallback is what selects
+      # the profile there. `preview` deliberately: a tag says "this commit is a
+      # candidate", and promoting a candidate to `production` stays a human act.
+      #
+      # `--no-wait` so a queued EAS build does not burn Actions minutes waiting on
+      # a remote worker. The build is tracked in the Expo dashboard and the APK is
+      # fetched by whoever is releasing — see docs/07_Deployment.md.
+      - name: EAS build
+        run: eas build --platform android --profile ${{ inputs.profile || 'preview' }} --non-interactive --no-wait
+
+      - name: Where to find the build
+        run: |
+          {
+            echo "## APK build submitted"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Profile | \`${{ inputs.profile || 'preview' }}\` |"
+            echo "| Ref | \`${{ github.ref_name }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo
+            echo "Submitted with \`--no-wait\`, so this job finishing does **not** mean the APK exists."
+            echo "Track it at <https://expo.dev/accounts>, then follow \`docs/07_Deployment.md\` to install and verify on a physical device."
+          } >> "$GITHUB_STEP_SUMMARY"

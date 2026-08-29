@@ -49,8 +49,14 @@ import {
   SwitchRow,
 } from '@/components/ui';
 import { hasBlockingIssue, mergeParams, validateConfig } from '@/chat/request';
+import { replyReservation } from '@/chat/budget';
+import { useMemory } from '@/stores/memory';
 import type { ConfigIssue } from '@/chat/request';
 import { parseTags } from '@/chat/list';
+import { deliverExport } from '@/chat/deliver';
+import type { DeliveryMethod } from '@/chat/deliver';
+import type { ExportFormat } from '@/chat/export';
+import { plural } from '@/chat/selection';
 import { toUnifiedMessages } from '@/db/conversations';
 import type { StoredMessage } from '@/db/conversations';
 import { estimateMessagesTokens, estimateTextTokens, formatCost, formatTokens, estimateCost } from '@/lib/tokens';
@@ -91,6 +97,7 @@ export default function ChatScreen() {
   const profiles = useProviders((s) => s.profiles);
   const entries = useModels((s) => s.entries);
   const showThinkingByDefault = useSettings((s) => s.showThinkingByDefault);
+  const memoryEnabled = useSettings((s) => s.memoryEnabled);
 
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -101,6 +108,8 @@ export default function ChatScreen() {
   const [profileMenu, setProfileMenu] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [costFor, setCostFor] = useState<StoredMessage | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
   const [configDraft, setConfigDraft] = useState<{
     maxTokens: string;
     temperature: string;
@@ -150,17 +159,29 @@ export default function ChatScreen() {
   const systemPrompt = conversation?.systemPrompt;
   const summaryText = conversation?.config.summary?.text;
 
+  // Everything the next request carries besides the draft. The memory block is in
+  // here because it is in the request: a gauge that ignores it reads low by
+  // exactly the size of the notes, which on a well-used install is thousands of
+  // tokens and precisely when the warning matters.
+  const memoryChars = useMemory((s) => (memoryEnabled ? (s.promptBlock().text?.length ?? 0) : 0));
+
   const baseTokens = useMemo(() => {
     const history = estimateMessagesTokens(toUnifiedMessages(messages));
     const system = systemPrompt ? estimateTextTokens(systemPrompt) : 0;
     const summary = summaryText ? estimateTextTokens(summaryText) : 0;
-    return history + system + summary;
-  }, [messages, systemPrompt, summaryText]);
+    // From the character count rather than the text: the block is re-rendered on
+    // every memory change and this memo should not depend on its identity.
+    const memory = Math.ceil(memoryChars / 3.8);
+    return history + system + summary + memory;
+  }, [messages, systemPrompt, summaryText, memoryChars]);
 
+  // `replyReservation`, not `maxTokens + budgetTokens`. Thinking is billed inside
+  // the output allowance, so adding it made the gauge claim a reasoning
+  // conversation was far closer to the window than it was.
   const reserved = useMemo(() => {
     if (!capabilities || !conversation) return 0;
     const params = mergeParams(capabilities, conversation.config.params);
-    return params.maxTokens + (conversation.config.reasoning?.budgetTokens ?? 0);
+    return replyReservation(params, conversation.config.reasoning);
   }, [capabilities, conversation]);
 
   const onAction = useCallback((message: StoredMessage) => setMenuFor(message), []);
@@ -428,6 +449,78 @@ export default function ChatScreen() {
     ];
   };
 
+  /**
+   * Export this conversation, from what is on screen rather than from SQLite.
+   *
+   * The messages are already in the store and are the ones the user is looking
+   * at, so re-reading them would only introduce a way for the artefact to differ
+   * from the transcript it claims to be.
+   */
+  const runExport = async (format: ExportFormat, method: DeliveryMethod, includeThinking = false): Promise<void> => {
+    if (exportBusy || !conversation) return;
+    setExportBusy(true);
+    try {
+      const outcome = await deliverExport([{ conversation, messages }], format, method, { includeThinking });
+      setExportOpen(false);
+      if (!outcome.delivered) return;
+      const kb = Math.max(1, Math.round(outcome.result.bytes / 1024));
+      Alert.alert(
+        outcome.method === 'copy' ? 'Copied' : 'Shared',
+        [
+          `${plural(outcome.result.messages, 'message')}, ${kb} kB.`,
+          outcome.fellBackToClipboard
+            ? 'Too large for the share sheet, so it went to the clipboard instead.'
+            : null,
+          includeThinking ? 'Reasoning included.' : null,
+          'Attachments and API keys are not included.',
+        ]
+          .filter(Boolean)
+          .join(' '),
+      );
+    } catch (error) {
+      Alert.alert('Could not export', error instanceof Error ? error.message : String(error));
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const hasThinking = messages.some((message) => message.content.some((block) => block.type === 'thinking'));
+
+  const exportActions: SheetAction[] = [
+    {
+      label: 'Share as Markdown',
+      subtitle: 'Readable anywhere. Best for sending to a person.',
+      onPress: () => void runExport('markdown', 'share'),
+    },
+    {
+      label: 'Copy as Markdown',
+      subtitle: 'Straight to the clipboard.',
+      onPress: () => void runExport('markdown', 'copy'),
+    },
+    ...(hasThinking
+      ? [
+          {
+            label: 'Copy as Markdown, with reasoning',
+            // Named as an exception rather than offered as a checkbox, because
+            // reasoning restates private context in blunter terms than the reply
+            // does and a checkbox is a thing people leave ticked.
+            subtitle: 'Includes the model’s scratch work, labelled.',
+            onPress: () => void runExport('markdown', 'copy', true),
+          } as SheetAction,
+        ]
+      : []),
+    {
+      label: 'Share as JSON',
+      subtitle: 'Every field, for another program to read.',
+      onPress: () => void runExport('json', 'share'),
+    },
+    {
+      label: 'Copy as JSON',
+      subtitle: 'Straight to the clipboard.',
+      onPress: () => void runExport('json', 'copy'),
+    },
+  ];
+
   const conversationActions: SheetAction[] = [
     {
       label: 'System prompt',
@@ -456,6 +549,11 @@ export default function ChatScreen() {
     {
       label: conversation.pinned ? 'Unpin' : 'Pin to the top',
       onPress: () => void useChat.getState().setPinned(id, !conversation.pinned),
+    },
+    {
+      label: 'Export…',
+      subtitle: 'Markdown or JSON. Attachments and keys are left out.',
+      onPress: () => setExportOpen(true),
     },
     { label: 'Delete conversation', destructive: true, onPress: confirmDeleteConversation },
   ];
@@ -588,6 +686,13 @@ export default function ChatScreen() {
         data={messages}
         extraData={extraData}
         keyExtractor={(item) => item.id}
+        // Recycle a user bubble only onto another user bubble. The two roles have
+        // very different subtrees — an assistant message carries markdown, a
+        // reasoning pane and a usage footer — so reusing one for the other throws
+        // away the whole view tree on the way past, which is the difference
+        // between a smooth 1,000-message scroll and a visibly hitching one. An
+        // errored turn gets its own pool for the same reason.
+        getItemType={(item) => (item.error ? 'error' : item.role)}
         renderItem={renderItem}
         maintainVisibleContentPosition={{ startRenderingFromBottom: true, autoscrollToBottomThreshold: 0.2 }}
         contentContainerStyle={{ padding: t.spacing.md }}
@@ -665,6 +770,14 @@ export default function ChatScreen() {
         subtitle={`${conversation.model} · ${messages.length} message${messages.length === 1 ? '' : 's'}`}
         actions={conversationActions}
         onClose={() => setConvMenu(false)}
+      />
+
+      <Sheet
+        visible={exportOpen}
+        title={exportBusy ? 'Exporting…' : 'Export'}
+        subtitle={`${plural(messages.length, 'message')}. Attachment contents are left out and API keys never appear.`}
+        actions={exportActions}
+        onClose={() => setExportOpen(false)}
       />
 
       <Sheet

@@ -50,6 +50,17 @@ export interface ModelCapabilities {
   maxOutputTokens: number;
   /** Anthropic path: whether the effort ladder above `high` is accepted. */
   extendedEffort?: boolean;
+  /**
+   * Anthropic path: whether `cache_control` breakpoints are honoured.
+   *
+   * Manual like the rest, and worth being conservative about for a specific
+   * reason: a gateway that proxies Anthropic without supporting prompt caching
+   * accepts the markers and reports no cache tokens, so the request is charged at
+   * the normal rate and nothing is lost. But one that *partially* supports it can
+   * charge the 1.25× write premium for entries it never serves. Leaving this off
+   * for an unknown gateway costs a saving; turning it on wrongly costs money.
+   */
+  promptCache?: boolean;
 }
 
 export const DEFAULT_CAPABILITIES: ModelCapabilities = {
@@ -128,6 +139,8 @@ export function guessCapabilities(modelId: string): ModelCapabilities {
     reasoning: isReasoner,
     contextWindow: isClaude ? 200_000 : 128_000,
     maxOutputTokens: isClaude ? 32_000 : 16_384,
-    ...(isClaude ? { extendedEffort: true } : {}),
+    // Claude models on the Anthropic path are the only ones where an explicit
+    // breakpoint does anything; OpenAI-compatible caching is automatic.
+    ...(isClaude ? { extendedEffort: true, promptCache: true } : {}),
   };
 }

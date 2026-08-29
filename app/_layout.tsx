@@ -21,6 +21,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useHydrated } from '@/lib/storage';
 import { debugLog } from '@/lib/log';
 import { primeRedactorWithStoredKeys } from '@/lib/secureKey';
+import { useMemory } from '@/stores/memory';
 import { useProviders } from '@/stores/providers';
 import { useSettings } from '@/stores/settings';
 import { ThemeProvider, useTheme } from '@/theme';
@@ -53,6 +54,7 @@ function Navigator() {
         <Stack.Screen name="settings/models" options={{ title: 'Models' }} />
         <Stack.Screen name="settings/model/[key]" options={{ title: 'Model' }} />
         <Stack.Screen name="settings/appearance" options={{ title: 'Appearance' }} />
+        <Stack.Screen name="settings/memory" options={{ title: 'Memory' }} />
         <Stack.Screen name="settings/debug" options={{ title: 'Debug log' }} />
       </Stack>
     </>
@@ -100,6 +102,16 @@ export default function RootLayout() {
       cancelled = true;
     };
   }, [hydrated, primed, profiles]);
+
+  // Memories are read once at start rather than lazily on the first send: the send
+  // path reads them synchronously to build the prompt, so a store that were still
+  // empty at that moment would silently produce a memory-free first request.
+  // Not a render gate — a missing memory block degrades the reply, it doesn't break
+  // it, and blocking the first frame on SQLite would be the worse trade.
+  useEffect(() => {
+    if (!hydrated) return;
+    void useMemory.getState().load();
+  }, [hydrated]);
 
   // Held back until the keys are registered as well as the state loaded: a screen
   // that logs a request before priming finishes could write an unredacted key.

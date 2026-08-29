@@ -25,14 +25,18 @@ import {
   flattenContent,
   forkConversation,
   getConversation,
-  listConversations,
+  listConversationPage,
   listMessages,
+  previewOf,
   recordUsage,
   setPinned as dbSetPinned,
   setTags as dbSetTags,
+  setArchivedBulk,
+  tagConversations,
   updateConversation,
   updateMessage,
   deleteConversation as dbDeleteConversation,
+  deleteConversations as dbDeleteConversations,
 } from '@/db/conversations';
 import type {
   Conversation,
@@ -40,13 +44,20 @@ import type {
   ListOptions,
   MessageMeta,
   StoredMessage,
+  TagMode,
 } from '@/db/conversations';
-import { buildRequest, SUMMARY_INSTRUCTION, validateConfig, hasBlockingIssue } from '@/chat/request';
+import type { ListCursor } from '@/db/list-query';
+import { buildRequest, composeSystem, SUMMARY_INSTRUCTION, validateConfig, hasBlockingIssue } from '@/chat/request';
+import { planTurn } from '@/chat/budget';
+import { describeTrim, trimToBudget } from '@/chat/trim';
+import type { TrimReport } from '@/chat/trim';
+import { planCacheForRequest } from '@/chat/cache';
 import { invalidateTransports, resolveTransport } from '@/lib/gateway';
 import { log } from '@/lib/log';
-import { estimateMessageTokens, estimateRequestTokens, selectMessagesWithinBudget } from '@/lib/tokens';
+import { estimateRequestTokens } from '@/lib/tokens';
 import { capabilitiesFor, useModels, wireHintsFor } from '@/stores/models';
 import { useCalibration } from '@/stores/calibration';import { activeProfile, useProviders } from '@/stores/providers';
+import { useMemory } from '@/stores/memory';
 import { useReachability } from '@/stores/reachability';
 import { getSetting } from '@/stores/settings';
 import { GatewayError } from '@/transports/errors';
@@ -209,6 +220,16 @@ export interface ChatState {
    * same query instead of guessing whether the row still belongs.
    */
   listOptions?: ListOptions;
+  /**
+   * Where the loaded page stopped, or `null` once the list is fully loaded.
+   *
+   * A cursor rather than a page number: rows are ordered by `updated_at`, which
+   * changes under the user as messages land, and an offset over a shifting order
+   * shows some conversations twice and skips others.
+   */
+  listCursor?: ListCursor | null;
+  /** True while {@link loadMore} is in flight, so `onEndReached` cannot stack requests. */
+  listLoadingMore: boolean;
 
   /** Loaded transcripts, keyed by conversation id. */
   messages: Record<string, StoredMessage[]>;
@@ -217,6 +238,8 @@ export interface ChatState {
   streams: Record<string, StreamState>;
 
   loadList(options?: ListOptions): Promise<void>;
+  /** Appends the next page. A no-op at the end of the list or while one is loading. */
+  loadMore(): Promise<void>;
   open(conversationId: string): Promise<void>;
   reload(conversationId: string): Promise<void>;
 
@@ -245,6 +268,22 @@ export interface ChatState {
   setTags(conversationId: string, tags: string[]): Promise<void>;
   remove(conversationId: string): Promise<void>;
 
+  /**
+   * The bulk versions of archive, delete and retag.
+   *
+   * Separate actions rather than a loop over the single-row ones at the call
+   * site, because the single-row ones cannot give the guarantee that matters:
+   * `removeMany` is one transaction, so a selection is destroyed completely or
+   * not at all. Fifty calls to `remove()` can stop in the middle with no undo
+   * and no way for the user to say which half went.
+   *
+   * Each returns how many rows it actually affected, so the confirmation can
+   * state what happened rather than what was asked for.
+   */
+  archiveMany(conversationIds: readonly string[], archived: boolean): Promise<number>;
+  removeMany(conversationIds: readonly string[]): Promise<number>;
+  tagMany(conversationIds: readonly string[], tags: readonly string[], mode: TagMode): Promise<number>;
+
   setDraft(conversationId: string, text: string): void;
 
   send(conversationId: string, options: SendOptions): Promise<void>;
@@ -261,6 +300,7 @@ export interface ChatState {
 export const useChat = create<ChatState>()((set, get) => ({
   conversations: [],
   listLoading: false,
+  listLoadingMore: false,
   messages: {},
   drafts: {},
   streams: {},
@@ -268,12 +308,38 @@ export const useChat = create<ChatState>()((set, get) => ({
   async loadList(options) {
     set({ listLoading: true, listOptions: options });
     try {
-      const conversations = await listConversations(options);
-      set({ conversations, listLoading: false, listError: undefined });
+      const { conversations, cursor } = await listConversationPage(options);
+      set({ conversations, listCursor: cursor, listLoading: false, listError: undefined });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log.error('chat', 'Could not load the conversation list', { error: message });
       set({ listLoading: false, listError: message });
+    }
+  },
+
+  async loadMore() {
+    const { listCursor, listLoading, listLoadingMore, listOptions } = get();
+    // `listCursor === null` means the last page was short, i.e. the end of the
+    // list; `undefined` means nothing has been loaded yet, which `loadList`
+    // owns. Either way there is nothing to append.
+    if (!listCursor || listLoading || listLoadingMore) return;
+
+    set({ listLoadingMore: true });
+    try {
+      const { conversations, cursor } = await listConversationPage({ ...listOptions, after: listCursor });
+      set((state) => ({
+        // Filtering by id rather than concatenating: a conversation whose
+        // `updated_at` moved above the cursor between pages can come back in an
+        // earlier page too, and two rows with one key is a FlashList crash
+        // rather than a cosmetic duplicate.
+        conversations: [...state.conversations, ...conversations.filter((c) => !state.conversations.some((s) => s.id === c.id))],
+        listCursor: cursor,
+        listLoadingMore: false,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.error('chat', 'Could not load more conversations', { error: message });
+      set({ listLoadingMore: false, listError: message });
     }
   },
 
@@ -385,6 +451,53 @@ export const useChat = create<ChatState>()((set, get) => ({
     set((state) => ({ drafts: { ...state.drafts, [conversationId]: text } }));
   },
 
+  async archiveMany(conversationIds, archived) {
+    if (archived) for (const id of conversationIds) get().abort(id);
+    const changed = await setArchivedBulk(conversationIds, archived);
+    // Reloaded rather than patched, for the same reason as `setArchived`:
+    // `archived` decides membership of the list, and only the query's own filter
+    // knows which of these rows still belongs in it.
+    await get().loadList(get().listOptions);
+    return changed;
+  },
+
+  async removeMany(conversationIds) {
+    for (const id of conversationIds) get().abort(id);
+    const removed = await dbDeleteConversations(conversationIds);
+    // The in-memory caches are pruned from the same id list rather than from the
+    // count the database returned. A row that had already been deleted elsewhere
+    // does not come back in `removed`, but its draft and its cached messages are
+    // still sitting in this store, and they are exactly as dead.
+    const gone = new Set(conversationIds);
+    set((state) => {
+      const messages = { ...state.messages };
+      const drafts = { ...state.drafts };
+      const streams = { ...state.streams };
+      for (const id of gone) {
+        delete messages[id];
+        delete drafts[id];
+        delete streams[id];
+      }
+      return {
+        conversations: state.conversations.filter((c) => !gone.has(c.id)),
+        messages,
+        drafts,
+        streams,
+      };
+    });
+    return removed;
+  },
+
+  async tagMany(conversationIds, tags, mode) {
+    const affected = await tagConversations(conversationIds, tags, mode);
+    // Re-read rather than computed locally. The three modes each combine with
+    // whatever each row already carried, so reproducing the result in JavaScript
+    // would mean reimplementing the SQL — and the tag filter chips above the list
+    // are derived from these rows, so a near-miss shows up as a wrong count.
+    await get().loadList(get().listOptions);
+    return affected;
+  },
+
   async send(conversationId, options) {
     if (get().streams[conversationId]) return;
 
@@ -417,9 +530,12 @@ export const useChat = create<ChatState>()((set, get) => ({
     if (!target) return;
 
     // Regenerating an assistant reply rewinds to it; regenerating a user message
-    // means "answer this again", so the rewind starts after it.
-    const from = target.role === 'assistant' ? target.seq : target.seq + Number.EPSILON;
-    await deleteMessagesFrom(conversationId, from, target.role === 'assistant');
+    // means "answer this again", so the rewind starts after it. The `inclusive`
+    // flag is the whole mechanism — this used to also add `Number.EPSILON` to the
+    // seq for the exclusive case, which expressed the intent but did nothing: one
+    // ULP of a seq above 4 is larger than EPSILON, so the addition rounded away.
+    const inclusive = target.role === 'assistant';
+    await deleteMessagesFrom(conversationId, target.seq, inclusive);
     await get().reload(conversationId);
     await runTurn(set, get, conversationId, { regeneratedFrom: messageId });
   },
@@ -538,7 +654,11 @@ function appendToTranscript(set: Setter, conversationId: string, message: Stored
                 // content is all images or tool calls has an empty `text`, and
                 // writing that through renders "No messages yet" on a conversation
                 // with a screenful of them.
-                ...(message.text ? { preview: message.text } : {}),
+                //
+                // `previewOf` rather than the raw text: the database stores the
+                // first line, clipped, and an optimistic patch that stored the
+                // whole message made the row change shape on the next relaunch.
+                ...(message.text ? { preview: previewOf(message.text) } : {}),
               }
             : c,
         )
@@ -637,7 +757,14 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       });
     }
 
-    const { messages, summary, changed } = await applyContextStrategy({
+    // Read once per turn rather than per attempt: a retry has to send the same
+    // prompt it estimated, and `promptBlock` returns nothing at all when the
+    // memory switch is off. Read *before* the context strategy, because the memory
+    // block is part of the prefix the history budget is computed against.
+    const memoryBlock = useMemory.getState().promptBlock();
+    const calibrationFactor = useCalibration.getState().factorFor(`${profile.id}::${model}`);
+
+    const { messages, summary, changed, trim } = await applyContextStrategy({
       conversationId,
       conversation,
       stored,
@@ -645,9 +772,21 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       live,
       publish,
       signal: controller.signal,
+      ...(memoryBlock.text ? { memory: memoryBlock.text } : {}),
+      calibration: calibrationFactor,
     });
 
     if (changed) await get().reload(conversationId);
+
+    if (trim?.actions.length) {
+      // Sizes and step names only. The trimmed content is conversation text, and
+      // `redactString` protects keys rather than content.
+      log.info('chat', describeTrim(trim), {
+        before: trim.before,
+        after: trim.after,
+        steps: trim.actions.map((action) => `${action.step}:${action.saved}`),
+      });
+    }
 
     const request = buildRequest({
       transport: profile.kind,
@@ -658,7 +797,24 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       ...(conversation.systemPrompt ? { systemPrompt: conversation.systemPrompt } : {}),
       messages,
       ...(summary ? { summary } : {}),
+      ...(memoryBlock.text ? { memory: memoryBlock.text } : {}),
     });
+
+    // Breakpoints last, over the assembled request, and suppressed when history was
+    // rewritten this turn: a rewritten prefix cannot be a cache hit, so asking for
+    // a write would pay the 1.25× premium for an entry nothing will read.
+    const cachePlan = planCacheForRequest(request, {
+      enabled: getSetting('promptCaching'),
+      supported: profile.kind === 'anthropic' && capabilities.promptCache !== false,
+      historyRewritten: Boolean(trim?.actions.length),
+    });
+    if (!cachePlan.reason) {
+      request.cache = {
+        tools: cachePlan.tools,
+        system: cachePlan.system,
+        ...(cachePlan.historyThrough !== undefined ? { historyThrough: cachePlan.historyThrough } : {}),
+      };
+    }
 
     live.phase = 'connecting';
     publish(true);
@@ -760,6 +916,19 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     });
 
     clearStream(set, conversationId);
+
+    if (memoryBlock.included.length) useMemory.getState().noteUsed(memoryBlock.included.map((m) => m.id));
+
+    // After the stream is cleared, unawaited, and unable to throw: the turn has
+    // already succeeded and the user is reading the answer. A distillation pass
+    // that fails, or that the user navigates away from, must not turn a completed
+    // turn into a visible error. The throttle lives in the store.
+    void useMemory.getState().distil({
+      conversationId,
+      profileId: profile.id,
+      model,
+      messages: get().messages[conversationId] ?? [],
+    });
   } catch (error) {
     await handleTurnFailure(set, conversationId, live, error, options);
   } finally {
@@ -923,6 +1092,10 @@ interface StrategyInput {
   live: LiveStream;
   publish(force?: boolean): void;
   signal: AbortSignal;
+  /** The rendered memory block, so the budget counts what the request will carry. */
+  memory?: string;
+  /** Correction factor for this model's estimator, from `@/stores/calibration`. */
+  calibration?: number;
 }
 
 interface StrategyResult {
@@ -930,6 +1103,8 @@ interface StrategyResult {
   summary?: string;
   /** True when any message's `excluded` flag changed and the transcript is stale. */
   changed: boolean;
+  /** What the trim ladder gave up, when it ran. Absent when nothing was trimmed. */
+  trim?: TrimReport;
 }
 
 /**
@@ -937,7 +1112,9 @@ interface StrategyResult {
  *
  * `warn` sends everything and lets the pressure indicator do the talking, because
  * silently truncating a conversation the user can see in front of them is worse
- * than a rejected request. The other two strategies drop or summarise.
+ * than a rejected request. The other two strategies trim, via the ladder in
+ * `@/chat/trim` — replayed reasoning first, then long tool results, and only then
+ * whole turns.
  *
  * `excluded` is recomputed from scratch every turn rather than accumulated: it
  * records what the *most recent* request left out, so switching to a model with a
@@ -970,26 +1147,41 @@ async function applyContextStrategy(input: StrategyInput): Promise<StrategyResul
     config: conversation.config,
     messages: [],
   }).params;
-  // Output and thinking are charged against the context window too, so the space
-  // available for history is what is left after reserving room for the reply.
-  const reserved = params.maxTokens + (conversation.config.reasoning?.budgetTokens ?? 0);
-  const systemCost = estimateMessageTokens({
-    role: 'user',
-    content: [{ type: 'text', text: `${conversation.systemPrompt ?? ''}\n${previousSummary ?? ''}` }],
+
+  // The same prefix the request will actually carry — prompt, memory and summary
+  // — rather than the prompt alone. Counting less than is sent is how a budget
+  // declared roomy produces a request over the window.
+  const system = composeSystem(conversation.systemPrompt, previousSummary, input.memory);
+  const budget = planTurn({
+    transport: 'anthropic',
+    contextWindow: capabilities.contextWindow,
+    params,
+    ...(conversation.config.reasoning ? { reasoning: conversation.config.reasoning } : {}),
+    ...(system ? { system } : {}),
+    ...(input.calibration ? { calibration: input.calibration } : {}),
   });
-  const budget = Math.max(1_024, capabilities.contextWindow - reserved - systemCost - 512);
 
-  const { keep, dropped } = selectMessagesWithinBudget(all, budget);
-  if (!dropped.length) return sendEverything();
+  // With the ladder off, the two cheap steps are disabled by making them
+  // impossible rather than by a flag inside `trimToBudget`: keeping thinking in
+  // every message and capping tool results at infinity leaves only the old
+  // behaviour, dropping whole turns.
+  const trimOptions = getSetting('progressiveTrim')
+    ? {}
+    : { keepThinkingInLast: all.length, toolResultCap: Number.MAX_SAFE_INTEGER };
+  const report = trimToBudget(all, budget.history, trimOptions);
+  if (!report.actions.length) return sendEverything();
 
-  const droppedMessages = dropped.map((index) => eligible[index]).filter((m): m is StoredMessage => Boolean(m));
-  const keptMessages = keep.map((index) => all[index]).filter((m): m is UnifiedMessage => Boolean(m));
+  const droppedMessages = report.dropped
+    .map((index) => eligible[index])
+    .filter((m): m is StoredMessage => Boolean(m));
   const changed = await setExclusions(eligible, new Set(droppedMessages.map((m) => m.id)));
 
   const summary =
-    strategy === 'summarise' ? await summariseDropped(input, droppedMessages, previousSummary) : previousSummary;
+    strategy === 'summarise' && droppedMessages.length
+      ? await summariseDropped(input, droppedMessages, previousSummary)
+      : previousSummary;
 
-  return { messages: keptMessages, ...(summary ? { summary } : {}), changed };
+  return { messages: report.messages, ...(summary ? { summary } : {}), changed, trim: report };
 }
 
 const EMPTY_SET: ReadonlySet<string> = new Set();

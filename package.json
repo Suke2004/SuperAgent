@@ -12,6 +12,8 @@
     "lint:fix": "eslint . --fix",
     "test": "jest",
     "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "gates": "npm run typecheck && npm run lint && npm run test:coverage",
     "icons": "node scripts/gen-icons.mjs",
     "build:apk": "eas build --platform android --profile preview",
     "build:apk:local": "eas build --platform android --profile preview --local"

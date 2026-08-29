@@ -24,10 +24,11 @@ import * as SQLite from 'expo-sqlite';
 
 import { log } from '@/lib/log';
 
+import { FTS_DDL, MIGRATIONS, SCHEMA_VERSION } from './ddl';
+
 const DATABASE_NAME = 'agentrouter.db';
 
-/** Bumped whenever {@link MIGRATIONS} grows. Stored in SQLite's `user_version`. */
-const SCHEMA_VERSION = 1;
+export { FTS_DDL, MIGRATIONS, SCHEMA_VERSION };
 
 export interface DatabaseHandle {
   db: SQLite.SQLiteDatabase;
@@ -89,41 +90,24 @@ async function open(): Promise<DatabaseHandle> {
  * Creates the FTS index and its synchronisation triggers, reporting whether the
  * build supports it.
  *
- * Kept out of the numbered migrations so a build without FTS5 still gets a
- * working database: a failed `CREATE VIRTUAL TABLE` inside migration 0 would
- * roll back the tables the app cannot run without.
+ * The DDL itself lives in `./ddl` so a test can build the same database without
+ * `expo-sqlite`.
  */
 async function ensureFts(db: SQLite.SQLiteDatabase): Promise<boolean> {
   try {
-    await db.execAsync(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-        text,
-        content = 'messages',
-        content_rowid = 'rowid',
-        tokenize = "unicode61 remove_diacritics 2"
-      );
-
-      CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
-        INSERT INTO messages_fts(rowid, text) VALUES (new.rowid, new.text);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
-        INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
-      END;
-
-      CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF text ON messages BEGIN
-        INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
-        INSERT INTO messages_fts(rowid, text) VALUES (new.rowid, new.text);
-      END;
-    `);
+    await db.execAsync(FTS_DDL);
 
     // A database created before the index existed — or one whose triggers were
-    // absent for a version — has rows the index has never seen. Rebuilding is
-    // cheap at personal scale and idempotent.
-    const indexed = await db.getFirstAsync<{ n: number }>('SELECT count(*) AS n FROM messages_fts');
-    const stored = await db.getFirstAsync<{ n: number }>('SELECT count(*) AS n FROM messages');
-    if ((indexed?.n ?? 0) !== (stored?.n ?? 0)) {
+    // absent for a version — holds rows the index disagrees with. FTS5's own
+    // `integrity-check` is what decides; see {@link ftsIsConsistent} for why the
+    // check is spelled the way it is. This used to compare row counts (debt
+    // D-03), which only caught rows missing outright: an edit that changed a
+    // message's text while the update trigger was absent leaves the count
+    // identical and the index wrong, so search kept matching words the message
+    // no longer contained. Rebuilding is cheap at personal scale and idempotent.
+    if (!(await ftsIsConsistent(db))) {
       await db.execAsync("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')");
+      const stored = await db.getFirstAsync<{ n: number }>('SELECT count(*) AS n FROM messages');
       log.info('db', `Rebuilt the search index over ${stored?.n ?? 0} message(s)`);
     }
 
@@ -137,100 +121,45 @@ async function ensureFts(db: SQLite.SQLiteDatabase): Promise<boolean> {
 }
 
 /**
- * Schema migrations, indexed by the version they upgrade *from*.
+ * Whether the FTS index still agrees with the `messages` table.
  *
- * Append only. Editing an existing entry changes the schema of databases that
- * have already run it, which is how a migration silently stops matching the
- * table it created.
+ * Two details that are easy to get wrong:
+ *
+ * 1. **The `rank = 1` argument is the whole point.** A bare `integrity-check`
+ *    only verifies that the index is internally well formed, which a stale index
+ *    over an external-content table always is — it is a perfectly consistent
+ *    index of what the table *used to say*. Passing 1 asks FTS5 to re-tokenise
+ *    the content table and compare checksums, which is the only form that
+ *    detects drift. Verified against SQLite 3.53: the bare form returns success
+ *    on a table this test deliberately corrupts.
+ * 2. **A throw is not necessarily drift.** The argument arrived in SQLite 3.41,
+ *    so an older build rejects the statement outright. That reads as a syntax or
+ *    "no such cursor" error rather than a checksum mismatch, and treating it as
+ *    drift would rebuild the entire index on every single launch. So the error is
+ *    inspected: only a corruption report means rebuild, and anything else falls
+ *    back to the bare check.
+ *
+ * Separate from {@link ensureFts} so a failed check stays distinguishable from a
+ * missing FTS5 module — the first is repaired by rebuilding, the second means
+ * the build has no FTS5 at all and the caller must degrade to `LIKE`.
  */
-const MIGRATIONS: readonly string[] = [
-  /* 0 → 1 */ `
-    CREATE TABLE conversations (
-      id                     TEXT    PRIMARY KEY NOT NULL,
-      title                  TEXT    NOT NULL,
-      created_at             INTEGER NOT NULL,
-      updated_at             INTEGER NOT NULL,
-      pinned                 INTEGER NOT NULL DEFAULT 0,
-      archived               INTEGER NOT NULL DEFAULT 0,
-      system_prompt          TEXT,
-      profile_id             TEXT    NOT NULL,
-      model                  TEXT    NOT NULL,
-      -- Sampling params, reasoning config, enabled skills and MCP servers, as
-      -- JSON. A column per knob would mean a migration for every new control,
-      -- and nothing queries them.
-      config                 TEXT    NOT NULL DEFAULT '{}',
-      forked_from_id         TEXT,
-      forked_from_message_id TEXT,
-      last_message_at        INTEGER,
-      -- First line of the newest message, for the list. Denormalised so the list
-      -- is one query rather than one query per row.
-      preview                TEXT
-    );
+async function ftsIsConsistent(db: SQLite.SQLiteDatabase): Promise<boolean> {
+  try {
+    await db.execAsync("INSERT INTO messages_fts(messages_fts, rank) VALUES ('integrity-check', 1)");
+    return true;
+  } catch (error) {
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    if (message.includes('checksum') || message.includes('corrupt')) return false;
 
-    -- Pinned first, then most recent: the exact order the list renders in, so
-    -- the query is an index scan rather than a sort.
-    CREATE INDEX conversations_order ON conversations (pinned DESC, updated_at DESC);
-    CREATE INDEX conversations_profile ON conversations (profile_id);
-
-    CREATE TABLE conversation_tags (
-      conversation_id TEXT NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
-      tag             TEXT NOT NULL,
-      PRIMARY KEY (conversation_id, tag)
-    );
-
-    CREATE INDEX conversation_tags_tag ON conversation_tags (tag);
-
-    CREATE TABLE messages (
-      id              TEXT    PRIMARY KEY NOT NULL,
-      conversation_id TEXT    NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
-      -- REAL rather than INTEGER so a message can be inserted between two others
-      -- by averaging their keys, without rewriting every following row.
-      seq             REAL    NOT NULL,
-      role            TEXT    NOT NULL,
-      created_at      INTEGER NOT NULL,
-      -- JSON ContentBlock[]. The source of truth for what gets sent.
-      content         TEXT    NOT NULL,
-      -- Flattened text of the blocks above: what FTS indexes and what the list
-      -- preview reads. Written by the same statement as the content column.
-      text            TEXT    NOT NULL DEFAULT '',
-      model           TEXT,
-      -- JSON TokenUsage, read from the response. Never estimated.
-      usage           TEXT,
-      stop_reason     TEXT,
-      -- The gateway's own error text, verbatim, when the turn failed.
-      error           TEXT,
-      -- JSON: dropped params, effort, thinking budget, skill invocations.
-      meta            TEXT,
-      -- Set when the context strategy omitted this turn from the request. The
-      -- message stays visible and marked rather than disappearing.
-      excluded        INTEGER NOT NULL DEFAULT 0
-    );
-
-    CREATE INDEX messages_conversation ON messages (conversation_id, seq);
-
-    CREATE TABLE usage_events (
-      id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      at              INTEGER NOT NULL,
-      -- Local YYYY-MM-DD, computed on write. Grouping by day in SQL from a UTC
-      -- epoch would bucket by UTC days and split the user's evening in two.
-      day             TEXT    NOT NULL,
-      profile_id      TEXT    NOT NULL,
-      model           TEXT    NOT NULL,
-      input           INTEGER NOT NULL DEFAULT 0,
-      output          INTEGER NOT NULL DEFAULT 0,
-      thinking        INTEGER,
-      cache_read      INTEGER,
-      cache_write     INTEGER,
-      -- NULL when the model has no pricing set, so the dashboard can report
-      -- "cost unknown" rather than implying zero.
-      cost            REAL,
-      conversation_id TEXT
-    );
-
-    CREATE INDEX usage_events_day ON usage_events (day);
-    CREATE INDEX usage_events_model ON usage_events (model);
-  `,
-];
+    log.warn('db', 'Could not run the strict search-index check; falling back to the basic one', { error: message });
+    try {
+      await db.execAsync("INSERT INTO messages_fts(messages_fts) VALUES ('integrity-check')");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
 
 /**
  * Drops every row without dropping the schema.

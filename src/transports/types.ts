@@ -171,6 +171,29 @@ export interface WireHints {
   betas?: string[];
 }
 
+/**
+ * Where to ask the provider to cache the request prefix.
+ *
+ * Transport-agnostic on purpose even though only the Anthropic path can act on it:
+ * the OpenAI-compatible path caches automatically and needs no markers, so it
+ * ignores this field rather than the caller having to know which is which.
+ *
+ * The decision of *where* the marks go is `@/chat/cache`'s, not the adapter's. The
+ * adapter only knows how to express them on the wire.
+ */
+export interface CacheMarks {
+  /** Cache the tool manifest, by marking the last definition. */
+  tools?: boolean;
+  /** Cache the system prompt. */
+  system?: boolean;
+  /**
+   * Cache history through this index into `messages`, inclusive. The adapter may
+   * place the marker earlier than asked when the message at that index merged with
+   * a later one on the wire, but never later.
+   */
+  historyThrough?: number;
+}
+
 export interface ChatRequest {
   model: string;
   /** Placed per-transport: a top-level `system` field, or a `system` message. */
@@ -180,6 +203,8 @@ export interface ChatRequest {
   reasoning?: ReasoningConfig;
   tools?: ToolDefinition[];
   toolChoice?: ToolChoice;
+  /** Prompt-cache breakpoints. See {@link CacheMarks}. */
+  cache?: CacheMarks;
   /** Per-model wire quirks. See {@link WireHints}. */
   wireHints?: WireHints;
   /** Extra body fields, merged last. An escape hatch for gateway-specific knobs. */

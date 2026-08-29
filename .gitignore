@@ -54,6 +54,11 @@ secrets/
 *.secret
 gateway-key*
 
-# Expo export output
+# Expo export output. The `dist-web-*` and `.tmp-web-export` patterns exist
+# because four such directories were committed once (debt D-01): `expo export`
+# writes wherever `--output-dir` says, and a build artefact in the tree makes
+# `git status` useless and invites committing 8 MB of bundled JavaScript.
 .expo-export/
 dist/
+dist-web*/
+.tmp-web-export/

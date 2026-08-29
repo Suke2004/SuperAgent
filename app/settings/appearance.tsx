@@ -93,6 +93,25 @@ export default function Appearance() {
         />
       </Section>
 
+      <Section
+        title="Token usage"
+        note="Both of these reduce what each turn costs. They change the request, never the transcript."
+      >
+        <SwitchRow
+          first
+          label="Prompt caching"
+          subtitle="Asks the provider to store the unchanging start of each request. A cached read costs a tenth of the normal input price; writing one costs a quarter more, so it pays off from the second turn onwards."
+          value={settings.promptCaching}
+          onChange={(v) => settings.set('promptCaching', v)}
+        />
+        <SwitchRow
+          label="Trim reasoning before turns"
+          subtitle="When the window fills, drop replayed reasoning and shorten long tool results first, and only leave out whole messages if that is not enough. Off goes straight to leaving out messages."
+          value={settings.progressiveTrim}
+          onChange={(v) => settings.set('progressiveTrim', v)}
+        />
+      </Section>
+
       <Section title="Speech">
         <SwitchRow
           first
