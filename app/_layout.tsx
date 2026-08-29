@@ -32,14 +32,19 @@ function Navigator() {
       <StatusBar style={t.scheme === 'dark' ? 'light' : 'dark'} />
       <Stack
         screenOptions={{
-          headerStyle: { backgroundColor: t.colors.surface },
+          // The header sits on the page colour rather than a raised surface: in this
+          // design the app is one continuous sheet, and a lighter bar across the top
+          // would be the only edge on the screen that means nothing.
+          headerStyle: { backgroundColor: t.colors.bg },
           headerTintColor: t.colors.text,
-          headerTitleStyle: { fontSize: t.fontSize.lg, fontWeight: '600' },
+          headerTitleStyle: { fontFamily: t.serifFont, fontSize: t.fontSize.lg, fontWeight: '400' },
           headerShadowVisible: false,
           contentStyle: { backgroundColor: t.colors.bg },
         }}
       >
-        <Stack.Screen name="index" options={{ title: 'AgentRouter' }} />
+        {/* Home draws its own serif greeting, which *is* the title; a navigator header
+            above it would say the app's name twice. */}
+        <Stack.Screen name="index" options={{ title: 'Jarvis', headerShown: false }} />
         {/* The title comes from the conversation, set by the screen itself. */}
         <Stack.Screen name="chat/[id]" options={{ title: '' }} />
         <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
@@ -54,10 +59,17 @@ function Navigator() {
   );
 }
 
+/**
+ * The pre-hydration screen.
+ *
+ * Colours are hardcoded because this renders outside the ThemeProvider, and they
+ * match the splash background so the handoff from the native splash to the first
+ * React frame has no flash.
+ */
 function Booting() {
   return (
-    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#0f1114' }}>
-      <ActivityIndicator size="large" color="#4c9aff" />
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#262624' }}>
+      <ActivityIndicator size="large" color="#d97757" />
     </View>
   );
 }

@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AgentRouter — Claude-referenced sample</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { background: #14140f; color: #e8e6df; font-family: "Inter", "Segoe UI", system-ui, sans-serif; padding: 28px 20px 60px; }
+  .page-head { max-width: 1400px; margin: 0 auto 26px; }
+  .page-head h1 { font-family: Georgia, "Times New Roman", serif; font-size: 26px; font-weight: 400; margin: 0 0 8px; letter-spacing: -.01em; }
+  .page-head p { margin: 0 0 6px; color: #a09d92; font-size: 13.5px; max-width: 820px; line-height: 1.65; }
+  .page-head b { color: #e8e6df; font-weight: 600; }
+  .page-head .clay { color: #d97757; }
+  .deck { max-width: 1400px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 34px; align-items: start; }
+  .slot { display: flex; flex-direction: column; gap: 14px; }
+  .tag { display: flex; align-items: baseline; gap: 10px; }
+  .tag .num { font-family: ui-monospace, monospace; font-size: 12px; color: #6b675c; }
+  .tag .name { font-size: 15px; font-weight: 600; letter-spacing: .04em; }
+  .notes { color: #a09d92; font-size: 12.5px; line-height: 1.65; }
+  .notes b { color: #ddd9cf; font-weight: 600; }
+  .notes ul { margin: 8px 0 0; padding-left: 18px; }
+  .notes li { margin-bottom: 5px; }
+  .notes code { font-family: ui-monospace, monospace; font-size: 11.5px; color: #d97757; }
+  .phone { width: 100%; max-width: 390px; height: 820px; border-radius: 34px; overflow: hidden; position: relative; border: 1px solid #2c2b25; box-shadow: 0 24px 60px rgba(0,0,0,.55); }
+  .scr { position: absolute; inset: 0; display: flex; flex-direction: column; overflow: hidden; }
+  @keyframes blink { 50% { opacity: 0 } }
+  @keyframes shimmer { 0% { background-position: -180px 0 } 100% { background-position: 260px 0 } }
+  /* ===== shared palette, Claude-referenced ===== */
+  .cl {
+    --bg: #faf9f5; --surface: #ffffff; --sunk: #f0eee6; --line: #e3e0d6; --line2: #d3cfc2;
+    --ink: #1f1e1d; --ink2: #4a4842; --mute: #74716a; --clay: #c1603c; --clay-soft: #f7ece7;
+    background: var(--bg); color: var(--ink);
+    font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+  }
+  .cl.dark {
+    --bg: #262624; --surface: #30302e; --sunk: #1f1e1d; --line: #3d3d39; --line2: #4d4c47;
+    --ink: #f5f4ef; --ink2: #d8d5cc; --mute: #a3a099; --clay: #d97757; --clay-soft: #3a2b24;
+  }
+  .serif { font-family: Georgia, "Times New Roman", serif; }
+  /* top bar */
+  .tb { flex: none; height: 58px; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+  .ic { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; color: var(--ink2); font-size: 16px; }
+  .ic:active, .ic.on { background: var(--sunk); }
+  .tb-mid { flex: 1; display: flex; align-items: center; gap: 8px; justify-content: center; }
+  .model {
+    display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--surface); font-size: 12.5px; color: var(--ink2); font-weight: 500;
+  }
+  .model .dot { width: 6px; height: 6px; border-radius: 50%; background: #4f9d69; }
+  .model .cv { color: var(--mute); font-size: 10px; }
+  /* thread */
+  .thread { flex: 1; overflow: hidden; padding: 20px 18px 0; }
+  .u-msg {
+    background: var(--sunk); border-radius: 16px; padding: 13px 15px; font-size: 14.5px; line-height: 1.55;
+    color: var(--ink); margin: 0 0 22px auto; max-width: 88%;
+  }
+  .a-wrap { display: flex; gap: 11px; margin-bottom: 18px; }
+  .glyph { flex: none; width: 22px; height: 22px; color: var(--clay); font-size: 16px; line-height: 22px; text-align: center; }
+  .a-body { flex: 1; min-width: 0; }
+  .think {
+    display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--mute);
+    border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; margin-bottom: 12px;
+  }
+  .a-txt { font-size: 15px; line-height: 1.66; color: var(--ink); }
+  .a-txt p { margin: 0 0 12px; }
+  .a-txt strong { font-weight: 600; }
+  .a-txt code { font-family: ui-monospace, monospace; font-size: 13px; background: var(--sunk); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; }
+  .a-txt ul { margin: 0 0 12px; padding-left: 20px; }
+  .a-txt li { margin-bottom: 6px; }
+  .code { border: 1px solid var(--line); border-radius: 11px; overflow: hidden; margin: 0 0 14px; }
+  .code .ch { display: flex; justify-content: space-between; align-items: center; padding: 7px 11px; background: var(--sunk); font-family: ui-monospace, monospace; font-size: 10.5px; color: var(--mute); letter-spacing: .04em; }
+  .code pre { margin: 0; padding: 11px 12px; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.6; color: var(--ink); background: var(--surface); overflow: hidden; }
+  .code .kw { color: #9a5fb5; } .code .st { color: #3d7f5a; } .code .nu { color: #b06a2f; } .code .cm { color: var(--mute); }
+  .dark .code .kw { color: #c99ae0; } .dark .code .st { color: #85c9a3; } .dark .code .nu { color: #e0a86b; }
+  .acts { display: flex; gap: 4px; margin-top: 2px; }
+  .acts i { font-style: normal; width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; font-size: 13px; color: var(--mute); }
+  .acts i.lbl { width: auto; padding: 0 9px; font-size: 11.5px; letter-spacing: .02em; }
+  .meta { font-size: 11.5px; color: var(--mute); margin-top: 8px; }
+  /* composer */
+  .comp { flex: none; padding: 10px 14px 16px; }
+  .comp-box { border: 1px solid var(--line2); border-radius: 20px; background: var(--surface); padding: 13px 14px 10px; box-shadow: 0 2px 10px rgba(0,0,0,.05); }
+  .dark .comp-box { box-shadow: none; }
+  .comp-ph { font-size: 14.5px; color: var(--mute); }
+  .comp-row { display: flex; align-items: center; gap: 6px; margin-top: 12px; }
+  .comp-row .sp { flex: 1; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 5px 10px; font-size: 11.5px; color: var(--mute); }
+  .rnd { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 14px; color: var(--mute); border: 1px solid var(--line); }
+  .send { width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; color: #fff; background: var(--clay); }
+  .safe { height: 6px; }
+  /* streaming */
+  .stream-cursor { display: inline-block; width: 8px; height: 15px; background: var(--clay); vertical-align: -2px; animation: blink 1s steps(1) infinite; border-radius: 1px; }
+  .skel { height: 13px; border-radius: 6px; margin-top: 9px; background: linear-gradient(90deg, var(--sunk) 0%, var(--line) 40%, var(--sunk) 80%); background-size: 240px 100%; animation: shimmer 1.5s linear infinite; }
+  .stopbar { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 999px; padding: 6px 12px; font-size: 12px; color: var(--mute); margin-top: 14px; }
+  .stopbar b { width: 9px; height: 9px; border-radius: 2px; background: var(--clay); }
+  /* list screen */
+  .ls-head { flex: none; padding: 22px 18px 8px; }
+  .ls-head .h { font-family: Georgia, serif; font-size: 25px; font-weight: 400; letter-spacing: -.015em; }
+  .ls-head .s { font-size: 13px; color: var(--mute); margin-top: 5px; }
+  .search { margin: 14px 0 6px; display: flex; align-items: center; gap: 9px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 10px 12px; font-size: 13.5px; color: var(--mute); }
+  .grp { font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--mute); padding: 16px 18px 8px; }
+  .row { display: flex; gap: 12px; padding: 12px 18px; align-items: flex-start; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .row .g { flex: none; width: 20px; color: var(--clay); font-size: 13px; line-height: 20px; text-align: center; }
+  .row .c { flex: 1; min-width: 0; }
+  .row .t { font-size: 14.5px; font-weight: 500; color: var(--ink); }
+  .row .p { font-size: 12.5px; color: var(--mute); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .r { flex: none; font-size: 11.5px; color: var(--mute); padding-top: 2px; }
+  .row .badge { display: inline-block; font-size: 10px; letter-spacing: .04em; color: var(--mute); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px; margin-left: 6px; vertical-align: 1px; }
+  .fab { position: absolute; right: 18px; bottom: 84px; height: 46px; border-radius: 999px; background: var(--clay); color: #fff; display: flex; align-items: center; gap: 8px; padding: 0 18px; font-size: 14px; font-weight: 500; box-shadow: 0 6px 20px rgba(193,96,60,.35); }
+  .tabs { flex: none; display: flex; border-top: 1px solid var(--line); padding: 8px 0 14px; }
+  .tabs div { flex: 1; text-align: center; font-size: 10.5px; color: var(--mute); }
+  .tabs div .i { font-size: 17px; display: block; margin-bottom: 3px; }
+  .tabs div.on { color: var(--clay); }
+
+</style>
+</head>
+<body>
+<div class="page-head">
+  <h1>AgentRouter — Claude as the reference</h1>
+  <p>Claude's design language, applied to your app: warm ivory paper instead of black glass, one
+     <span class="clay">clay</span> accent, serif for names and headings, sans for reading, generous whitespace,
+     hairline borders, and <b>no bubble on the assistant side</b> — its answer sits on the page so long replies read
+     like a document. The Jarvis identity lives in the wordmark and the ✳ glyph, not in neon.</p>
+  <p>Three screens: chat in light, the same chat streaming in dark, and the conversation list.</p>
+</div>
+
+<div class="deck">
+
+<!-- ============ 1. CHAT · LIGHT ============ -->
+<div class="slot">
+  <div class="tag"><span class="num">01</span><span class="name">Chat · light</span></div>
+  <div class="phone">
+    <div class="scr cl">
+      <div class="tb">
+        <div class="ic">☰</div>
+        <div class="tb-mid">
+          <span class="serif" style="font-size:16px">Jarvis</span>
+          <span class="model"><span class="dot"></span>Opus 5<span class="cv">62%</span></span>
+        </div>
+        <div class="ic">＋</div>
+      </div>
+      <div class="thread">
+        <div class="u-msg">Summarise the retry logic in our SSE transport.</div>
+        <div class="a-wrap">
+          <div class="glyph">✳</div>
+          <div class="a-body">
+            <div class="think">Thought for 4s <span style="opacity:.6">⌄</span></div>
+            <div class="a-txt">
+              <p>Retries use <strong>exponential backoff with jitter</strong>, capped at four attempts:</p>
+              <ul>
+                <li>500 ms base, doubling each attempt, ±20% jitter</li>
+                <li>Only <code>429</code> and <code>5xx</code> re-enter the loop</li>
+                <li>A mid-stream disconnect resumes from the last event id</li>
+              </ul>
+            </div>
+            <div class="code">
+              <div class="ch"><span>retry.ts</span><span>Copy</span></div>
+              <pre><span class="cm">// attempt: 0-indexed</span>
+<span class="kw">const</span> wait = base * <span class="nu">2</span> ** attempt;
+<span class="kw">return</span> wait * (<span class="nu">0.8</span> + Math.random() * <span class="nu">0.4</span>);</pre>
+            </div>
+            <div class="acts"><i>⧉</i><i>↻</i><i>⌄</i><i class="lbl">1,204 · 318</i></div>
+          </div>
+        </div>
+      </div>
+      <div class="comp">
+        <div class="comp-box">
+          <div class="comp-ph">Reply to Jarvis…</div>
+          <div class="comp-row">
+            <span class="rnd">＋</span><span class="chip">⚒ Tools 3</span><span class="sp"></span>
+            <span class="chip">Opus 5 ⌄</span><span class="send">↑</span>
+          </div>
+        </div>
+        <div class="safe"></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>What's borrowed:</b> the ivory canvas (<code>#faf9f5</code>), user turn as a quiet sunken card while the
+    assistant answers directly on the page, a collapsed “Thought for 4s” pill, hairline-bordered code cards, and a
+    rounded composer whose bottom row holds tools on the left and the model picker beside a clay send button.
+    <ul>
+      <li><b>What's yours:</b> the model chip carries a live context percentage, and the action row shows real token
+          counts — the controls other clients hide, in Claude's visual grammar.</li>
+      <li><b>Build cost:</b> low. No new dependencies; it's a palette swap plus composer and message restyling.</li>
+    </ul>
+  </div>
+</div>
+<!-- ============ 2. CHAT · DARK, STREAMING ============ -->
+<div class="slot">
+  <div class="tag"><span class="num">02</span><span class="name">Chat · dark, streaming</span></div>
+  <div class="phone">
+    <div class="scr cl dark">
+      <div class="tb">
+        <div class="ic">☰</div>
+        <div class="tb-mid">
+          <span class="serif" style="font-size:16px">Jarvis</span>
+          <span class="model"><span class="dot"></span>Opus 5<span class="cv">62%</span></span>
+        </div>
+        <div class="ic">＋</div>
+      </div>
+      <div class="thread">
+        <div class="u-msg">And what happens if the provider rate-limits us mid-stream?</div>
+        <div class="a-wrap">
+          <div class="glyph">✳</div>
+          <div class="a-body">
+            <div class="think">Thinking… <span style="opacity:.6">⌃</span></div>
+            <div class="a-txt">
+              <p>The stream is torn down and the turn re-enters the retry loop, but with one important
+                difference: the partial text you've already seen is <strong>kept</strong> and the resumed
+                response is appended from the last event id.</p>
+              <p>If the retry budget is exhausted, the turn is marked <code>rate_limited</code> and the composer
+                offers a one-tap switch to your fallback provider<span class="stream-cursor"></span></p>
+            </div>
+            <div class="skel" style="width:92%"></div>
+            <div class="skel" style="width:74%"></div>
+            <div class="stopbar"><b></b> Stop · 41 tok/s</div>
+          </div>
+        </div>
+      </div>
+      <div class="comp">
+        <div class="comp-box">
+          <div class="comp-ph">Reply to Jarvis…</div>
+          <div class="comp-row">
+            <span class="rnd">＋</span><span class="chip">⚒ Tools 3</span><span class="sp"></span>
+            <span class="chip">Opus 5 ⌄</span><span class="send">↑</span>
+          </div>
+        </div>
+        <div class="safe"></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>Same components, dark surfaces</b> — Claude's warm charcoal (<code>#262624</code>) rather than blue-black, so
+    the two modes feel like one product. Streaming is expressed three ways at once: a clay caret at the write head,
+    shimmering skeleton lines for text still arriving, and a Stop pill carrying the live token rate.
+    <ul>
+      <li>The thinking pill flips to “Thinking…” with the chevron up while reasoning streams, then collapses to a duration.</li>
+      <li>Partial text is preserved across a mid-stream retry — worth showing in the UI, since it's a real behaviour
+          of your transport that users can't otherwise see.</li>
+    </ul>
+  </div>
+</div>
+<!-- ============ 3. CONVERSATIONS ============ -->
+<div class="slot">
+  <div class="tag"><span class="num">03</span><span class="name">Conversations</span></div>
+  <div class="phone">
+    <div class="scr cl">
+      <div class="ls-head">
+        <div class="h">Good evening</div>
+        <div class="s">6 conversations · 3 providers reachable</div>
+        <div class="search">⌕ <span>Search messages…</span></div>
+      </div>
+      <div style="flex:1;overflow:hidden">
+        <div class="grp">Today</div>
+        <div class="row">
+          <div class="g">✳</div>
+          <div class="c">
+            <div class="t">SSE retry logic<span class="badge">OPUS 5</span></div>
+            <div class="p">Retries use exponential backoff with jitter…</div>
+          </div>
+          <div class="r">22:14</div>
+        </div>
+        <div class="row">
+          <div class="g">✳</div>
+          <div class="c">
+            <div class="t">Gateway provider fallback<span class="badge">SONNET 5</span></div>
+            <div class="p">Selection walks the priority list, skipping…</div>
+          </div>
+          <div class="r">18:02</div>
+        </div>
+        <div class="grp">Yesterday</div>
+        <div class="row">
+          <div class="g">✳</div>
+          <div class="c">
+            <div class="t">Markdown table renderer<span class="badge">HAIKU 4.5</span></div>
+            <div class="p">Column widths are measured once per block…</div>
+          </div>
+          <div class="r">Fri</div>
+        </div>
+        <div class="row">
+          <div class="g">✳</div>
+          <div class="c">
+            <div class="t">SQLite migration plan<span class="badge">OPUS 5</span></div>
+            <div class="p">Version the schema in a single table and…</div>
+          </div>
+          <div class="r">Fri</div>
+        </div>
+        <div class="row">
+          <div class="g">✳</div>
+          <div class="c">
+            <div class="t">Token accounting audit<span class="badge">OPUS 5</span></div>
+            <div class="p">Counts drift when a turn is retried, because…</div>
+          </div>
+          <div class="r">Thu</div>
+        </div>
+      </div>
+      <div class="fab">＋ New chat</div>
+      <div class="tabs">
+        <div class="on"><span class="i">✳</span>Chats</div>
+        <div><span class="i">◫</span>Models</div>
+        <div><span class="i">⇄</span>Providers</div>
+        <div><span class="i">⚙</span>Settings</div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>Claude's home pattern:</b> a serif greeting instead of a title bar, search first, conversations grouped by
+    day with a snippet, and one clay call-to-action. The model badge on each row is your addition — in a
+    multi-provider client, which model wrote a thread is part of its identity.
+    <ul>
+      <li>Reachability is summarised in the subtitle, so a dead provider is visible before you open a chat.</li>
+      <li>The tab bar exposes Models and Providers as first-class destinations, matching your existing settings routes.</li>
+    </ul>
+  </div>
+</div>
+
+</div>
+
+</body>
+</html>

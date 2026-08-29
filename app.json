@@ -1,17 +1,17 @@
 {
   "expo": {
-    "name": "AgentRouter",
+    "name": "Jarvis",
     "slug": "agentrouter-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "scheme": "agentrouter",
+    "scheme": "jarvis",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#0B0F14"
+      "backgroundColor": "#262624"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -20,7 +20,7 @@
       "package": "org.lyric.agentrouter",
       "versionCode": 1,
       "adaptiveIcon": {
-        "backgroundColor": "#0B0F14",
+        "backgroundColor": "#262624",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },

@@ -15,10 +15,11 @@
 
 import { useState } from 'react';
 import { Image, Pressable, StyleSheet, View } from 'react-native';
+import type { ViewStyle } from 'react-native';
 
 import { CodeBlock } from '@/components/markdown/CodeBlock';
 import { Markdown } from '@/components/markdown/Markdown';
-import { Badge, Body, Inline, Note } from '@/components/ui';
+import { Badge, Body, Inline, Note, verticalSlop } from '@/components/ui';
 import { useSettings } from '@/stores/settings';
 import { useTheme } from '@/theme';
 import type { ContentBlock } from '@/transports/types';
@@ -51,30 +52,35 @@ function formatInput(input: unknown): string {
  * Collapsed because it is usually longer than the answer and reading it is a
  * choice; a transcript that opens with six screens of deliberation buries the
  * reply that was asked for. The header states the size so the choice is informed.
+ *
+ * Collapsed, it is a hairline pill on the page rather than a filled panel: an aside
+ * the reader may open, sized like one. Expanded, the reasoning gets its own tinted
+ * block so it cannot be mistaken for the answer.
  */
 function ThinkingPane({ text, redacted, defaultExpanded }: { text: string; redacted?: string; defaultExpanded: boolean }) {
   const t = useTheme();
   const [expanded, setExpanded] = useState(defaultExpanded);
 
+  const pill: ViewStyle = {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: t.spacing.sm,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.colors.border,
+    borderRadius: t.radius.pill,
+    paddingHorizontal: t.spacing.md,
+    paddingVertical: 5,
+  };
+
   // Redacted thinking is an opaque blob with no readable content. Showing its
   // length would imply there is something to expand; there is not.
   if (redacted !== undefined && !text) {
     return (
-      <View
-        style={{
-          backgroundColor: t.colors.thinkingBg,
-          borderColor: t.colors.thinkingBorder,
-          borderWidth: StyleSheet.hairlineWidth,
-          borderRadius: t.radius.md,
-          padding: t.spacing.sm,
-        }}
-      >
-        <Inline gap="sm">
-          <Badge label="Thinking" tone="neutral" />
-          <Body size="xs" tone="faint">
-            Redacted by the provider — encrypted, and replayed unread on the next turn.
-          </Body>
-        </Inline>
+      <View style={pill}>
+        <Body size="xs" tone="faint">
+          Thought, redacted by the provider — encrypted, and replayed unread on the next turn.
+        </Body>
       </View>
     );
   }
@@ -82,41 +88,37 @@ function ThinkingPane({ text, redacted, defaultExpanded }: { text: string; redac
   const words = text.trim() ? text.trim().split(/\s+/).length : 0;
 
   return (
-    <View
-      style={{
-        backgroundColor: t.colors.thinkingBg,
-        borderColor: t.colors.thinkingBorder,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderRadius: t.radius.md,
-        overflow: 'hidden',
-      }}
-    >
+    <View style={{ gap: t.spacing.sm }}>
       <Pressable
         onPress={() => setExpanded((value) => !value)}
         accessibilityRole="button"
         accessibilityState={{ expanded }}
         accessibilityLabel={`Thinking, ${words} words`}
-        style={({ pressed }) => ({
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: t.spacing.sm,
-          backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
-        })}
+        hitSlop={verticalSlop(30)}
+        style={({ pressed }) => [
+          pill,
+          { backgroundColor: pressed ? t.colors.surfaceActive : 'transparent' },
+        ]}
       >
-        <Inline gap="sm">
-          <Badge label="Thinking" tone="neutral" />
-          <Body size="xs" tone="faint">
-            {words === 1 ? '1 word' : `${words} words`}
-          </Body>
-        </Inline>
-        <Body size="sm" tone="faint">
-          {expanded ? '▲' : '▼'}
+        <Body size="xs" tone="faint">
+          {words === 1 ? 'Thought · 1 word' : `Thought · ${words} words`}
+        </Body>
+        <Body size="xs" tone="faint">
+          {expanded ? '⌃' : '⌄'}
         </Body>
       </Pressable>
 
       {expanded ? (
-        <View style={{ paddingHorizontal: t.spacing.sm, paddingBottom: t.spacing.sm }}>
+        <View
+          style={{
+            backgroundColor: t.colors.thinkingBg,
+            borderColor: t.colors.thinkingBorder,
+            borderWidth: StyleSheet.hairlineWidth,
+            borderRadius: t.radius.md,
+            paddingHorizontal: t.spacing.md,
+            paddingVertical: t.spacing.sm,
+          }}
+        >
           <Body
             size="sm"
             selectable
