@@ -1,0 +1,94 @@
+# Continuous integration: the three gates, on every push and every pull request.
+#
+# This workflow exists because the project's baseline used to live as a number in
+# a markdown file, which is the definition of an unverified claim. A recorded
+# "658 tests passing" tells you what someone saw once on one machine; this tells
+# you what is true of the commit in front of you.
+#
+# One job, not three. Typecheck, lint and test share an install that costs more
+# than all three gates put together, and splitting them to get parallel red X's
+# would triple the install for a few seconds of wall clock.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A force-push to a branch makes the in-flight run irrelevant, so cancel it.
+# Keyed on the ref rather than the SHA for exactly that reason.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Order matters: pnpm has to exist before setup-node can use `cache: pnpm`,
+      # because the cache resolution shells out to `pnpm store path`.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.1
+
+      # Node 24, not 22, and this is load-bearing rather than a preference for the
+      # newest thing. The database tests import `node:sqlite` to build the real
+      # schema and assert query plans with EXPLAIN QUERY PLAN; on Node 22 that
+      # module requires --experimental-sqlite, so on a Node 22 runner the whole
+      # `src/db/__tests__` directory fails to load. It also matches the version
+      # the project is developed against.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # --frozen-lockfile: a change that silently edits the lockfile fails here
+      # rather than producing a build nobody can reproduce. The repo's .npmrc
+      # sets legacy-peer-deps for an ERESOLVE conflict in the Expo 57 tree.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      # `--ci` so a missing snapshot fails instead of being written. Coverage runs
+      # here rather than in a separate step because jest.config.js carries a
+      # coverageThreshold, which means coverage is a gate and not a report — a
+      # second run to produce the same numbers would double the slowest step.
+      #
+      # `json-summary` is what the next step reads. `text-summary` goes to stdout
+      # only, so asking for it alone would leave nothing on disk to summarise.
+      - name: Test
+        run: pnpm test -- --ci --coverage --coverageReporters=text-summary --coverageReporters=json-summary
+
+      # `if: always()` so the summary is written even when the gate above failed —
+      # a red run is exactly when you want to see which threshold slipped. Reads
+      # the artefact Jest already wrote; it does not re-run the suite.
+      - name: Coverage summary
+        if: always()
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const path = "coverage/coverage-summary.json";
+            if (!fs.existsSync(path)) {
+              fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, "## Coverage\n\nNo coverage was produced — the suite did not get that far.\n");
+              process.exit(0);
+            }
+            const total = JSON.parse(fs.readFileSync(path, "utf8")).total;
+            const rows = ["lines", "statements", "branches", "functions"]
+              .map((k) => `| ${k} | ${total[k].pct}% | ${total[k].covered}/${total[k].total} |`)
+              .join("\n");
+            fs.appendFileSync(
+              process.env.GITHUB_STEP_SUMMARY,
+              `## Coverage\n\n| Metric | % | Covered |\n|---|---|---|\n${rows}\n\nFloors live in \`jest.config.js\` as \`coverageThreshold\`; they are a ratchet, not a target.\n`,
+            );
+          '

@@ -4,8 +4,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.0 |
-| **Status** | Current — describes schema `user_version = 1` as shipped in Phase 1 |
+| **Version** | 1.3 |
+| **Status** | Current — describes schema `user_version = 3` (Phase 1 baseline, plus the Phase 2 list index and the `memories` table), and the read paths added in Sprint 6: bulk operations (§5.3) and the export projection (§9.1) |
 | **Audience** | Mid-level engineers and architects joining the persistence, chat-store or search work |
 | **Companion docs** | [PRD.md](../PRD.md) · [TRD.md](../TRD.md) · [ARCHITECTURE.md](../ARCHITECTURE.md) · [progress.md](../progress.md) · [06_Eng_Plan.md](06_Eng_Plan.md) · [07_Deployment.md](07_Deployment.md) |
 
@@ -17,7 +17,7 @@ This document is the single authoritative description of **where every byte of u
 
 Three tiers hold state, and the split is a security boundary, not an optimisation:
 
-- **SQLite** (`expo-sqlite`, WAL) holds conversations, messages, tags and usage events — everything large, queryable, or historical.
+- **SQLite** (`expo-sqlite`, WAL) holds conversations, messages, tags, usage events and long-term memories — everything large, queryable, or historical.
 - **AsyncStorage**, via `zustand/middleware/persist`, holds provider profiles, model metadata and settings — small, whole-object, read-at-boot state.
 - **SecureStore** (Android Keystore) holds API keys and nothing else. **Keys are deliberately absent from every Zustand slice**, because persisted slices land in AsyncStorage, which is plaintext on a rooted device.
 
@@ -29,7 +29,7 @@ Where this document disagrees with `progress.md`, this document is correct: it w
 
 ## 1. Scope, non-goals, and how to read the diagrams
 
-**In scope:** the SQLite schema at `user_version = 1`, the JSON documents stored inside its `TEXT` columns, the persisted Zustand shapes, the SecureStore key namespace, the synchronisation rules between them, index rationale, query patterns, and the migration mechanism.
+**In scope:** the SQLite schema at `user_version = 3`, the JSON documents stored inside its `TEXT` columns, the persisted Zustand shapes, the SecureStore key namespace, the synchronisation rules between them, index rationale, query patterns, and the migration mechanism.
 
 **Out of scope:** the wire protocols themselves (see [TRD.md](../TRD.md) and `src/transports/`), the retry and failover policy ([06_Eng_Plan.md](06_Eng_Plan.md) §critical path), and UI rendering of any of this.
 
@@ -151,6 +151,19 @@ That last tier is absolute. `src/lib/secureKey.ts` is the only module that reads
        │     cost            REAL ▲den (NULL = unknown, ≠ 0.00)
        └─────────────────────────────┘
 
+       ┌─────────────────────────────────────┐
+       │              memories               │  no edge to conversations that
+       ├─────────────────────────────────────┤  the database enforces: the
+       │ PK  id                     TEXT     │  reference is soft on purpose,
+       │     kind                   TEXT     │  because a memory is *meant* to
+       │     text                   TEXT     │  outlive the conversation it
+       │ UQ  (kind, text)                    │  was learned from (§4.6, §5.2)
+       │     source_conversation_id TEXT[soft]
+       │     hits                   INTEGER  │
+       │     last_used_at           INTEGER  │
+       │     pinned                 INTEGER  │
+       └─────────────────────────────────────┘
+
 ▲den = deliberately denormalised, justified in §6.4
 ```
 
@@ -162,6 +175,7 @@ That last tier is absolute. `src/lib/secureKey.ts` is the only module that reads
 | `conversations` → `tags` | 1 : 0..N | FK on `tags.conversation_id`, PK `(conversation_id, tag)` | CASCADE |
 | `messages` → `messages_fts` | 1 : 1 | FTS5 external-content triggers | trigger DELETE |
 | `conversations` → `usage_events` | 1 : 0..N | **nothing** — soft reference | rows survive (§5.2) |
+| `conversations` → `memories` | 1 : 0..N | **nothing** — soft reference | rows survive (§4.6) |
 | `conversations` → `conversations` (fork) | 0..1 : 0..N | **nothing** — soft reference | rows survive |
 | provider profile → `conversations` | 1 : 0..N | **nothing** — `profile_id` is a string, profiles live in AsyncStorage | rows survive with a dangling id |
 | provider profile → SecureStore key | 1 : 0..1 | naming convention `apiKey:<profileId>` | key deleted explicitly by the store action |
@@ -172,7 +186,7 @@ The last two rows are the interesting ones, and they are the price of the tier s
 
 ## 4. Table reference (DDL as shipped)
 
-The full DDL lives in `src/db/schema.ts`. It is reproduced here in the order the migration creates it, with the commentary that matters for consumers.
+The full DDL lives in `src/db/ddl.ts` — a module with no `expo-sqlite` import, so tests can build the real schema under `node:sqlite`; `src/db/schema.ts` re-exports it and owns the connection. It is reproduced here in the order the migration creates it, with the commentary that matters for consumers.
 
 ### 4.1 `conversations`
 
@@ -281,7 +295,54 @@ External-content mode stores only the inverted index; the column data stays in `
 
 This table is created **outside the numbered migrations**, guarded by `IF NOT EXISTS` and a probe, because FTS5 is a compile-time option and not every Android/JSC/Hermes SQLite build in the wild has it. A missing FTS5 must degrade search, not brick the app on first launch — so the probe result is remembered and `searchMessages()` falls back to `LIKE`. The same fallback carries CJK queries, which `unicode61` tokenises poorly.
 
-At startup a **drift check** compares `count(*)` in `messages_fts` against `count(*)` in `messages` and issues `INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')` on mismatch. See §12.1 for the case this check cannot see.
+At startup a **drift check** asks FTS5 to verify itself with `INSERT INTO messages_fts(messages_fts, rank) VALUES ('integrity-check', 1)`, and issues `'rebuild'` when that raises. The `rank = 1` argument is the whole point: without it, FTS5 checks only that its own inverted index is internally well-formed, which stays true when the index and the `messages` rows have drifted apart. With it, FTS5 re-derives the index from the content table and compares — so an edited message body whose trigger never fired is caught. `src/db/__tests__/fts-integrity.test.ts` reproduces exactly that damage and asserts both halves. See §12.1 for the case even this check cannot see.
+
+The earlier check compared `count(*)` across the two tables, which is a strictly weaker claim: an `UPDATE` that changes a body leaves the counts identical and the index wrong, so search kept matching words the message no longer contained. That was debt D-03, now closed.
+
+---
+
+### 4.6 `memories`
+
+```sql
+CREATE TABLE IF NOT EXISTS memories (
+  id             TEXT    PRIMARY KEY NOT NULL,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL,
+  kind           TEXT    NOT NULL,   -- 'preference' | 'fact' | 'project' | 'style'
+  text           TEXT    NOT NULL,   -- one sentence, third person, about the user
+  source_conversation_id TEXT,       -- soft reference, no FK
+  hits           INTEGER NOT NULL DEFAULT 1,
+  last_used_at   INTEGER,
+  pinned         INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS memories_unique ON memories (kind, text);
+CREATE INDEX IF NOT EXISTS memories_rank ON memories (pinned DESC, hits DESC, updated_at DESC);
+```
+
+The durable things the app has learned about the user, carried into the system prompt of every later conversation. A distillation pass every few assistant turns asks the model what it learned that would still be true in a different conversation; `src/chat/memory.ts` parses, screens and folds the answer, and this table stores what survives.
+
+**This is the only table whose rows are written by the model rather than by the user.** Every column below exists to contain a consequence of that.
+
+**`(kind, text)` is unique, and writes are an UPSERT.** Re-learning something bumps `hits` and `updated_at` instead of inserting a second row:
+
+```sql
+INSERT INTO memories (…) VALUES (…)
+ON CONFLICT (kind, text) DO UPDATE SET hits = hits + 1, updated_at = excluded.updated_at
+```
+
+Two conversations distilling in the same minute can independently produce the identical sentence, so this has to be a constraint rather than a check-then-insert. Note what the clause deliberately does *not* touch: `pinned` and `created_at` survive a restatement, because a user's pin is not something a later extraction gets to undo.
+
+Uniqueness is on the pair, not on `text` alone. The same sentence under two kinds is two memories, and the distinction carries weight: "writes terse commit messages" as a `style` is an instruction to follow, as a `fact` it is merely true.
+
+Exact-match uniqueness is only half of deduplication. It cannot see that "prefers TypeScript over JavaScript" and "the user prefers TypeScript over JavaScript" are one memory, so `sameMemory()` folds near-duplicates by Jaccard overlap *before* the write. The index is the backstop, not the mechanism.
+
+**`hits` is a ranking signal, not a truth claim.** The prompt block is budgeted in characters (§`MEMORY_BUDGET_CHARS`, 1,600), and when everything does not fit, something has to be dropped. Ranking is `pinned DESC, hits DESC, updated_at DESC` — restatement above recency, because one stray extraction from last night should not outrank a preference the user has confirmed for a month. `memories_rank` spells that ORDER BY out exactly, so the read is an index scan with no TEMP B-TREE.
+
+**`last_used_at` is written after a send, not during ranking.** It is provenance for the settings screen — "last used 12 August" is how a user judges whether a memory is still earning its place in every request — and it deliberately does not feed the ranking, which would make the ordering self-reinforcing.
+
+**No column here may hold a secret.** The distillation prompt sees the conversation, so a user who pasted a token into a message could have it reflected back as a "fact worth remembering" and then written to plaintext SQLite and replayed into every subsequent request. Candidates are screened with `isSafeToRemember()`, which is `redactString(text) === text` — the same redaction the debug log uses. A candidate that changes under redaction is **dropped, not stored redacted**: a memory reading "the user's key is [REDACTED]" is worth nothing and looks like a bug.
+
+**The user can see, edit, and destroy all of it.** `app/settings/memory.tsx` lists every row verbatim with its provenance, allows per-row edit/pin/delete, and has a one-confirmation "Forget everything". `settings.memoryEnabled` is a separate control that stops both halves of the feature — no block is sent and no distillation request is made — while keeping what is already stored, because "stop learning" and "forget everything" are different intentions.
 
 ---
 
@@ -303,19 +364,44 @@ PRAGMA foreign_keys = ON;     -- MUST be set per connection, not per database
 | `seq` unique within a conversation | *convention only* — no unique index | two messages at one position; order becomes insertion-order dependent |
 | `text` equals `flattenContent(content)` | *convention only* — written together in one statement | search finds text the message does not contain |
 | FTS row per message | FTS5 triggers | silent search misses |
+| One row per remembered statement | `UNIQUE (kind, text)` + UPSERT | the same sentence twice in every prompt, forever |
+| No memory contains a secret | `isSafeToRemember()` at the write boundary; no DB constraint | a pasted token written to plaintext SQLite and replayed into every request |
 | `role` in {user, assistant, system} | TypeScript at the boundary; no CHECK constraint | render fallback, replay rejected by the gateway |
 
 The three "convention only" rows are honest gaps. `seq` has no `UNIQUE (conversation_id, seq)` index because forking deliberately reuses source `seq` values in a *different* conversation (which the composite index would allow) and because a unique constraint would turn a benign collision into a lost message. The `text`/`content` pairing is enforced by there being exactly one insert path — `insertMessage()` — and by tests, not by the database. If a second write path ever appears, add a generated column or a trigger; do not rely on two call sites remembering.
 
 ### 5.2 Deliberately *un*enforced references
 
-Three references are stored without a foreign key. Each is a decision, not an omission.
+Four references are stored without a foreign key. Each is a decision, not an omission.
 
 **`usage_events.conversation_id`** — deleting a conversation must not erase what it cost. Spend history is an accounting record; the user deleting a chat is deleting content, not asking to be told they spent less money this month. Consumers must tolerate a dangling `conversation_id` and render "(deleted conversation)".
 
 **`conversations.forked_from_id` / `forked_from_message_id`** — a fork is an independent conversation that happens to remember its origin. A CASCADE here would delete a user's *new* work because they tidied up the old thread, which is indefensible. Reads must handle "parent no longer exists" by dropping the provenance affordance.
 
 **`conversations.profile_id`** — cross-tier (§3.1), so SQLite cannot enforce it even if we wanted it to.
+
+**`memories.source_conversation_id`** — a memory outliving the conversation that revealed it is the entire point of the feature. `ON DELETE CASCADE` here would mean that clearing history silently rewrites what the app knows about the user, which is both surprising and unauditable: the memory screen would lose rows the user never asked it to lose. Consumers must tolerate a dangling id.
+
+### 5.3 The blast radius of a bulk delete
+
+Selecting fifty conversations and confirming is the most destructive thing this app can do, and what it destroys is decided by the schema rather than by the statement. `DELETE FROM conversations WHERE id IN (…)` is three sentences long; what follows from it is:
+
+| Row type | Fate | Mechanism |
+|---|---|---|
+| `messages` | deleted | FK `ON DELETE CASCADE` |
+| `conversation_tags` | deleted | FK `ON DELETE CASCADE` |
+| `messages_fts` entries | deleted | `AFTER DELETE` trigger on `messages`, firing on the *cascaded* rows |
+| `usage_events` | **kept** | no FK — deliberately (§5.2) |
+| `memories` | **kept** | no FK — deliberately (§5.2) |
+| forks of a deleted conversation | kept, provenance dangles | no FK — deliberately (§5.2) |
+
+Three properties follow, all of them asserted in `src/db/__tests__/bulk.test.ts` against a real SQLite database built from the shipped DDL:
+
+1. **The pragma is load-bearing.** With `PRAGMA foreign_keys = OFF` — SQLite's default, per connection — the `ON DELETE CASCADE` clauses parse and are then ignored, leaving orphan messages and an FTS index full of hits pointing at conversations that no longer exist. The test sets the pragma explicitly for exactly this reason: without it, every assertion about cascading would pass for the wrong reason.
+2. **It is one transaction or nothing.** `deleteConversations()` wraps the whole selection in a single `withTransactionAsync`, chunked at `BULK_CHUNK = 400` ids per statement to stay under `SQLITE_MAX_VARIABLE_NUMBER` (999 on older builds, and callers bind parameters of their own alongside the id list). This is a correctness requirement, not a performance one: a partial delete has no undo and no way for the user to say which half went. The test proves the rollback, not just the commit.
+3. **Counts are what happened.** Every bulk statement returns SQLite's own `changes`, and every confirmation reports that rather than the size of the selection — `setArchivedSql` carries `WHERE archived <> ?` so the number means "rows that moved", and `addTagSql` inserts `SELECT … FROM conversations`, so an id that has since been deleted elsewhere contributes no row instead of tripping the foreign key and taking the transaction with it.
+
+The SQL itself lives in `src/db/bulk.ts` as pure builders with no `expo-sqlite` import, for the same reason `ddl.ts` does: the test exercises the statements that ship, not a copy of them.
 
 ---
 
@@ -635,49 +721,91 @@ const MAX_TOKENS_ALIAS = 'max_completion_tokens';  // retried once under the old
 
 ---
 
+### 9.1 The export projection — a third destination, and a lossy one on purpose
+
+`src/chat/export.ts` is the only other consumer of stored `ContentBlock[]`, and unlike the two adapters it is allowed to lose information, because its output leaves the device for a human rather than for a model.
+
+| Block | Markdown | JSON export |
+|---|---|---|
+| `text` | the text, redacted | `{type, text}` |
+| `thinking` | blockquoted under **Thinking**, only with `includeThinking` | omitted entirely unless `includeThinking`; `signature` never written |
+| `image` | `[image: image/png, ~340 kB — not included in this export]` | `{type, mediaType, bytes, included: false}` — **no `data`** |
+| `document` with `text` | the descriptor, then the extracted text | `{type, mediaType, name, text}` |
+| `document` with `data` | descriptor only | `{type, mediaType, name, bytes, included: false}` — **no `data`** |
+| `tool_use` | fenced JSON of the arguments | `{type, id, name, input}` with every nested string redacted |
+| `tool_result` | fenced text, `(error)` when `isError` | `{type, toolUseId, content, isError?}` |
+
+Three rules the module encodes, all of them properties of the *data* rather than of the presentation:
+
+1. **Base64 never leaves in an export.** `bytes` is derived from the stored base64 length (`length × 3 / 4`) so the record of the attachment survives without its contents. A transcript that silently contains every photo the user ever attached is a different artefact from the one they asked for, and a 3 MB photo becomes 4 MB of unreadable text in the middle of a document.
+2. **`signature` is never exported.** It is replay credentials for one provider's thinking block — meaningless outside the conversation, and confusing inside a file a person reads.
+3. **Every string is redacted twice.** Once as it is written and once over the finished artefact. The second pass is a net under the first, because the failure mode is a field somebody adds to the exporter later without it — which produces a leak, not a compile error. `src/chat/export.test.ts` greps the finished artefact for a planted key rather than checking a call site, so that omission fails a test. It is safe to run over serialised JSON because `[REDACTED]` contains no character JSON escapes.
+
+Tool-call arguments get a value-only deep walk rather than `redact()` from `@/lib/redact`: that function also blanks secret-*named* keys, which would silently drop a legitimate `token` argument and make the export a misleading record of what was actually sent. Structure is preserved; values are scrubbed.
+
+The JSON envelope carries `schemaVersion` (`EXPORT_SCHEMA_VERSION`, currently 1) so a future importer can refuse a file it does not understand rather than guessing. It is independent of `PRAGMA user_version`: the storage schema can change without changing the export shape, and vice versa.
+
+---
+
 ## 10. Migration strategy
 
 ### 10.1 Numbered migrations — `PRAGMA user_version`
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  openDatabase()                                                  │
+│  open()                                                          │
 │    1. PRAGMA journal_mode = WAL                                  │
 │    2. PRAGMA foreign_keys = ON        ← per connection, always    │
 │    3. read PRAGMA user_version → v                               │
-│    4. for each migration m where m.version > v:                  │
-│         BEGIN;  m.up(db);  PRAGMA user_version = m.version; COMMIT│
+│    4. for version v .. SCHEMA_VERSION - 1:                        │
+│         withTransaction(exec MIGRATIONS[version])                │
+│         PRAGMA user_version = version + 1   ← see the note below  │
 │    5. ensureFts()   ← outside the numbered chain, idempotent      │
-│    6. FTS drift check → rebuild if counts disagree               │
+│    6. FTS integrity-check → rebuild if it disagrees               │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+`MIGRATIONS` is an **array of SQL strings** in `src/db/ddl.ts`, indexed by the version it upgrades *from*: `MIGRATIONS[0]` creates the baseline schema, `MIGRATIONS[1]` is 1 → 2, `MIGRATIONS[2]` is 2 → 3. `SCHEMA_VERSION` is therefore `MIGRATIONS.length`, and a test asserts it. The DDL lives in its own module with no `expo-sqlite` import so the real schema can be built under `node:sqlite` in Jest — every migration test in `src/db/__tests__/` runs the SQL that actually ships, not a copy of it.
+
+**The version bump is outside the migration's transaction**, which is a deliberate deviation from the rule below and the reason every statement in a migration is written `IF NOT EXISTS`. The alternative — `PRAGMA user_version` inside `withTransactionAsync` — is not available through the `expo-sqlite` async transaction wrapper. So the recovery story is idempotency instead of atomicity: a process killed between the commit and the bump re-runs a migration that has already applied, and each one is written to survive that. `src/db/__tests__/memories.test.ts` asserts it for the current step; do the same for the next one.
 
 Rules for adding a migration:
 
 - **Append only.** Never edit a shipped migration; a device that already ran it will not run it again, so an edit produces two different schemas both claiming the same `user_version`.
-- **One transaction per migration**, with the version bump inside it. A migration that half-applies and then bumps the version is unrecoverable on a device with no backup.
+- **Write every statement idempotently** — `IF NOT EXISTS`, `DROP … IF EXISTS` — for the reason above, and add a test that re-running the step does not throw.
 - **Additive first.** `ALTER TABLE … ADD COLUMN` with a `DEFAULT` is cheap and safe. SQLite cannot drop or retype a column in place; that needs the 12-step table rebuild (`CREATE new; INSERT … SELECT; DROP old; RENAME`), which on a large `messages` table means copying every base64 attachment. Budget for it or avoid needing it.
 - **Never migrate the FTS table in the numbered chain.** It may not exist (§4.5). `ensureFts()` owns it.
 - **Rebuild FTS after any migration that rewrites `messages`.** A table rebuild changes rowids; see §12.1.
 
-A worked example — adding per-conversation pinned-model locking in a hypothetical v2:
+The two migrations shipped so far, and what each is an example of:
 
 ```ts
-const MIGRATIONS = [
-  { version: 1, up: (db) => { /* … shipped schema … */ } },
-  {
-    version: 2,
-    up: (db) => {
-      // Additive, defaulted, no table rewrite, no FTS impact.
-      db.execSync(`ALTER TABLE conversations ADD COLUMN model_locked INTEGER NOT NULL DEFAULT 0`);
-      // Better index for the archived filter (see §11.3).
-      db.execSync(`CREATE INDEX IF NOT EXISTS conversations_list
-                     ON conversations (archived, pinned DESC, updated_at DESC)`);
-      db.execSync(`DROP INDEX IF EXISTS conversations_order`);
-    },
-  },
+export const MIGRATIONS = [
+  /* 0 → 1 */ `/* … the Phase 1 baseline schema … */`,
+
+  /* 1 → 2 */ `
+    -- Replacing an index in place. The list has always been "unarchived,
+    -- pinned first, newest first", but the old index started at \`pinned\`, so
+    -- every query tested \`archived\` row by row and sorted the survivors in a
+    -- TEMP B-TREE. Leading with \`archived\` makes that an equality constraint,
+    -- and carrying \`id\` lets the index spell out the whole ORDER BY — which is
+    -- what turns keyset paging into a range seek. Debt D-02.
+    DROP INDEX IF EXISTS conversations_order;
+    CREATE INDEX IF NOT EXISTS conversations_list
+      ON conversations (archived, pinned DESC, updated_at DESC, id DESC);
+  `,
+
+  /* 2 → 3 */ `
+    -- Adding a table (§4.6). No existing table is touched, so there is no FTS
+    -- impact and nothing to copy: the cheapest shape a migration can have.
+    CREATE TABLE IF NOT EXISTS memories ( /* … */ );
+    CREATE UNIQUE INDEX IF NOT EXISTS memories_unique ON memories (kind, text);
+    CREATE INDEX IF NOT EXISTS memories_rank ON memories (pinned DESC, hits DESC, updated_at DESC);
+  `,
 ];
 ```
+
+An index-only migration like 1 → 2 is worth a planner test rather than a schema test: the point of the change is the query plan, and only `EXPLAIN QUERY PLAN` can tell you whether you got it. `src/db/__tests__/list-query.test.ts` asserts `SEARCH … USING INDEX conversations_list` and the absence of `TEMP B-TREE` over 500 seeded rows, which is the difference between the index existing and the index being used.
 
 ### 10.2 How `config` evolves *without* a migration
 
@@ -733,7 +861,7 @@ The `partialize` function is a security control as much as a size control: anyth
 | Index | Definition | Serves | Access path |
 |---|---|---|---|
 | implicit PK | `conversations(id)` | open a conversation | rowid lookup |
-| `conversations_order` | `(pinned DESC, updated_at DESC)` | conversation list ordering | index scan, no sort |
+| `conversations_list` | `(archived, pinned DESC, updated_at DESC, id DESC)` | conversation list: filter, order and keyset page | index range scan, no sort |
 | implicit PK | `messages(id)` | update/delete one message | rowid lookup |
 | `messages_conversation` | `(conversation_id, seq)` | load a transcript in order | range scan, no sort |
 | `tags` PK | `(conversation_id, tag)` | tags for one conversation; idempotent insert | range scan |
@@ -750,18 +878,20 @@ The `partialize` function is a security control as much as a size control: anyth
 
 No index on `messages.created_at`. Nothing queries by it (§7.5), and an unused index is pure write amplification: every insert maintains it, no read benefits.
 
-### 11.3 A known index gap
+### 11.3 The index gap, and how it was closed
 
-`listConversations()` filters on `archived`:
+`listConversationPage()` filters on `archived` and orders by `(pinned, updated_at, id)`:
 
 ```sql
 SELECT … FROM conversations c WHERE c.archived = ?
-ORDER BY c.pinned DESC, c.updated_at DESC
+ORDER BY c.pinned DESC, c.updated_at DESC, c.id DESC
 ```
 
-`conversations_order` is `(pinned DESC, updated_at DESC)` — it can serve the ordering but not the predicate, so SQLite either scans the index and filters every row, or scans the table. Either way the work is proportional to *all* conversations rather than to the unarchived ones. `(archived, pinned DESC, updated_at DESC)` would serve both: equality on the leading column, then ordering.
+The original `conversations_order (pinned DESC, updated_at DESC)` could serve the ordering but not the predicate, so SQLite scanned and filtered every row — work proportional to *all* conversations rather than to the unarchived ones — and could not spell out the tiebreaker on `id` either.
 
-This is not urgent — the constant is small at realistic conversation counts, and archiving is rare, so most users have `archived = 0` on nearly every row and the filter discards almost nothing. It is logged in [06_Eng_Plan.md](06_Eng_Plan.md) as technical debt with the migration already drafted in §10.1, to be applied on the next migration for any reason rather than shipping a migration solely for it.
+Migration 1 → 2 drops it and creates `conversations_list (archived, pinned DESC, updated_at DESC, id DESC)`. Leading with `archived` turns the filter into an equality constraint; carrying `id` lets the index express the whole `ORDER BY`, which is what removes the `TEMP B-TREE` and makes the keyset cursor `(pinned, updated_at, id) < (?, ?, ?)` an index range constraint rather than a filter.
+
+Asserted rather than assumed: `src/db/__tests__/list-query.test.ts` runs the shipped SQL against real SQLite over 500 seeded conversations with deliberate `updated_at` ties and requires `SEARCH … USING INDEX conversations_list`, no `TEMP B-TREE`, no `OFFSET`, and that paging visits every row exactly once across the ties.
 
 ### 11.4 Verifying an index actually gets used
 
@@ -1168,4 +1298,6 @@ Cross-references: sprint sequencing and the debt items raised here are tracked i
 | Version | Date | Author | Change summary |
 |---|---|---|---|
 | 1.0 | 2026-08-29 | Architecture review | Initial issue. Documents schema `user_version = 1` as shipped in Phase 1: full ER diagram and cardinalities, DDL reference, enforced and deliberately unenforced constraints, 1NF→3NF walkthrough with the four intentional violations, floating-point `seq` rationale including the precision limit and the redundant `Number.EPSILON`, JSON schemas for all five JSON columns, the cross-wire content-block encoding matrix, migration strategy for both SQL and JSON evolution, index rationale plus one identified gap, the three-tier synchronisation map, a query cookbook with anti-patterns, and four schema-level hazards (FTS/`VACUUM` desynchronisation, preview drift, mid-stream loss, hydration race). Appendix D corrects three stale entries in `progress.md`. |
+| 1.1 – 1.2 | 2026-08-30 | Phase 2 | Not written up as separate rows at the time; recorded here for completeness. `user_version` 1 → 2 replaced `conversations_order` with the composite `conversations_list` index that the list query actually uses, and 2 → 3 added the `memories` table (§4.6) with its soft, deliberately unenforced reference to `conversations` — a memory is meant to outlive the conversation it was learned from. |
+| 1.3 | 2026-08-30 | Sprint 6 | **§5.3 The blast radius of a bulk delete** — the table of what cascades and what deliberately survives, the load-bearing `PRAGMA foreign_keys = ON`, one-transaction-or-nothing as a correctness requirement, and `BULK_CHUNK` against `SQLITE_MAX_VARIABLE_NUMBER`. **§9.1 The export projection** — `ContentBlock[]`'s third destination, base64 never leaving, `signature` never exported, double redaction and why the artefact is greped rather than the call site checked, and `EXPORT_SCHEMA_VERSION` being independent of `user_version`. §11.1 and §11.3 corrected: `conversations_order` was replaced by `conversations_list (archived, pinned DESC, updated_at DESC, id DESC)` in migration 1 → 2, so the "known index gap" is closed and the planner assertion that proves it is named. No schema change; `user_version` remains 3. |
 
