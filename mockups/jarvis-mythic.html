@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Jarvis — mythic marks</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  :root {
+    --bg: #faf9f5; --surface: #ffffff; --sunk: #f0eee6; --line: #e3e0d6;
+    --ink: #1f1e1d; --ink2: #4a4842; --mute: #74716a; --clay: #c1603c; --clay-soft: #f7ece7;
+    --d-bg: #262624; --d-surface: #30302e; --d-line: #3d3d39; --d-ink: #f5f4ef; --d-mute: #a3a099; --d-clay: #d97757;
+  }
+  body { background: var(--bg); color: var(--ink); font-family: "Inter", "Segoe UI", system-ui, sans-serif; padding: 30px 22px 70px; }
+  .head { max-width: 1420px; margin: 0 auto 26px; }
+  .head h1 { font-family: Georgia, serif; font-weight: 400; font-size: 27px; margin: 0 0 10px; letter-spacing: -.015em; }
+  .head p { margin: 0 0 8px; color: var(--ink2); font-size: 13.5px; line-height: 1.7; max-width: 880px; }
+  .head b { font-weight: 600; color: var(--ink); }
+  .flag { max-width: 880px; margin: 16px 0 0; border-left: 3px solid var(--clay); background: var(--clay-soft);
+          padding: 13px 16px; font-size: 12.5px; line-height: 1.72; color: var(--ink2); border-radius: 0 8px 8px 0; }
+  .flag b { color: var(--ink); font-weight: 600; }
+  h2.sec { max-width: 1420px; margin: 44px auto 18px; font-family: Georgia, serif; font-weight: 400; font-size: 20px;
+           padding-bottom: 9px; border-bottom: 1px solid var(--line); }
+  .deck { max-width: 1420px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 24px; align-items: start; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 18px 18px 16px; }
+  .tag { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+  .tag .num { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--mute); }
+  .tag .name { font-size: 15.5px; font-weight: 600; }
+  .tag .dev { font-family: Georgia, serif; font-size: 13.5px; color: var(--clay); }
+  .src { font-size: 11.5px; color: var(--mute); line-height: 1.6; margin: 5px 0 12px; }
+  .stage { display: flex; align-items: center; gap: 20px; padding: 14px 4px 16px; border-bottom: 1px solid var(--line); }
+  .big { width: 94px; height: 94px; flex: none; color: var(--ink); }
+  .ramp { display: flex; align-items: flex-end; gap: 15px; }
+  .ramp .u { text-align: center; color: var(--mute); font-size: 9.5px; font-family: ui-monospace, monospace; }
+  .ramp .u svg { color: var(--ink); display: block; margin: 0 auto 5px; }
+  .tiles { display: flex; gap: 9px; align-items: center; padding: 14px 0 13px; border-bottom: 1px solid var(--line); }
+  .tile { width: 52px; height: 52px; border-radius: 13px; display: grid; place-items: center; }
+  .tile svg { width: 33px; height: 33px; }
+  .t-iv { background: var(--sunk); border: 1px solid var(--line); color: var(--ink); }
+  .t-cl { background: var(--clay); color: #fff; }
+  .t-dk { background: var(--d-bg); color: var(--d-clay); }
+  .t-lb { font-size: 9.5px; color: var(--mute); letter-spacing: .05em; line-height: 1.5; }
+  .trow { display: flex; align-items: center; gap: 10px; padding: 13px 2px 2px; }
+  .trow svg { width: 26px; height: 26px; flex: none; color: var(--clay); }
+  .shim { font-size: 14px; background: linear-gradient(90deg, var(--mute) 0%, var(--ink) 42%, var(--mute) 84%);
+          background-size: 210px 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+          animation: shim 1.7s linear infinite; }
+  @keyframes shim { 0% { background-position: -130px 0 } 100% { background-position: 210px 0 } }
+  .notes { font-size: 12.5px; color: var(--ink2); line-height: 1.7; padding-top: 12px; margin-top: 11px; border-top: 1px solid var(--line); }
+  .notes b { font-weight: 600; color: var(--ink); }
+  .notes code { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--clay); }
+  .notes ul { margin: 7px 0 0; padding-left: 17px; } .notes li { margin-bottom: 4px; }
+  .verdict { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; font-weight: 600; margin-top: 11px; }
+  .v-yes { color: #3f7d52; } .v-no { color: #b3271e; } .v-mid { color: var(--clay); }
+  /* svg defaults */
+  svg.mk { fill: none; stroke: currentColor; stroke-width: 3.2; stroke-linecap: round; stroke-linejoin: round; }
+  .cc { transform-box: view-box; transform-origin: 32px 32px; }
+  @keyframes spin { to { transform: rotate(360deg) } }
+  @keyframes spinr { to { transform: rotate(-360deg) } }
+  @keyframes hub { 0%, 100% { transform: scale(.78); opacity: .6 } 50% { transform: scale(1.16); opacity: 1 } }
+  @keyframes draw { 0% { stroke-dashoffset: 232 } 68%, 100% { stroke-dashoffset: 0 } }
+  @keyframes bloom { 0%, 100% { transform: scale(.58); opacity: .38 } 45% { transform: scale(1); opacity: 1 } }
+  @keyframes rise { 0%, 100% { opacity: .28 } 50% { opacity: 1 } }
+  @keyframes squeeze { 0%, 100% { transform: scale(1); opacity: .42 } 50% { transform: scale(.87); opacity: 1 } }
+  @keyframes bindu { 0%, 100% { transform: scale(.65) } 50% { transform: scale(1.55) } }
+  .think .an-spin { animation: spin 3.4s linear infinite; }
+  .think .an-spin-s { animation: spin 6.5s linear infinite; }
+  .think .an-spinr { animation: spinr 4.6s linear infinite; }
+  .think .an-hub { animation: hub 1.3s ease-in-out infinite; }
+  .think .an-draw { stroke-dasharray: 232; animation: draw 2.3s ease-out infinite; }
+  .think .an-bloom { animation: bloom 1.6s ease-in-out infinite; }
+  .think .an-rise { animation: rise 1.2s ease-in-out infinite; }
+  .think .an-sq { animation: squeeze 1.9s ease-in-out infinite; }
+  .think .an-bindu { animation: bindu 1.9s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) {
+    .think * { animation-duration: 4s !important; animation-timing-function: ease-in-out !important; }
+  }
+  /* lockups */
+  .locks { max-width: 1420px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 18px; }
+  .lock { border: 1px solid var(--line); border-radius: 14px; padding: 22px 20px; display: flex; align-items: center; gap: 14px; background: var(--surface); }
+  .lock.dk { background: var(--d-bg); border-color: var(--d-line); color: var(--d-ink); }
+  .lock svg { width: 44px; height: 44px; flex: none; color: var(--clay); }
+  .lock.dk svg { color: var(--d-clay); }
+  .lock .wm { font-family: Georgia, serif; font-size: 31px; letter-spacing: -.01em; line-height: 1.1; }
+  .lock .wu { font-size: 18px; letter-spacing: .3em; text-transform: uppercase; font-weight: 500; }
+  .lock .sub { font-size: 10px; color: var(--mute); letter-spacing: .14em; text-transform: uppercase; margin-top: 4px; }
+  .lock.dk .sub { color: var(--d-mute); }
+  /* in-context */
+  .frames { max-width: 1420px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 30px; align-items: start; }
+  .phone { width: 100%; max-width: 372px; height: 620px; border-radius: 32px; overflow: hidden; position: relative;
+           border: 1px solid #2c2b25; box-shadow: 0 22px 54px rgba(0,0,0,.5); }
+  .scr { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--d-bg); color: var(--d-ink); }
+  .tb { flex: none; height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid var(--d-line); }
+  .tb .ic { width: 32px; height: 32px; display: grid; place-items: center; color: var(--d-mute); font-size: 16px; }
+  .tb .mid { flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .tb .nm { font-family: Georgia, serif; font-size: 16px; }
+  .tb .chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--d-line); border-radius: 999px;
+              padding: 5px 10px; font-size: 12px; color: var(--d-mute); }
+  .tb .chip i { font-style: normal; width: 6px; height: 6px; border-radius: 50%; background: #4f9d69; }
+  .thread { flex: 1; padding: 18px 16px 0; overflow: hidden; }
+  .u-msg { background: var(--d-surface); border-radius: 16px; padding: 12px 14px; font-size: 14px; line-height: 1.55;
+           margin: 0 0 20px auto; max-width: 88%; }
+  .a-wrap { display: flex; gap: 11px; }
+  .a-wrap > svg { width: 24px; height: 24px; flex: none; color: var(--d-clay); margin-top: 1px; }
+  .steps { flex: 1; }
+  .steps .st { display: flex; gap: 8px; font-size: 13px; color: var(--d-mute); margin-bottom: 8px; align-items: baseline; }
+  .steps .st b { color: #6f9d7d; font-weight: 400; }
+  .steps .st code { font-family: ui-monospace, monospace; font-size: 12px; color: #d8d5cc; }
+  .steps .shim { font-size: 13.5px; background: linear-gradient(90deg, var(--d-mute) 0%, var(--d-ink) 42%, var(--d-mute) 84%);
+                 background-size: 210px 100%; -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .comp { flex: none; padding: 10px 14px 18px; }
+  .comp-box { border: 1px solid #4d4c47; border-radius: 20px; background: var(--d-surface); padding: 12px 13px 9px; }
+  .comp-ph { font-size: 14px; color: var(--d-mute); }
+  .comp-row { display: flex; align-items: center; gap: 6px; margin-top: 11px; }
+  .comp-row .sp { flex: 1; }
+  .comp-row .c2 { border: 1px solid var(--d-line); border-radius: 999px; padding: 4px 9px; font-size: 11px; color: var(--d-mute); }
+  .comp-row .send { width: 30px; height: 30px; border-radius: 50%; background: var(--d-clay); color: #fff; display: grid; place-items: center; font-size: 13px; }
+  .splash { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+            gap: 20px; background: var(--d-bg); }
+  .splash svg { width: 78px; height: 78px; color: var(--d-clay); }
+  .splash .wm { font-family: Georgia, serif; font-size: 33px; color: var(--d-ink); }
+  .splash .ln { font-size: 12.5px; color: var(--d-mute); }
+  .cap { font-size: 12.5px; color: var(--ink2); line-height: 1.7; margin-top: 14px; max-width: 372px; }
+  .cap b { color: var(--ink); font-weight: 600; }
+  .rec { max-width: 1420px; margin: 0 auto; background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--clay);
+         border-radius: 0 14px 14px 0; padding: 20px 22px; font-size: 13.5px; line-height: 1.75; color: var(--ink2); }
+  .rec b { color: var(--ink); font-weight: 600; }
+  .rec ol { margin: 10px 0 0; padding-left: 20px; } .rec li { margin-bottom: 7px; }
+  .rec code { font-family: ui-monospace, monospace; font-size: 12px; color: var(--clay); }
+</style>
+</head>
+<body>
+
+<!-- ============ static symbol library (used for size ramps + icon tiles) ============ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!-- 1 · Sudarshana Chakra -->
+  <symbol id="s1" viewBox="0 0 64 64">
+    <circle cx="32" cy="32" r="22" />
+    <g stroke-width="2.6">
+      <line x1="32" y1="11" x2="32" y2="53" />
+      <line x1="32" y1="11" x2="32" y2="53" transform="rotate(45 32 32)" />
+      <line x1="32" y1="11" x2="32" y2="53" transform="rotate(90 32 32)" />
+      <line x1="32" y1="11" x2="32" y2="53" transform="rotate(135 32 32)" />
+    </g>
+    <g fill="currentColor" stroke="none">
+      <path d="M32 3.4l3.1 6.8h-6.2z" /><path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(45 32 32)" />
+      <path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(90 32 32)" /><path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(135 32 32)" />
+      <path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(180 32 32)" /><path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(225 32 32)" />
+      <path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(270 32 32)" /><path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(315 32 32)" />
+      <circle cx="32" cy="32" r="5.2" />
+    </g>
+  </symbol>
+  <!-- 2 · Swastika -->
+  <symbol id="s2" viewBox="0 0 64 64">
+    <g stroke-width="4.4">
+      <path d="M32 32V9h14" /><path d="M32 32h23v14" /><path d="M32 32v23H18" /><path d="M32 32H9V18" />
+    </g>
+    <g fill="currentColor" stroke="none">
+      <circle cx="40" cy="20" r="2.1" /><circle cx="44" cy="40" r="2.1" />
+      <circle cx="24" cy="44" r="2.1" /><circle cx="20" cy="24" r="2.1" />
+    </g>
+  </symbol>
+  <!-- 3 · Nandyavarta pinwheel -->
+  <symbol id="s3" viewBox="0 0 64 64">
+    <g fill="currentColor" stroke="none">
+      <path d="M32 32C30 20 34 10 45 6 44 20 40 28 32 32Z" />
+      <path d="M32 32C30 20 34 10 45 6 44 20 40 28 32 32Z" transform="rotate(90 32 32)" />
+      <path d="M32 32C30 20 34 10 45 6 44 20 40 28 32 32Z" transform="rotate(180 32 32)" />
+      <path d="M32 32C30 20 34 10 45 6 44 20 40 28 32 32Z" transform="rotate(270 32 32)" />
+      <circle cx="32" cy="32" r="4.4" />
+    </g>
+  </symbol>
+  <!-- 4 · Sri Yantra -->
+  <symbol id="s4" viewBox="0 0 64 64">
+    <g stroke-width="2.6">
+      <path d="M32 7l23 40H9z" /><path d="M32 57L9 17h46z" />
+      <path d="M32 19l13 23H19z" /><path d="M32 45L19 22h26z" />
+    </g>
+    <circle cx="32" cy="32" r="3" fill="currentColor" stroke="none" />
+  </symbol>
+  <!-- 5 · Trishula -->
+  <symbol id="s5" viewBox="0 0 64 64">
+    <g stroke-width="3.4">
+      <path d="M32 59V31" /><path d="M17 35h30" />
+      <path d="M18 35V21" /><path d="M46 35V21" /><path d="M32 31V13" />
+    </g>
+    <g fill="currentColor" stroke="none">
+      <path d="M18 11l3.7 9.4h-7.4z" /><path d="M46 11l3.7 9.4h-7.4z" /><path d="M32 3l4.2 10.4h-8.4z" />
+      <circle cx="32" cy="45" r="3.4" />
+    </g>
+  </symbol>
+  <!-- 6 · Shankha -->
+  <symbol id="s6" viewBox="0 0 64 64">
+    <path stroke-width="3.4" transform="rotate(-28 32 32)" d="M32 32a2 2 0 0 1 4 0a4 4 0 0 1-8 0a6 6 0 0 1 12 0a8 8 0 0 1-16 0a10 10 0 0 1 20 0a12 12 0 0 1-24 0a14 14 0 0 1 28 0a16 16 0 0 1-32 0" />
+  </symbol>
+  <!-- 7 · Padma -->
+  <symbol id="s7" viewBox="0 0 64 64">
+    <g fill="currentColor" stroke="none">
+      <path id="pt" d="M32 33C25 26 25 13 32 6 39 13 39 26 32 33Z" />
+      <use href="#pt" transform="rotate(45 32 32)" /><use href="#pt" transform="rotate(90 32 32)" />
+      <use href="#pt" transform="rotate(135 32 32)" /><use href="#pt" transform="rotate(180 32 32)" />
+      <use href="#pt" transform="rotate(225 32 32)" /><use href="#pt" transform="rotate(270 32 32)" />
+      <use href="#pt" transform="rotate(315 32 32)" />
+    </g>
+  </symbol>
+  <!-- 8 · Vajra -->
+  <symbol id="s8" viewBox="0 0 64 64">
+    <g stroke-width="3">
+      <path d="M32 26V19" /><path d="M24 19h16" /><path d="M32 19V5" />
+      <path d="M25 19C25 11 27.5 7.5 32 5" /><path d="M39 19C39 11 36.5 7.5 32 5" />
+      <path d="M32 38v7" /><path d="M24 45h16" /><path d="M32 45v14" />
+      <path d="M25 45C25 53 27.5 56.5 32 59" /><path d="M39 45C39 53 36.5 56.5 32 59" />
+    </g>
+    <circle cx="32" cy="32" r="5.4" fill="currentColor" stroke="none" />
+  </symbol>
+</svg>
+
+<div class="head">
+  <h1>Jarvis — marks drawn from mythological symbols</h1>
+  <p>Eight candidates, all in the Claude-referenced palette you approved: ivory <b>#faf9f5</b>, clay <b>#c1603c</b>,
+     Georgia for the wordmark. Every mark is a single <b>currentColor</b> stroke drawing on a 64×64 grid, so one file
+     serves the app icon, the tab bar and the in-message spinner.</p>
+  <p>The <b>large glyph on each card is animating right now</b> — that is the real proposed thinking state, not a still.
+     Beside it is the size ramp (30px tab glyph, 18px inline), then the mark on three icon backgrounds, then the
+     thinking row as it would appear in a message.</p>
+  <div class="flag">
+    <b>One thing you should decide with open eyes.</b> The swastika (02) is a genuine and ancient auspicious symbol, and
+     in an Indian context it reads exactly as you intend. Outside that context the identical shape is a banned Nazi
+     emblem: it is illegal to display in Germany, Austria and several other countries, and both the Apple App Store and
+     Google Play have removed apps carrying it as hate imagery, usually without letting you argue the etymology. If
+     Jarvis is only ever for you, it costs you nothing. If it ships to a store, expect rejection or a takedown, and your
+     app icon is the one asset you cannot contextualise. That is why <b>03</b> exists: the Nandyavarta pinwheel is the
+     same four-fold rotational auspicious geometry with curved arms, so it keeps the meaning and loses the silhouette.
+  </div>
+</div>
+
+<div class="deck">
+
+  <!-- ============ 01 CHAKRA ============ -->
+  <div class="card">
+    <div class="tag"><span class="num">01</span><span class="name">Sudarshana Chakra</span><span class="dev">सुदर्शन चक्र</span></div>
+    <div class="src">Vishnu's spinning discus — the weapon that is thrown, finds its mark and returns. Sixteen edges, always in motion.</div>
+    <div class="stage think">
+      <svg class="mk big" viewBox="0 0 64 64">
+        <g class="cc an-spin">
+          <circle cx="32" cy="32" r="22" />
+          <g stroke-width="2.6">
+            <line x1="32" y1="11" x2="32" y2="53" /><line x1="32" y1="11" x2="32" y2="53" transform="rotate(45 32 32)" />
+            <line x1="32" y1="11" x2="32" y2="53" transform="rotate(90 32 32)" /><line x1="32" y1="11" x2="32" y2="53" transform="rotate(135 32 32)" />
+          </g>
+          <g fill="currentColor" stroke="none">
+            <path d="M32 3.4l3.1 6.8h-6.2z" /><path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(45 32 32)" />
+            <path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(90 32 32)" /><path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(135 32 32)" />
+            <path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(180 32 32)" /><path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(225 32 32)" />
+            <path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(270 32 32)" /><path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(315 32 32)" />
+          </g>
+        </g>
+        <circle class="cc an-hub" cx="32" cy="32" r="5.2" fill="currentColor" stroke="none" />
+      </svg>
+      <div class="ramp">
+        <div class="u"><svg class="mk" width="30" height="30" viewBox="0 0 64 64"><use href="#s1"/></svg>30</div>
+        <div class="u"><svg class="mk" width="18" height="18" viewBox="0 0 64 64"><use href="#s1"/></svg>18</div>
+      </div>
+    </div>
+    <div class="tiles">
+      <div class="tile t-iv"><svg class="mk" viewBox="0 0 64 64"><use href="#s1"/></svg></div>
+      <div class="tile t-cl"><svg class="mk" viewBox="0 0 64 64"><use href="#s1"/></svg></div>
+      <div class="tile t-dk"><svg class="mk" viewBox="0 0 64 64"><use href="#s1"/></svg></div>
+      <div class="t-lb">ivory<br>clay<br>dark</div>
+    </div>
+    <div class="trow think">
+      <svg class="mk" viewBox="0 0 64 64">
+        <g class="cc an-spin"><circle cx="32" cy="32" r="21" stroke-width="4"/>
+          <g stroke-width="4"><line x1="32" y1="13" x2="32" y2="51"/><line x1="32" y1="13" x2="32" y2="51" transform="rotate(60 32 32)"/>
+          <line x1="32" y1="13" x2="32" y2="51" transform="rotate(120 32 32)"/></g></g>
+        <circle class="cc an-hub" cx="32" cy="32" r="6" fill="currentColor" stroke="none"/>
+      </svg>
+      <span class="shim">Thinking…</span>
+    </div>
+    <div class="notes">
+      <b>The animation is the symbol.</b> A chakra that isn't spinning is just a wheel, so idle stillness and thinking
+      motion are the same gesture at two speeds — you get the state machine free, with no invented flourish.
+      <ul>
+        <li>The narrative fits what your app actually is: Vishnu the preserver dispatches the discus to a target and it
+            comes back. That is a request router. The sixteen spokes can even carry provider count if you ever want it.</li>
+        <li>The hub pulses at 1.3s independently of the 3.4s rotation, so the mark reads as alive rather than mechanical.</li>
+        <li>At 18px the teeth blur into a soft edge — the ramp shows a 3-spoke reduced form for the inline spinner.</li>
+      </ul>
+      <div class="verdict v-yes">Recommended · no legal risk · reads at every size</div>
+    </div>
+  </div>
+
+  <!-- ============ 02 SWASTIKA ============ -->
+  <div class="card">
+    <div class="tag"><span class="num">02</span><span class="name">Swastika</span><span class="dev">स्वस्तिक</span></div>
+    <div class="src">"Su-asti" — that which is good. Four-fold rotation around a still centre; drawn at thresholds and at the start of new work.</div>
+    <div class="stage think">
+      <svg class="mk big" viewBox="0 0 64 64">
+        <g class="cc an-spin-s" stroke-width="4.4">
+          <path d="M32 32V9h14" /><path d="M32 32h23v14" /><path d="M32 32v23H18" /><path d="M32 32H9V18" />
+        </g>
+        <g class="cc an-spin-s" fill="currentColor" stroke="none">
+          <circle class="an-rise" cx="40" cy="20" r="2.1" /><circle class="an-rise" cx="44" cy="40" r="2.1" style="animation-delay:.3s" />
+          <circle class="an-rise" cx="24" cy="44" r="2.1" style="animation-delay:.6s" /><circle class="an-rise" cx="20" cy="24" r="2.1" style="animation-delay:.9s" />
+        </g>
+      </svg>
+      <div class="ramp">
+        <div class="u"><svg class="mk" width="30" height="30" viewBox="0 0 64 64"><use href="#s2"/></svg>30</div>
+        <div class="u"><svg class="mk" width="18" height="18" viewBox="0 0 64 64"><use href="#s2"/></svg>18</div>
+      </div>
+    </div>
+    <div class="tiles">
+      <div class="tile t-iv"><svg class="mk" viewBox="0 0 64 64"><use href="#s2"/></svg></div>
+      <div class="tile t-cl"><svg class="mk" viewBox="0 0 64 64"><use href="#s2"/></svg></div>
+      <div class="tile t-dk"><svg class="mk" viewBox="0 0 64 64"><use href="#s2"/></svg></div>
+      <div class="t-lb">ivory<br>clay<br>dark</div>
+    </div>
+    <div class="trow think">
+      <svg class="mk" viewBox="0 0 64 64">
+        <g class="cc an-spin-s" stroke-width="6"><path d="M32 32V11h13" /><path d="M32 32h21v13" /><path d="M32 32v21H19" /><path d="M32 32H11V19" /></g>
+      </svg>
+      <span class="shim">Thinking…</span>
+    </div>
+    <div class="notes">
+      <b>Formally, it is the best mark on this page.</b> Four bent arms make a perfect rotational lock, it is unmistakable
+      at 18px, it needs no fill, and rotating it slowly is a natural thinking state — the arms read as a pinwheel
+      catching air. The dots in the pockets fire in sequence so motion is visible even when the rotation is too slow to see.
+      <ul>
+        <li><b>Rotate it clockwise, never anticlockwise.</b> The clockwise form is the auspicious one; the reversed
+            sauvastika carries the opposite association and also happens to match the Nazi tilt more closely.</li>
+        <li>Keep it upright, not on the 45° diagonal. The diagonal presentation is the one people misread instantly.</li>
+        <li>Store risk is real and not arguable — see the note at the top. Fine as a personal build; a liability if you publish.</li>
+      </ul>
+      <div class="verdict v-no">Strongest shape · do not ship to an app store</div>
+    </div>
+  </div>
+
+  <!-- ============ 03 NANDYAVARTA ============ -->
+  <div class="card">
+    <div class="tag"><span class="num">03</span><span class="name">Nandyavarta pinwheel</span><span class="dev">नन्द्यावर्त</span></div>
+    <div class="src">The auspicious "turning" motif from temple floor plans and kolam — the swastika's four-fold rotation with the corners drawn as curves.</div>
+    <div class="stage think">
+      <svg class="mk big" viewBox="0 0 64 64">
+        <g class="cc an-spin" fill="currentColor" stroke="none">
+          <path class="an-sq cc" d="M32 32C30 20 34 10 45 6 44 20 40 28 32 32Z" />
+          <path class="an-sq cc" d="M32 32C30 20 34 10 45 6 44 20 40 28 32 32Z" transform="rotate(90 32 32)" style="animation-delay:.18s" />
+          <path class="an-sq cc" d="M32 32C30 20 34 10 45 6 44 20 40 28 32 32Z" transform="rotate(180 32 32)" style="animation-delay:.36s" />
+          <path class="an-sq cc" d="M32 32C30 20 34 10 45 6 44 20 40 28 32 32Z" transform="rotate(270 32 32)" style="animation-delay:.54s" />
+        </g>
+        <circle class="cc an-hub" cx="32" cy="32" r="4.6" fill="currentColor" stroke="none" />
+      </svg>
+      <div class="ramp">
+        <div class="u"><svg class="mk" width="30" height="30" viewBox="0 0 64 64"><use href="#s3"/></svg>30</div>
+        <div class="u"><svg class="mk" width="18" height="18" viewBox="0 0 64 64"><use href="#s3"/></svg>18</div>
+      </div>
+    </div>
+    <div class="tiles">
+      <div class="tile t-iv"><svg class="mk" viewBox="0 0 64 64"><use href="#s3"/></svg></div>
+      <div class="tile t-cl"><svg class="mk" viewBox="0 0 64 64"><use href="#s3"/></svg></div>
+      <div class="tile t-dk"><svg class="mk" viewBox="0 0 64 64"><use href="#s3"/></svg></div>
+      <div class="t-lb">ivory<br>clay<br>dark</div>
+    </div>
+    <div class="trow think">
+      <svg class="mk" viewBox="0 0 64 64">
+        <g class="cc an-spin" fill="currentColor" stroke="none">
+          <path class="an-sq cc" d="M32 32C29 20 34 10 46 5 45 20 40 28 32 32Z" />
+          <path class="an-sq cc" d="M32 32C29 20 34 10 46 5 45 20 40 28 32 32Z" transform="rotate(120 32 32)" style="animation-delay:.2s" />
+          <path class="an-sq cc" d="M32 32C29 20 34 10 46 5 45 20 40 28 32 32Z" transform="rotate(240 32 32)" style="animation-delay:.4s" />
+        </g>
+      </svg>
+      <span class="shim">Thinking…</span>
+    </div>
+    <div class="notes">
+      <b>The swastika's meaning without the swastika's problem.</b> Same four-fold auspicious turning, same still centre,
+      but the arms are teardrops, so nobody outside your intent misreads it and no store flags it.
+      <ul>
+        <li>Thinking runs two layers at once: the whole pinwheel rotates while each arm squeezes toward the hub in
+            sequence, which gives a sense of drawing energy inward rather than just spinning.</li>
+        <li>Filled arms make it the most confident mark here on a clay tile — it holds up as a 1024px store icon.</li>
+        <li>Trade-off: it is a shape, not a letter. The J has to live entirely in the wordmark beside it.</li>
+      </ul>
+      <div class="verdict v-yes">Recommended · safest route to the same symbolism</div>
+    </div>
+  </div>
+
+  <!-- ============ 04 SRI YANTRA ============ -->
+  <div class="card">
+    <div class="tag"><span class="num">04</span><span class="name">Sri Yantra</span><span class="dev">श्रीयन्त्र</span></div>
+    <div class="src">Interlocking triangles converging on the bindu — the point from which everything unfolds. A diagram of attention, not a weapon.</div>
+    <div class="stage think">
+      <svg class="mk big" viewBox="0 0 64 64">
+        <g stroke-width="2.6">
+          <path class="cc an-sq" d="M32 7l23 40H9z" />
+          <path class="cc an-sq" d="M32 57L9 17h46z" style="animation-delay:.24s" />
+          <path class="cc an-sq" d="M32 19l13 23H19z" style="animation-delay:.48s" />
+          <path class="cc an-sq" d="M32 45L19 22h26z" style="animation-delay:.72s" />
+        </g>
+        <circle class="cc an-bindu" cx="32" cy="32" r="3" fill="currentColor" stroke="none" />
+      </svg>
+      <div class="ramp">
+        <div class="u"><svg class="mk" width="30" height="30" viewBox="0 0 64 64"><use href="#s4"/></svg>30</div>
+        <div class="u"><svg class="mk" width="18" height="18" viewBox="0 0 64 64"><use href="#s4"/></svg>18</div>
+      </div>
+    </div>
+    <div class="tiles">
+      <div class="tile t-iv"><svg class="mk" viewBox="0 0 64 64"><use href="#s4"/></svg></div>
+      <div class="tile t-cl"><svg class="mk" viewBox="0 0 64 64"><use href="#s4"/></svg></div>
+      <div class="tile t-dk"><svg class="mk" viewBox="0 0 64 64"><use href="#s4"/></svg></div>
+      <div class="t-lb">ivory<br>clay<br>dark</div>
+    </div>
+    <div class="trow think">
+      <svg class="mk" viewBox="0 0 64 64">
+        <g stroke-width="4.4"><path class="cc an-sq" d="M32 9l22 38H10z" /><path class="cc an-sq" d="M32 55L10 17h44z" style="animation-delay:.3s" /></g>
+        <circle class="cc an-bindu" cx="32" cy="32" r="4" fill="currentColor" stroke="none" />
+      </svg>
+      <span class="shim">Thinking…</span>
+    </div>
+    <div class="notes">
+      <b>The most intellectual mark, and the least weapon-like.</b> Thinking contracts each triangle toward the bindu in
+      sequence while the bindu itself swells — convergence on a point, which is a fair picture of a model resolving an answer.
+      <ul>
+        <li>Because nothing rotates, it never competes with the streaming caret. Good citizen next to text.</li>
+        <li>Honest weakness: the full nine-triangle yantra is unreadable below 24px, so this is already a reduction to
+            four, and the ramp shows a two-triangle form for 18px. That's three drawings to maintain, not one.</li>
+        <li>Hairline strokes need care on the clay tile — the 2.6 width is at the edge of what survives icon downscaling.</li>
+      </ul>
+      <div class="verdict v-mid">Distinctive · needs a simplified small form</div>
+    </div>
+  </div>
+
+  <!-- ============ 05 TRISHULA ============ -->
+  <div class="card">
+    <div class="tag"><span class="num">05</span><span class="name">Trishula</span><span class="dev">त्रिशूल</span></div>
+    <div class="src">Shiva's trident — three prongs read variously as the three gunas, three times, three worlds. Vertical, weighted, unmistakably a silhouette.</div>
+    <div class="stage think">
+      <svg class="mk big" viewBox="0 0 64 64">
+        <g stroke-width="3.4">
+          <path d="M32 59V31" /><path d="M17 35h30" />
+          <path class="an-rise" d="M18 35V21" /><path class="an-rise" d="M46 35V21" style="animation-delay:.4s" />
+          <path class="an-rise" d="M32 31V13" style="animation-delay:.2s" />
+        </g>
+        <g fill="currentColor" stroke="none">
+          <path class="an-rise" d="M18 11l3.7 9.4h-7.4z" /><path class="an-rise" d="M46 11l3.7 9.4h-7.4z" style="animation-delay:.4s" />
+          <path class="an-rise" d="M32 3l4.2 10.4h-8.4z" style="animation-delay:.2s" />
+          <circle class="cc an-hub" cx="32" cy="45" r="3.4" />
+        </g>
+      </svg>
+      <div class="ramp">
+        <div class="u"><svg class="mk" width="30" height="30" viewBox="0 0 64 64"><use href="#s5"/></svg>30</div>
+        <div class="u"><svg class="mk" width="18" height="18" viewBox="0 0 64 64"><use href="#s5"/></svg>18</div>
+      </div>
+    </div>
+    <div class="tiles">
+      <div class="tile t-iv"><svg class="mk" viewBox="0 0 64 64"><use href="#s5"/></svg></div>
+      <div class="tile t-cl"><svg class="mk" viewBox="0 0 64 64"><use href="#s5"/></svg></div>
+      <div class="tile t-dk"><svg class="mk" viewBox="0 0 64 64"><use href="#s5"/></svg></div>
+      <div class="t-lb">ivory<br>clay<br>dark</div>
+    </div>
+    <div class="trow think">
+      <svg class="mk" viewBox="0 0 64 64">
+        <g stroke-width="5"><path d="M32 59V33" /><path d="M15 35h34" />
+          <path class="an-rise" d="M17 35V20" /><path class="an-rise" d="M47 35V20" style="animation-delay:.4s" />
+          <path class="an-rise" d="M32 33V10" style="animation-delay:.2s" /></g>
+      </svg>
+      <span class="shim">Thinking…</span>
+    </div>
+    <div class="notes">
+      <b>Thinking charges the prongs bottom-to-tip, left, centre, right</b> — three lights filling in sequence, which is
+      the closest thing here to a literal progress indicator without being a spinner.
+      <ul>
+        <li>Excellent as a silhouette: it survives being punched out of a monochrome Android layer, which is where most
+            marks fall apart.</li>
+        <li>Tall and narrow, so on a square icon it either floats with big side margins or gets cropped. Wants the
+            wordmark stacked beneath it rather than beside it.</li>
+        <li>It reads as a weapon before it reads as a brand. That may be exactly the tone you want, or the opposite of
+            the calm Claude surface it sits on — worth deciding deliberately.</li>
+      </ul>
+      <div class="verdict v-mid">Strong silhouette · awkward aspect ratio</div>
+    </div>
+  </div>
+
+  <!-- ============ 06 SHANKHA ============ -->
+  <div class="card">
+    <div class="tag"><span class="num">06</span><span class="name">Shankha spiral</span><span class="dev">शङ्ख</span></div>
+    <div class="src">The conch Vishnu holds — sound that announces and begins. Its geometry is a single unbroken outward spiral.</div>
+    <div class="stage think">
+      <svg class="mk big" viewBox="0 0 64 64">
+        <path class="an-draw" stroke-width="3.4" transform="rotate(-28 32 32)" d="M32 32a2 2 0 0 1 4 0a4 4 0 0 1-8 0a6 6 0 0 1 12 0a8 8 0 0 1-16 0a10 10 0 0 1 20 0a12 12 0 0 1-24 0a14 14 0 0 1 28 0a16 16 0 0 1-32 0" />
+      </svg>
+      <div class="ramp">
+        <div class="u"><svg class="mk" width="30" height="30" viewBox="0 0 64 64"><use href="#s6"/></svg>30</div>
+        <div class="u"><svg class="mk" width="18" height="18" viewBox="0 0 64 64"><use href="#s6"/></svg>18</div>
+      </div>
+    </div>
+    <div class="tiles">
+      <div class="tile t-iv"><svg class="mk" viewBox="0 0 64 64"><use href="#s6"/></svg></div>
+      <div class="tile t-cl"><svg class="mk" viewBox="0 0 64 64"><use href="#s6"/></svg></div>
+      <div class="tile t-dk"><svg class="mk" viewBox="0 0 64 64"><use href="#s6"/></svg></div>
+      <div class="t-lb">ivory<br>clay<br>dark</div>
+    </div>
+    <div class="trow think">
+      <svg class="mk" viewBox="0 0 64 64">
+        <path class="an-draw" stroke-width="5" transform="rotate(-28 32 32)" d="M32 32a3 3 0 0 1 6 0a6 6 0 0 1-12 0a9 9 0 0 1 18 0a12 12 0 0 1-24 0a15 15 0 0 1 30 0" />
+      </svg>
+      <span class="shim">Thinking…</span>
+    </div>
+    <div class="notes">
+      <b>The only mark whose animation draws rather than moves.</b> Thinking paints the spiral outward from the centre and
+      loops, so the motion reads as sound leaving the conch — or a response unspooling. It is also the cheapest possible
+      animation: one <code>strokeDashoffset</code> value.
+      <ul>
+        <li>One path, one stroke, no fill. Smallest asset on the page and trivially themeable.</li>
+        <li>It is a spiral, and spirals are a crowded space — Nautilus, Wolfram, a hundred yoga studios. It carries your
+            meaning but it will not feel proprietary the way 01 or 03 does.</li>
+        <li>Below 20px the inner turns collapse into a dot; the ramp uses a 5-turn reduction.</li>
+      </ul>
+      <div class="verdict v-mid">Beautiful motion · least distinctive shape</div>
+    </div>
+  </div>
+
+  <!-- ============ 07 PADMA ============ -->
+  <div class="card">
+    <div class="tag"><span class="num">07</span><span class="name">Padma</span><span class="dev">पद्म</span></div>
+    <div class="src">The eight-petalled lotus — Vishnu's fourth attribute, and the standard emblem of something unfolding from still water.</div>
+    <div class="stage think">
+      <svg class="mk big" viewBox="0 0 64 64">
+        <g fill="currentColor" stroke="none">
+          <path class="cc an-bloom" d="M32 33C25 26 25 13 32 6 39 13 39 26 32 33Z" />
+          <path class="cc an-bloom" d="M32 33C25 26 25 13 32 6 39 13 39 26 32 33Z" transform="rotate(45 32 32)" style="animation-delay:.1s" />
+          <path class="cc an-bloom" d="M32 33C25 26 25 13 32 6 39 13 39 26 32 33Z" transform="rotate(90 32 32)" style="animation-delay:.2s" />
+          <path class="cc an-bloom" d="M32 33C25 26 25 13 32 6 39 13 39 26 32 33Z" transform="rotate(135 32 32)" style="animation-delay:.3s" />
+          <path class="cc an-bloom" d="M32 33C25 26 25 13 32 6 39 13 39 26 32 33Z" transform="rotate(180 32 32)" style="animation-delay:.4s" />
+          <path class="cc an-bloom" d="M32 33C25 26 25 13 32 6 39 13 39 26 32 33Z" transform="rotate(225 32 32)" style="animation-delay:.5s" />
+          <path class="cc an-bloom" d="M32 33C25 26 25 13 32 6 39 13 39 26 32 33Z" transform="rotate(270 32 32)" style="animation-delay:.6s" />
+          <path class="cc an-bloom" d="M32 33C25 26 25 13 32 6 39 13 39 26 32 33Z" transform="rotate(315 32 32)" style="animation-delay:.7s" />
+        </g>
+      </svg>
+      <div class="ramp">
+        <div class="u"><svg class="mk" width="30" height="30" viewBox="0 0 64 64"><use href="#s7"/></svg>30</div>
+        <div class="u"><svg class="mk" width="18" height="18" viewBox="0 0 64 64"><use href="#s7"/></svg>18</div>
+      </div>
+    </div>
+    <div class="tiles">
+      <div class="tile t-iv"><svg class="mk" viewBox="0 0 64 64"><use href="#s7"/></svg></div>
+      <div class="tile t-cl"><svg class="mk" viewBox="0 0 64 64"><use href="#s7"/></svg></div>
+      <div class="tile t-dk"><svg class="mk" viewBox="0 0 64 64"><use href="#s7"/></svg></div>
+      <div class="t-lb">ivory<br>clay<br>dark</div>
+    </div>
+    <div class="trow think">
+      <svg class="mk" viewBox="0 0 64 64">
+        <g fill="currentColor" stroke="none">
+          <path class="cc an-bloom" d="M32 33C24 25 24 12 32 4 40 12 40 25 32 33Z" />
+          <path class="cc an-bloom" d="M32 33C24 25 24 12 32 4 40 12 40 25 32 33Z" transform="rotate(90 32 32)" style="animation-delay:.16s" />
+          <path class="cc an-bloom" d="M32 33C24 25 24 12 32 4 40 12 40 25 32 33Z" transform="rotate(180 32 32)" style="animation-delay:.32s" />
+          <path class="cc an-bloom" d="M32 33C24 25 24 12 32 4 40 12 40 25 32 33Z" transform="rotate(270 32 32)" style="animation-delay:.48s" />
+        </g>
+      </svg>
+      <span class="shim">Thinking…</span>
+    </div>
+    <div class="notes">
+      <b>Petals bloom in sequence around the ring</b> — the gentlest thinking state here, and closest in temperament to the
+      calm ivory surface you approved. It is also, structurally, an eight-armed star, which is why it sits so naturally
+      where Claude puts its ✳.
+      <ul>
+        <li>Reads instantly at 18px if you drop to four petals, which the ramp shows.</li>
+        <li>Softest read of the eight — this is a mark about opening, not about power. If "Jarvis" to you means capability
+            and machinery, this is the wrong emotional register.</li>
+        <li>Lotuses are heavily used by Indian institutions and wellness apps; distinctive, but not unclaimed.</li>
+      </ul>
+      <div class="verdict v-mid">Calmest fit to the UI · softest personality</div>
+    </div>
+  </div>
+
+  <!-- ============ 08 VAJRA ============ -->
+  <div class="card">
+    <div class="tag"><span class="num">08</span><span class="name">Vajra</span><span class="dev">वज्र</span></div>
+    <div class="src">Indra's thunderbolt — diamond-hard and irresistible. Prongs curl to a point at both ends around a central sphere.</div>
+    <div class="stage think">
+      <svg class="mk big" viewBox="0 0 64 64">
+        <g class="an-rise" stroke-width="3">
+          <path d="M32 26V19" /><path d="M24 19h16" /><path d="M32 19V5" />
+          <path d="M25 19C25 11 27.5 7.5 32 5" /><path d="M39 19C39 11 36.5 7.5 32 5" />
+        </g>
+        <g class="an-rise" stroke-width="3" style="animation-delay:.6s">
+          <path d="M32 38v7" /><path d="M24 45h16" /><path d="M32 45v14" />
+          <path d="M25 45C25 53 27.5 56.5 32 59" /><path d="M39 45C39 53 36.5 56.5 32 59" />
+        </g>
+        <circle class="cc an-hub" cx="32" cy="32" r="5.4" fill="currentColor" stroke="none" />
+      </svg>
+      <div class="ramp">
+        <div class="u"><svg class="mk" width="30" height="30" viewBox="0 0 64 64"><use href="#s8"/></svg>30</div>
+        <div class="u"><svg class="mk" width="18" height="18" viewBox="0 0 64 64"><use href="#s8"/></svg>18</div>
+      </div>
+    </div>
+    <div class="tiles">
+      <div class="tile t-iv"><svg class="mk" viewBox="0 0 64 64"><use href="#s8"/></svg></div>
+      <div class="tile t-cl"><svg class="mk" viewBox="0 0 64 64"><use href="#s8"/></svg></div>
+      <div class="tile t-dk"><svg class="mk" viewBox="0 0 64 64"><use href="#s8"/></svg></div>
+      <div class="t-lb">ivory<br>clay<br>dark</div>
+    </div>
+    <div class="trow think">
+      <svg class="mk" viewBox="0 0 64 64">
+        <g class="an-rise" stroke-width="5"><path d="M32 25V17" /><path d="M22 17h20" /><path d="M32 17V4" /></g>
+        <g class="an-rise" stroke-width="5" style="animation-delay:.6s"><path d="M32 39v8" /><path d="M22 47h20" /><path d="M32 47v13" /></g>
+        <circle class="cc an-hub" cx="32" cy="32" r="6.2" fill="currentColor" stroke="none" />
+      </svg>
+      <span class="shim">Thinking…</span>
+    </div>
+    <div class="notes">
+      <b>Thinking pulses out of the core to both tips, alternating</b> — request going out, answer coming back, which is
+      literally what your router does on every turn. The still sphere at the centre is the app; the prongs are the providers.
+      <ul>
+        <li>Vertically symmetric, so it centres perfectly in a square icon with no optical adjustment.</li>
+        <li>Ten strokes is the most complex mark here. At 18px it must reduce to a three-line form, shown in the ramp.</li>
+        <li>The alternating pulse is the only animation on the page that could be read as a loading bar — a small bonus,
+            since it implies direction rather than idle spinning.</li>
+      </ul>
+      <div class="verdict v-mid">Best story for a router · most complex to draw</div>
+    </div>
+  </div>
+
+</div>
+
+<h2 class="sec">Wordmark lockups — the three I would actually ship</h2>
+<div class="locks">
+  <div class="lock">
+    <svg class="mk" viewBox="0 0 64 64"><use href="#s1"/></svg>
+    <div><div class="wm">Jarvis</div><div class="sub">Sudarshana</div></div>
+  </div>
+  <div class="lock dk">
+    <svg class="mk" viewBox="0 0 64 64"><use href="#s3"/></svg>
+    <div><div class="wm">Jarvis</div><div class="sub">Nandyavarta</div></div>
+  </div>
+  <div class="lock">
+    <svg class="mk" viewBox="0 0 64 64"><use href="#s8"/></svg>
+    <div><div class="wu">Jarvis</div><div class="sub">Vajra</div></div>
+  </div>
+  <div class="lock dk">
+    <svg class="mk" viewBox="0 0 64 64"><use href="#s4"/></svg>
+    <div><div class="wu">Jarvis</div><div class="sub">Sri Yantra</div></div>
+  </div>
+</div>
+
+<h2 class="sec">In context — the chakra as the working glyph</h2>
+<div class="frames">
+  <div>
+    <div class="phone">
+      <div class="scr">
+        <div class="tb">
+          <div class="ic">☰</div>
+          <div class="mid"><span class="nm">Jarvis</span><span class="chip"><i></i>Opus 5</span></div>
+          <div class="ic">＋</div>
+        </div>
+        <div class="thread">
+          <div class="u-msg">Why do our token counts drift when a turn is retried?</div>
+          <div class="a-wrap think">
+            <svg class="mk" viewBox="0 0 64 64">
+              <g class="cc an-spin"><circle cx="32" cy="32" r="21" stroke-width="4"/>
+                <g stroke-width="4"><line x1="32" y1="13" x2="32" y2="51"/><line x1="32" y1="13" x2="32" y2="51" transform="rotate(60 32 32)"/>
+                <line x1="32" y1="13" x2="32" y2="51" transform="rotate(120 32 32)"/></g></g>
+              <circle class="cc an-hub" cx="32" cy="32" r="6" fill="currentColor" stroke="none"/>
+            </svg>
+            <div class="steps">
+              <div class="st"><b>✓</b><span>Read <code>usage.ts</code></span></div>
+              <div class="st"><b>✓</b><span>Traced the retry accounting path</span></div>
+              <div class="st"><b>✓</b><span>Compared 3 provider responses</span></div>
+              <div class="st"><span class="shim">Checking whether partials are double-counted…</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="comp">
+          <div class="comp-box">
+            <div class="comp-ph">Reply to Jarvis…</div>
+            <div class="comp-row"><span class="c2">＋</span><span class="c2">⚒ Tools 3</span><span class="sp"></span>
+              <span class="c2">Opus 5 ⌄</span><span class="send">↑</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cap"><b>The mark doubles as the spinner.</b> No separate loading indicator anywhere in the app — the
+      discus turns while work is happening and stops dead when it isn't, so stillness itself carries information.</div>
+  </div>
+  <div>
+    <div class="phone">
+      <div class="splash think">
+        <svg class="mk" viewBox="0 0 64 64">
+          <g class="cc an-spin">
+            <circle cx="32" cy="32" r="22" />
+            <g stroke-width="2.6">
+              <line x1="32" y1="11" x2="32" y2="53" /><line x1="32" y1="11" x2="32" y2="53" transform="rotate(45 32 32)" />
+              <line x1="32" y1="11" x2="32" y2="53" transform="rotate(90 32 32)" /><line x1="32" y1="11" x2="32" y2="53" transform="rotate(135 32 32)" />
+            </g>
+            <g fill="currentColor" stroke="none">
+              <path d="M32 3.4l3.1 6.8h-6.2z" /><path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(45 32 32)" />
+              <path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(90 32 32)" /><path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(135 32 32)" />
+              <path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(180 32 32)" /><path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(225 32 32)" />
+              <path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(270 32 32)" /><path d="M32 3.4l3.1 6.8h-6.2z" transform="rotate(315 32 32)" />
+            </g>
+          </g>
+          <circle class="cc an-hub" cx="32" cy="32" r="5.2" fill="currentColor" stroke="none" />
+        </svg>
+        <div class="wm">Jarvis</div>
+        <div class="ln">Checking providers…</div>
+      </div>
+    </div>
+    <div class="cap"><b>Cold start is already the thinking state</b>, which is honest — the app really is reaching out to
+      your providers on launch. The splash needs no spinner of its own.</div>
+  </div>
+</div>
+
+<h2 class="sec">What I would do</h2>
+<div class="rec">
+  <b>01 Sudarshana Chakra</b>, with <b>03 Nandyavarta</b> as the alternative if you want the swastika's exact symbolism
+  without its exact shape. The chakra wins for one reason that is not aesthetic: it is the only mark whose meaning
+  <i>requires</i> motion, so the thinking animation is not decoration bolted onto a logo — it is the logo behaving
+  correctly. And a discus that is dispatched, strikes its target and returns is a description of your gateway.
+  <ol>
+    <li><b>Skip 02 unless this stays private.</b> It is the best-drawn shape here and I would use it in a heartbeat if the
+        world were fair about it. It isn't, and the app icon is the one surface with no room for a caption.</li>
+    <li><b>Pair the mark with Georgia "Jarvis"</b> — the serif already carries the Claude reference, and the Devanagari
+        subtitle in the lockups is available if you want the origin stated rather than implied.</li>
+    <li><b>Build:</b> one <code>src/components/Glyph.tsx</code> with <code>state: idle | thinking | writing | error</code>,
+        <code>react-native-svg</code> plus Reanimated for the rotation, and <code>useReducedMotion</code> swapping the spin
+        for a slow core fade. Then <code>assets/icon.png</code>, the adaptive-icon foreground and monochrome layers, the
+        splash and the favicon all regenerate from this same 64×64 source.</li>
+    <li><b>One dependency to add:</b> <code>react-native-svg</code> is not in <code>package.json</code>. 01, 02 and 05 could
+        be faked with rotated plain views; 03, 04, 06, 07 and 08 cannot.</li>
+  </ol>
+  Pick a number and I'll build it, then move on to the ivory/clay retheme you already approved.
+</div>
+
+</body>
+</html>

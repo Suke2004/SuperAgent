@@ -12,6 +12,7 @@
     "lint:fix": "eslint . --fix",
     "test": "jest",
     "test:watch": "jest --watch",
+    "icons": "node scripts/gen-icons.mjs",
     "build:apk": "eas build --platform android --profile preview",
     "build:apk:local": "eas build --platform android --profile preview --local"
   },

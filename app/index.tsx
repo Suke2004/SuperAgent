@@ -24,6 +24,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PromptSheet, Sheet } from '@/components/Sheet';
 import type { SheetAction } from '@/components/Sheet';
 import { OfflineBanner } from '@/components/OfflineBanner';
+import { Glyph } from '@/components/Glyph';
 import {
   Badge,
   Body,
@@ -31,6 +32,7 @@ import {
   Divider,
   Empty,
   Field,
+  Heading,
   Inline,
   MIN_TARGET,
   Note,
@@ -46,6 +48,7 @@ import { streamingAvailable } from '@/lib/gateway';
 import { whenBucket } from '@/lib/when';
 import { useChat } from '@/stores/chat';
 import { useProviders } from '@/stores/providers';
+import { useReachability } from '@/stores/reachability';
 import { useTheme } from '@/theme';
 
 /** How long to wait after the last keystroke before hitting the database. */
@@ -54,6 +57,15 @@ const SEARCH_DEBOUNCE_MS = 250;
 const MIN_SEARCH_LENGTH = 2;
 /** A stable empty result, so "no hits" does not count as a change. */
 const NO_HITS: readonly SearchHit[] = [];
+
+/** The greeting reads the clock rather than the calendar; nothing depends on it. */
+function greeting(at: number): string {
+  const hour = new Date(at).getHours();
+  if (hour < 5) return 'Still up';
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
 
 type Row = ListRow | { kind: 'hit'; key: string; hit: SearchHit };
 
@@ -98,13 +110,6 @@ function ConversationRow({
 }) {
   const t = useTheme();
   const preview = conversation.preview ?? '';
-  const initials = conversation.title
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((part) => part[0] ?? '')
-    .join('')
-    .toUpperCase() || '?';
 
   return (
     <Pressable
@@ -118,25 +123,14 @@ function ConversationRow({
         alignItems: 'flex-start',
         paddingHorizontal: t.spacing.md,
         paddingVertical: t.spacing.md,
-        gap: t.spacing.sm,
+        gap: t.spacing.md,
         backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
       })}
     >
-      <View
-        accessible={false}
-        style={{
-          width: 34,
-          height: 34,
-          borderRadius: 17,
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: conversation.pinned ? t.colors.accentSoft : t.colors.surfaceAlt,
-        }}
-      >
-        <Body size="sm" weight="700" tone={conversation.pinned ? 'accent' : 'dim'}>
-          {initials}
-        </Body>
-      </View>
+      {/* The mark rather than initials: two letters cut out of a title said less than
+          the title itself, which is on the next line anyway. Pinned rows carry it in
+          clay, which is the only thing on this screen that needs picking out. */}
+      <Glyph size={18} color={conversation.pinned ? t.colors.accentFill : t.colors.textFaint} style={{ marginTop: 3 }} />
 
       <View style={{ flex: 1, gap: 3, minWidth: 0 }}>
         <Inline gap="sm">
@@ -197,6 +191,7 @@ export default function Home() {
   const activeId = useProviders((s) => s.activeId);
   const failover = useProviders((s) => s.activeFailover);
   const refreshKeyStatus = useProviders((s) => s.refreshKeyStatus);
+  const reach = useReachability((s) => s.status);
 
   const [now, setNow] = useState(() => Date.now());
   const [query, setQuery] = useState('');
@@ -538,6 +533,25 @@ export default function Home() {
     </View>
   );
 
+  /**
+   * The line under the greeting.
+   *
+   * Only states things this app has evidence for: how many rows are loaded, and the
+   * gateway's *last observed* reachability — never "you are online", which nothing
+   * here knows. Before any request has been made it says so rather than guessing.
+   */
+  const subtitle = useMemo(() => {
+    const parts: string[] = [
+      showArchived
+        ? `${conversations.length} archived`
+        : `${conversations.length} conversation${conversations.length === 1 ? '' : 's'}`,
+    ];
+    if (reach === 'reachable') parts.push('gateway reachable');
+    else if (reach === 'unreachable') parts.push('gateway unreachable');
+    else parts.push('gateway not yet tried');
+    return parts.join(' · ');
+  }, [conversations.length, showArchived, reach]);
+
   // "Nothing matched" is a verdict, and it must not be delivered while the message
   // pass is still running: the list filter resolves synchronously, the SQLite search
   // does not, so for a few hundred milliseconds every query looked like a miss.
@@ -564,6 +578,16 @@ export default function Home() {
 
   return (
     <View style={{ flex: 1 }}>
+      {/* A greeting rather than a title bar. The navigator's header is hidden on this
+          screen, so this is the only heading — which is also why the status-bar inset
+          is paid here rather than by a header. */}
+      <View style={{ paddingHorizontal: t.spacing.md, paddingTop: insets.top + t.spacing.lg }}>
+        <Heading style={{ fontSize: t.fontSize.xxl }}>{greeting(now)}</Heading>
+        <Body size="sm" tone="faint" style={{ marginTop: 2 }}>
+          {subtitle}
+        </Body>
+      </View>
+
       {/* Fixed rather than in the list header: a search field that scrolls out of
           reach while you refine the query is a search field you fight. */}
       <View style={{ padding: t.spacing.md, paddingBottom: t.spacing.sm }}>

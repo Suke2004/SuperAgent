@@ -7,11 +7,17 @@
  *
  * Colours are plain hex strings and spacing is a fixed scale, so components never
  * compute a colour at render time.
+ *
+ * The palettes are warm paper (light) and warm charcoal (dark) with a single clay
+ * accent, so the two schemes read as one product rather than two skins. Every ratio
+ * in the comments below was measured, not estimated; the clay used for *text* is
+ * darker than the clay used for *fills* because the brighter tone fails AA at body
+ * size (3.98:1 on the ivory background).
  */
 
 import { createContext, useContext, useMemo } from 'react';
 import type { ReactNode } from 'react';
-import { useColorScheme } from 'react-native';
+import { Platform, useColorScheme } from 'react-native';
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 export type ResolvedScheme = 'light' | 'dark';
@@ -41,6 +47,14 @@ export interface Palette {
   accentText: string;
   accentSoft: string;
   /**
+   * Decorative clay: the brighter tone, for fills and large marks only.
+   *
+   * Kept separate from `accent` because the on-brand clay measures 3.98:1 on the
+   * light background — fine for a 24pt logo or a filled bar, not for the 13pt
+   * labels that `accent` carries.
+   */
+  accentFill: string;
+  /**
    * Focus ring.
    *
    * A separate token from `accent`: the ring has to be visible against the accent
@@ -66,68 +80,82 @@ export interface Palette {
 }
 
 const light: Palette = {
-  bg: '#ffffff',
-  surface: '#f6f7f9',
-  surfaceAlt: '#eceef2',
-  surfaceActive: '#e2e5ea',
-  border: '#dcdfe5',
-  borderStrong: '#b9bec8',
-  text: '#14161a',
-  textDim: '#5b616e',
-  // 4.8:1 on #ffffff. The previous #8b909c measured 3.4:1, which fails AA for the
-  // timestamps, token counts and disabled reasons that live in this tier.
-  textFaint: '#6b7280',
-  // 4.6:1 on #ffffff. #0b6efd measured 3.7:1 and is used for link and action text.
-  accent: '#0a5fd8',
+  bg: '#faf9f5',
+  surface: '#ffffff',
+  surfaceAlt: '#f0eee6',
+  surfaceActive: '#e6e3d9',
+  border: '#e3e0d6',
+  borderStrong: '#d3cfc2',
+  // 15.8:1 on bg, 14.3:1 on the sunk surface.
+  text: '#1f1e1d',
+  // 8.7:1 on bg, 7.9:1 on the sunk surface.
+  textDim: '#4a4842',
+  // 5.3:1 on bg and 4.8:1 on the sunk surface. The warmer #74716a measured 4.6:1 on
+  // bg but only 4.2:1 on #f0eee6, and this tier appears inside code-block and
+  // thinking-pane headers, so the sunk level is the one that has to pass.
+  textFaint: '#6b6862',
+  // 5.6:1 on bg, 5.1:1 on the sunk surface, and white on it is 5.9:1 — one value
+  // works as both link text and a filled button. See `accentFill` for the brighter
+  // decorative clay.
+  accent: '#a34a29',
   accentText: '#ffffff',
-  accentSoft: '#e5efff',
-  focus: '#0a4bb8',
-  danger: '#c8322b',
-  dangerSoft: '#fdeceb',
-  warning: '#9a6200',
-  warningSoft: '#fff4e0',
-  success: '#127a45',
-  successSoft: '#e7f6ec',
-  userBubble: '#e5efff',
-  userBubbleText: '#14161a',
-  assistantText: '#14161a',
-  thinkingBg: '#f4f1fb',
-  thinkingText: '#4a3f68',
-  thinkingBorder: '#ddd4f0',
+  accentSoft: '#f7ece7',
+  accentFill: '#c1603c',
+  // 15.8:1 on bg. The ring is drawn outside the control (outlineOffset), so it is
+  // read against the page rather than against a filled accent button.
+  focus: '#1f1e1d',
+  danger: '#a8231b',
+  dangerSoft: '#fbeae7',
+  warning: '#7a5200',
+  warningSoft: '#f9f0dd',
+  success: '#2f6b43',
+  successSoft: '#e8f1e9',
+  userBubble: '#f0eee6',
+  userBubbleText: '#1f1e1d',
+  assistantText: '#1f1e1d',
+  thinkingBg: '#f4f1ea',
+  thinkingText: '#4a4842',
+  thinkingBorder: '#e3e0d6',
 };
 
 const dark: Palette = {
-  bg: '#0f1114',
-  surface: '#171a1f',
-  surfaceAlt: '#1f232a',
-  surfaceActive: '#282d36',
-  border: '#2a2f38',
-  borderStrong: '#3d444f',
-  text: '#e8eaee',
-  textDim: '#9aa1ad',
-  // 6.1:1 on #0f1114. #6e7684 measured 4.1:1.
-  textFaint: '#8b93a1',
-  accent: '#4c9aff',
-  accentText: '#0b1220',
-  accentSoft: '#152740',
-  focus: '#8cc0ff',
-  danger: '#ff6b60',
-  dangerSoft: '#37201e',
-  warning: '#e0a132',
-  warningSoft: '#332918',
-  success: '#4fc27f',
-  successSoft: '#16301f',
-  userBubble: '#1e2a3d',
-  userBubbleText: '#e8eaee',
-  assistantText: '#e8eaee',
-  thinkingBg: '#1c1a26',
-  thinkingText: '#b6abd6',
-  thinkingBorder: '#312b45',
+  bg: '#262624',
+  surface: '#30302e',
+  surfaceAlt: '#1f1e1d',
+  surfaceActive: '#3d3d39',
+  border: '#3d3d39',
+  borderStrong: '#4d4c47',
+  // 13.8:1 on bg, 12.0:1 on surface.
+  text: '#f5f4ef',
+  textDim: '#d8d5cc',
+  // 5.8:1 on bg, 5.1:1 on surface.
+  textFaint: '#a3a099',
+  // 5.8:1 on bg, 5.1:1 on surface. Claude's #d97757 measured 4.9:1 on bg but 4.2:1
+  // on `surface`, where most labels actually sit, so the text tone is lifted.
+  accent: '#e08b6e',
+  // Dark ink on clay is 6.4:1; white on the same fill is only 3.1:1.
+  accentText: '#1f1e1d',
+  accentSoft: '#3a2b24',
+  accentFill: '#d97757',
+  // 14.1:1 on bg.
+  focus: '#fff5ef',
+  danger: '#ff9d8f',
+  dangerSoft: '#3a2422',
+  warning: '#e0a86b',
+  warningSoft: '#352c1d',
+  success: '#7fc494',
+  successSoft: '#22301f',
+  userBubble: '#1f1e1d',
+  userBubbleText: '#f5f4ef',
+  assistantText: '#f5f4ef',
+  thinkingBg: '#2b2b28',
+  thinkingText: '#d8d5cc',
+  thinkingBorder: '#3d3d39',
 };
 
 export const spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
 
-export const radius = { sm: 6, md: 10, lg: 14, pill: 999 } as const;
+export const radius = { sm: 8, md: 12, lg: 16, xl: 20, pill: 999 } as const;
 
 export const fontSize = {
   /**
@@ -150,6 +178,19 @@ export const fontSize = {
 /** The monospace family each platform actually has. */
 export const monoFont = 'monospace';
 
+/**
+ * The serif family each platform actually has, for headings and the wordmark.
+ *
+ * Body copy stays sans: the serif is an identity cue on names and titles, not a
+ * reading face. Android ships Noto Serif under the `serif` alias; iOS resolves
+ * Georgia, and Times New Roman is the web fallback.
+ */
+export const serifFont = Platform.select({
+  ios: 'Georgia',
+  android: 'serif',
+  default: 'Georgia, "Times New Roman", serif',
+}) as string;
+
 export interface Theme {
   scheme: ResolvedScheme;
   colors: Palette;
@@ -157,10 +198,19 @@ export interface Theme {
   radius: typeof radius;
   fontSize: typeof fontSize;
   monoFont: string;
+  serifFont: string;
 }
 
 function buildTheme(scheme: ResolvedScheme): Theme {
-  return { scheme, colors: scheme === 'dark' ? dark : light, spacing, radius, fontSize, monoFont };
+  return {
+    scheme,
+    colors: scheme === 'dark' ? dark : light,
+    spacing,
+    radius,
+    fontSize,
+    monoFont,
+    serifFont,
+  };
 }
 
 const THEMES: Record<ResolvedScheme, Theme> = { light: buildTheme('light'), dark: buildTheme('dark') };
