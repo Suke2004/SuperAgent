@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>JARVIS UI Concepts — AgentRouter</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: #0a0b0e;
+    color: #e6e9ef;
+    font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+    padding: 28px 20px 60px;
+  }
+  .page-head { max-width: 1320px; margin: 0 auto 26px; }
+  .page-head h1 { font-size: 20px; font-weight: 600; letter-spacing: .14em; margin: 0 0 6px; text-transform: uppercase; }
+  .page-head p { margin: 0; color: #8b93a1; font-size: 13px; max-width: 720px; line-height: 1.6; }
+  .deck {
+    max-width: 1320px; margin: 0 auto;
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: 34px; align-items: start;
+  }
+  .slot { display: flex; flex-direction: column; gap: 14px; }
+  .slot > .tag { display: flex; align-items: baseline; gap: 10px; }
+  .tag .num { font-family: ui-monospace, monospace; font-size: 12px; color: #5b6472; }
+  .tag .name { font-size: 15px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; }
+  .notes { color: #8b93a1; font-size: 12.5px; line-height: 1.65; }
+  .notes b { color: #cfd5df; font-weight: 600; }
+  .notes ul { margin: 8px 0 0; padding-left: 18px; }
+  .notes li { margin-bottom: 4px; }
+  .phone {
+    width: 100%; max-width: 390px; height: 800px;
+    border-radius: 34px; overflow: hidden; position: relative;
+    border: 1px solid #22262e; box-shadow: 0 24px 60px rgba(0,0,0,.6);
+  }
+  .scr { position: absolute; inset: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .mono { font-family: ui-monospace, "SF Mono", "Roboto Mono", monospace; }
+  /* ============ A · ARC REACTOR HUD ============ */
+  .arc { background: #04080f; color: #cfe9f5; }
+  .arc::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(120% 70% at 50% -10%, rgba(55,224,255,.16), transparent 60%),
+                radial-gradient(90% 50% at 50% 110%, rgba(55,224,255,.09), transparent 60%);
+  }
+  .arc-top { position: relative; height: 178px; flex: none; display: grid; place-items: center; }
+  .ring { position: absolute; border-radius: 50%; }
+  .ring.r1 { width: 154px; height: 154px; border: 1px solid rgba(55,224,255,.22); }
+  .ring.r2 { width: 124px; height: 124px; border: 1px dashed rgba(55,224,255,.5); animation: spin 14s linear infinite; }
+  .ring.r3 { width: 96px; height: 96px; border: 2px solid rgba(55,224,255,.14); border-top-color: #37e0ff; border-right-color: rgba(55,224,255,.6); animation: spin 3.4s cubic-bezier(.6,0,.4,1) infinite; }
+  .core {
+    width: 58px; height: 58px; border-radius: 50%; position: relative; z-index: 2;
+    background: radial-gradient(circle at 50% 45%, #eafbff, #37e0ff 42%, #0a4d63 100%);
+    box-shadow: 0 0 34px rgba(55,224,255,.65), 0 0 90px rgba(55,224,255,.25);
+    animation: breathe 3.6s ease-in-out infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes breathe { 0%,100% { transform: scale(1); opacity: .92 } 50% { transform: scale(1.07); opacity: 1 } }
+  .arc-title { position: absolute; bottom: 12px; text-align: center; width: 100%; }
+  .arc-title .n { font-size: 13px; letter-spacing: .44em; color: #9fdcef; }
+  .arc-title .s { font-size: 10px; letter-spacing: .2em; color: #4a8ba1; margin-top: 3px; }
+  .arc-hud { position: absolute; top: 16px; left: 0; right: 0; display: flex; justify-content: space-between; padding: 0 18px; font-size: 9.5px; letter-spacing: .16em; color: #56a2ba; }
+  .arc-feed { flex: 1; overflow: hidden; padding: 6px 18px 0; position: relative; z-index: 1; }
+  .arc-user {
+    margin: 0 0 18px auto; max-width: 82%; padding: 11px 15px; font-size: 13.5px; line-height: 1.5;
+    background: linear-gradient(180deg, rgba(55,224,255,.14), rgba(55,224,255,.05));
+    border: 1px solid rgba(55,224,255,.45); color: #dff6ff;
+    clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+  }
+  .arc-a { display: flex; gap: 12px; margin-bottom: 16px; }
+  .arc-spine { flex: none; width: 9px; display: flex; flex-direction: column; align-items: center; padding-top: 5px; }
+  .arc-spine i { width: 9px; height: 9px; border-radius: 50%; border: 1px solid #37e0ff; box-shadow: 0 0 10px rgba(55,224,255,.8); }
+  .arc-spine u { flex: 1; width: 1px; background: linear-gradient(180deg, rgba(55,224,255,.55), transparent); margin-top: 4px; }
+  .arc-body { font-size: 13.5px; line-height: 1.62; color: #d6e9f2; }
+  .arc-body .lbl { font-size: 9px; letter-spacing: .22em; color: #4f93a9; display: block; margin-bottom: 5px; }
+  .arc-meter { display: flex; gap: 3px; margin-top: 10px; align-items: flex-end; height: 16px; }
+  .arc-meter i { width: 3px; background: #37e0ff; opacity: .7; animation: eq 1s ease-in-out infinite; }
+  @keyframes eq { 0%,100% { height: 4px } 50% { height: 15px } }
+  .arc-composer { flex: none; margin: 8px 16px 16px; position: relative; z-index: 1; }
+  .arc-pill {
+    display: flex; align-items: center; gap: 12px; padding: 11px 12px 11px 18px;
+    border: 1px solid rgba(55,224,255,.34); border-radius: 999px;
+    background: linear-gradient(90deg, rgba(9,32,42,.9), rgba(6,18,26,.9));
+    box-shadow: inset 0 0 22px rgba(55,224,255,.08);
+  }
+  .arc-pill span { flex: 1; font-size: 13px; color: #4e8ea3; }
+  .arc-mic { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: radial-gradient(circle, #37e0ff, #0d6a86); color: #04121a; font-size: 15px; box-shadow: 0 0 20px rgba(55,224,255,.55); }
+  .arc-nav { display: flex; justify-content: center; gap: 5px; margin-top: 12px; }
+  .arc-nav i { height: 3px; width: 34px; border-radius: 2px; background: rgba(55,224,255,.2); }
+  .arc-nav i.on { background: #37e0ff; box-shadow: 0 0 12px #37e0ff; }
+  /* ============ B · HOLO SCHEMATIC ============ */
+  .sch { background: #05090a; color: #d8efe6; font-family: ui-monospace, "SF Mono", "Roboto Mono", monospace; }
+  .sch::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .5;
+    background-image: linear-gradient(rgba(125,255,208,.055) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(125,255,208,.055) 1px, transparent 1px);
+    background-size: 22px 22px;
+  }
+  .sch::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(180deg, transparent, rgba(125,255,208,.05) 48%, transparent 52%);
+    animation: sweep 5.5s linear infinite;
+  }
+  @keyframes sweep { 0% { transform: translateY(-100%) } 100% { transform: translateY(100%) } }
+  .sch-head { flex: none; padding: 16px 16px 8px; position: relative; z-index: 1; }
+  .sch-rule { display: flex; align-items: flex-end; height: 12px; gap: 3px; margin-bottom: 10px; opacity: .55; }
+  .sch-rule i { width: 1px; background: #7dffd0; height: 4px; }
+  .sch-rule i:nth-child(5n+1) { height: 10px; }
+  .sch-h1 { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; letter-spacing: .2em; color: #7dffd0; }
+  .sch-h1 em { font-style: normal; color: #3f7a68; }
+  .sch-sub { margin-top: 8px; font-size: 9.5px; color: #3f7a68; letter-spacing: .1em; display: flex; gap: 14px; }
+  .sch-sub b { color: #7dffd0; font-weight: 400; }
+  .brk { position: relative; padding: 12px 14px; margin-bottom: 14px; }
+  .brk::before, .brk::after {
+    content: ""; position: absolute; width: 12px; height: 12px; border: 1px solid rgba(125,255,208,.6);
+  }
+  .brk::before { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+  .brk::after { bottom: 0; right: 0; border-left: 0; border-top: 0; }
+  .sch-feed { flex: 1; overflow: hidden; padding: 4px 16px; position: relative; z-index: 1; }
+  .sch-gut { font-size: 9px; color: #35695a; letter-spacing: .12em; margin-bottom: 6px; display: flex; justify-content: space-between; }
+  .sch-tx { background: rgba(125,255,208,.05); }
+  .sch-txt { font-size: 12.5px; line-height: 1.62; color: #cfeee2; }
+  .sch-txt.dim { color: #9fd4c4; }
+  .leader { display: flex; align-items: baseline; gap: 6px; font-size: 9px; color: #35695a; margin-top: 10px; letter-spacing: .1em; }
+  .leader u { flex: 1; border-bottom: 1px dotted rgba(125,255,208,.3); text-decoration: none; }
+  .caret { display: inline-block; width: 7px; height: 13px; background: #7dffd0; vertical-align: -2px; animation: blink .9s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0 } }
+  .sch-dash { display: flex; gap: 3px; margin-top: 10px; }
+  .sch-dash i { height: 2px; width: 10px; background: rgba(125,255,208,.25); }
+  .sch-dash i.on { background: #7dffd0; }
+  .sch-comp { flex: none; padding: 0 16px 14px; position: relative; z-index: 1; }
+  .sch-in { border: 1px solid rgba(125,255,208,.4); padding: 12px 14px; font-size: 12.5px; color: #4d8f7c; display: flex; gap: 8px; }
+  .sch-in b { color: #7dffd0; font-weight: 400; }
+  .sch-fk { display: flex; gap: 6px; margin-top: 10px; }
+  .sch-fk i { flex: 1; text-align: center; font-size: 9px; letter-spacing: .1em; padding: 7px 0; color: #4d8f7c; border: 1px solid rgba(125,255,208,.18); font-style: normal; }
+  .sch-fk i.on { color: #05090a; background: #7dffd0; border-color: #7dffd0; }
+  /* ============ C · VOLUMETRIC GLASS ============ */
+  .vol { background: #07070f; color: #e9ecff; }
+  .vol .aur { position: absolute; border-radius: 50%; filter: blur(48px); pointer-events: none; }
+  .vol .aur.a { width: 260px; height: 260px; top: -70px; left: -50px; background: rgba(108,231,255,.34); }
+  .vol .aur.b { width: 240px; height: 240px; top: 90px; right: -80px; background: rgba(169,139,255,.32); }
+  .vol .aur.c { width: 300px; height: 220px; bottom: -90px; left: 20px; background: rgba(108,231,255,.16); }
+  .vol-head { flex: none; padding: 26px 22px 10px; position: relative; z-index: 1; text-align: center; }
+  .orb {
+    width: 76px; height: 76px; margin: 0 auto 14px; border-radius: 50%; position: relative;
+    background: conic-gradient(from 0deg, #6ce7ff, #a98bff, #6ce7ff);
+    animation: spin 7s linear infinite;
+    box-shadow: 0 0 44px rgba(140,180,255,.45);
+  }
+  .orb::after {
+    content: ""; position: absolute; inset: 9px; border-radius: 50%;
+    background: #0a0a16; box-shadow: inset 0 0 24px rgba(140,190,255,.5);
+  }
+  .orb i { position: absolute; inset: 22px; border-radius: 50%; background: radial-gradient(circle, #dff3ff, rgba(108,231,255,.15)); animation: breathe 2.8s ease-in-out infinite; }
+  .vol-name { font-size: 12px; letter-spacing: .52em; color: #b9c4ff; font-weight: 300; }
+  .vol-state { font-size: 10.5px; color: #6c7699; margin-top: 6px; letter-spacing: .06em; }
+  .vol-feed { flex: 1; overflow: hidden; padding: 14px 18px 0; position: relative; z-index: 1; }
+  .glass {
+    border-radius: 20px; padding: 14px 16px; position: relative; overflow: hidden;
+    background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.12);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 10px 30px rgba(0,0,0,.35);
+  }
+  .glass::before {
+    content: ""; position: absolute; top: 0; left: 12%; right: 12%; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(190,220,255,.85), transparent);
+  }
+  .vol-u { margin: 0 0 16px auto; max-width: 84%; font-size: 13.5px; line-height: 1.5; color: #e6ecff; }
+  .vol-u.glass { background: linear-gradient(135deg, rgba(108,231,255,.16), rgba(169,139,255,.14)); border-color: rgba(160,200,255,.24); }
+  .vol-a { margin-bottom: 16px; font-size: 13.5px; line-height: 1.64; color: #dfe4ff; }
+  .vol-a .who { font-size: 9.5px; letter-spacing: .3em; color: #7f8ab5; display: block; margin-bottom: 8px; }
+  .wave { display: flex; align-items: center; gap: 3px; height: 22px; margin-top: 12px; }
+  .wave i { width: 3px; border-radius: 2px; background: linear-gradient(180deg, #6ce7ff, #a98bff); animation: eq 1.15s ease-in-out infinite; }
+  .vol-chips { display: flex; gap: 8px; margin-top: 12px; }
+  .vol-chips i {
+    font-style: normal; font-size: 10px; letter-spacing: .04em; padding: 6px 11px; border-radius: 999px;
+    color: #a9b4e0; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.1);
+  }
+  .vol-comp { flex: none; padding: 10px 18px 22px; position: relative; z-index: 1; }
+  .vol-cap { display: flex; align-items: center; gap: 12px; border-radius: 999px; padding: 12px 12px 12px 20px; }
+  .vol-cap span { flex: 1; font-size: 13px; color: #7a85ad; }
+  .vol-send { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; font-size: 14px; color: #0a0a16; background: linear-gradient(135deg, #6ce7ff, #a98bff); box-shadow: 0 0 22px rgba(140,180,255,.5); }
+  .vol-dock { display: flex; justify-content: center; gap: 22px; margin-top: 16px; font-size: 15px; color: #5d6690; }
+  .vol-dock i.on { color: #9fd8ff; text-shadow: 0 0 14px rgba(140,200,255,.9); }
+
+</style>
+</head>
+<body>
+<div class="page-head">
+  <h1>Jarvis&nbsp;Concepts · AgentRouter Mobile</h1>
+  <p>Three directions, same screen (chat + streaming reply + composer) so the comparison is real.
+     Each differs in <b>structure</b>, not just colour. Pick one — or say what to cross-breed and I'll draw the next round.</p>
+</div>
+
+<div class="deck">
+
+<!-- ================= A ================= -->
+<div class="slot">
+  <div class="tag"><span class="num">01</span><span class="name">Arc Reactor</span></div>
+  <div class="phone">
+    <div class="scr arc">
+      <div class="arc-top">
+        <div class="arc-hud"><span>PWR 98%</span><span>LAT 240ms</span></div>
+        <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+        <div class="core"></div>
+        <div class="arc-title"><div class="n">JARVIS</div><div class="s">CLAUDE OPUS 5 · ONLINE</div></div>
+      </div>
+      <div class="arc-feed">
+        <div class="arc-user">Summarise the retry logic in our SSE transport.</div>
+        <div class="arc-a">
+          <div class="arc-spine"><i></i><u></u></div>
+          <div class="arc-body">
+            <span class="lbl">RESPONSE · STREAMING</span>
+            Retries use exponential backoff with jitter, capped at four attempts. Only
+            <span style="color:#37e0ff">429</span> and <span style="color:#37e0ff">5xx</span> re-enter the
+            loop; a mid-stream disconnect resumes from the last event id rather than restarting the turn.
+            <div class="arc-meter">
+              <i style="animation-delay:0s"></i><i style="animation-delay:.1s"></i><i style="animation-delay:.2s"></i>
+              <i style="animation-delay:.3s"></i><i style="animation-delay:.15s"></i><i style="animation-delay:.05s"></i>
+              <i style="animation-delay:.25s"></i><i style="animation-delay:.35s"></i>
+            </div>
+          </div>
+        </div>
+        <div class="arc-a" style="opacity:.5">
+          <div class="arc-spine"><i style="border-color:#2d6b7d;box-shadow:none"></i><u></u></div>
+          <div class="arc-body"><span class="lbl">TOKENS 1,204 IN · 318 OUT</span></div>
+        </div>
+      </div>
+      <div class="arc-composer">
+        <div class="arc-pill"><span>Speak or type…</span><div class="arc-mic">◉</div></div>
+        <div class="arc-nav"><i class="on"></i><i></i><i></i></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>Idea:</b> the reactor is the app's identity — a live core that breathes while idle and spins hard while
+    streaming. Chat is a telemetry feed hanging off a glowing spine, not bubbles.
+    <ul>
+      <li>Clipped-corner user frames; assistant text sits on the page for long reads.</li>
+      <li>Status arcs carry real data (power = context left, LAT = time-to-first-token).</li>
+      <li><b>Build cost:</b> low — pure views + Reanimated rotation. No new deps.</li>
+    </ul>
+  </div>
+</div>
+<!-- ================= B ================= -->
+<div class="slot">
+  <div class="tag"><span class="num">02</span><span class="name">Holo Schematic</span></div>
+  <div class="phone">
+    <div class="scr sch">
+      <div class="sch-head">
+        <div class="sch-rule">
+          <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+          <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+          <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        </div>
+        <div class="sch-h1"><span>J.A.R.V.I.S<em>/mk-IV</em></span><span>SESSION·0x1F</span></div>
+        <div class="sch-sub"><span>MODEL <b>opus-5</b></span><span>CTX <b>62%</b></span><span>TEMP <b>0.7</b></span></div>
+      </div>
+      <div class="sch-feed">
+        <div class="brk sch-tx">
+          <div class="sch-gut"><span>TX · 0x1F.01</span><span>22:14:07</span></div>
+          <div class="sch-txt">Summarise the retry logic in our SSE transport.</div>
+        </div>
+        <div class="brk">
+          <div class="sch-gut"><span>RX · opus-5</span><span>STREAM ▸</span></div>
+          <div class="sch-txt dim">
+            Retries use exponential backoff with jitter, capped at four attempts. Only
+            <b style="color:#7dffd0;font-weight:400">429</b> and <b style="color:#7dffd0;font-weight:400">5xx</b>
+            re-enter the loop; a mid-stream disconnect resumes from the last event id<span class="caret"></span>
+          </div>
+          <div class="sch-dash">
+            <i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i>
+            <i class="on"></i><i></i><i></i><i></i><i></i>
+          </div>
+          <div class="leader"><span>TOK/S</span><u></u><span>41.6</span></div>
+          <div class="leader"><span>IN·OUT</span><u></u><span>1204·318</span></div>
+        </div>
+      </div>
+      <div class="sch-comp">
+        <div class="sch-in"><b>&gt;</b><span>_ enter directive</span></div>
+        <div class="sch-fk"><i class="on">F1 CHATS</i><i>F2 MODEL</i><i>F3 TOOLS</i><i>F4 CFG</i></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>Idea:</b> Stark's engineering blueprint, not the movie HUD. Zero rounded corners, everything measured —
+    graph grid, corner brackets, dotted leader lines, hex message ids, a scanline that sweeps once every 5s.
+    <ul>
+      <li>Monospace throughout: dense, technical, matches an app whose selling point is exposed controls.</li>
+      <li>Function-key row instead of a tab bar — reads like a console, still thumb-sized targets.</li>
+      <li><b>Build cost:</b> lowest — borders and text only. Trade-off: mono body text is harder for long answers.</li>
+    </ul>
+  </div>
+</div>
+<!-- ================= C ================= -->
+<div class="slot">
+  <div class="tag"><span class="num">03</span><span class="name">Volumetric Glass</span></div>
+  <div class="phone">
+    <div class="scr vol">
+      <div class="aur a"></div><div class="aur b"></div><div class="aur c"></div>
+      <div class="vol-head">
+        <div class="orb"><i></i></div>
+        <div class="vol-name">JARVIS</div>
+        <div class="vol-state">Listening · Claude Opus 5</div>
+      </div>
+      <div class="vol-feed">
+        <div class="vol-u glass">Summarise the retry logic in our SSE transport.</div>
+        <div class="vol-a">
+          <span class="who">JARVIS</span>
+          Retries use exponential backoff with jitter, capped at four attempts. Only
+          <span style="color:#8fe8ff">429</span> and <span style="color:#c3aaff">5xx</span> re-enter the loop;
+          a mid-stream disconnect resumes from the last event id rather than restarting the turn.
+          <div class="wave">
+            <i style="height:8px;animation-delay:0s"></i><i style="height:16px;animation-delay:.08s"></i>
+            <i style="height:22px;animation-delay:.16s"></i><i style="height:13px;animation-delay:.24s"></i>
+            <i style="height:19px;animation-delay:.32s"></i><i style="height:7px;animation-delay:.4s"></i>
+            <i style="height:15px;animation-delay:.12s"></i><i style="height:21px;animation-delay:.2s"></i>
+            <i style="height:10px;animation-delay:.28s"></i><i style="height:17px;animation-delay:.36s"></i>
+            <i style="height:6px;animation-delay:.44s"></i><i style="height:14px;animation-delay:.05s"></i>
+          </div>
+          <div class="vol-chips"><i>1,204 in</i><i>318 out</i><i>2.1s</i></div>
+        </div>
+      </div>
+      <div class="vol-comp">
+        <div class="vol-cap glass"><span>Ask anything…</span><div class="vol-send">➤</div></div>
+        <div class="vol-dock"><i class="on">◈</i><i>≡</i><i>◍</i><i>⚙</i></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>Idea:</b> the calm, expensive one. Depth instead of lines — frosted slabs floating over a slow aurora,
+    a conic-gradient orb as the assistant's presence, live waveform while it speaks.
+    <ul>
+      <li>Softest of the three, best for long reading sessions; least "sci-fi costume".</li>
+      <li><b>Build cost:</b> medium — needs <code>expo-blur</code> + <code>expo-linear-gradient</code>
+          (conic gradients need <code>react-native-svg</code>), and blur costs frames on low-end Android.</li>
+    </ul>
+  </div>
+</div>
+
+</div>
+
+</body>
+</html>

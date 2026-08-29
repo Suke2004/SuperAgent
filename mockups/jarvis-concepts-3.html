@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>JARVIS — Round 3 · Structural</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { background: #0a0b0e; color: #e6e9ef; font-family: "Inter", "Segoe UI", system-ui, sans-serif; padding: 28px 20px 60px; }
+  .page-head { max-width: 1760px; margin: 0 auto 26px; }
+  .page-head h1 { font-size: 20px; font-weight: 600; letter-spacing: .14em; margin: 0 0 6px; text-transform: uppercase; }
+  .page-head p { margin: 0 0 6px; color: #8b93a1; font-size: 13px; max-width: 820px; line-height: 1.6; }
+  .page-head b { color: #cfd5df; }
+  .deck { max-width: 1760px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 34px; align-items: start; }
+  .slot { display: flex; flex-direction: column; gap: 14px; }
+  .tag { display: flex; align-items: baseline; gap: 10px; }
+  .tag .num { font-family: ui-monospace, monospace; font-size: 12px; color: #5b6472; }
+  .tag .name { font-size: 15px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; }
+  .notes { color: #8b93a1; font-size: 12.5px; line-height: 1.65; }
+  .notes b { color: #cfd5df; font-weight: 600; }
+  .notes ul { margin: 8px 0 0; padding-left: 18px; }
+  .notes li { margin-bottom: 4px; }
+  .notes code { font-family: ui-monospace, monospace; font-size: 11.5px; color: #a9b4c4; }
+  .phone { width: 100%; max-width: 390px; height: 800px; border-radius: 34px; overflow: hidden; position: relative; border: 1px solid #22262e; box-shadow: 0 24px 60px rgba(0,0,0,.6); }
+  .scr { position: absolute; inset: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .mono { font-family: ui-monospace, "SF Mono", "Roboto Mono", monospace; }
+  @keyframes blink { 50% { opacity: 0 } }
+  /* ============ 08 · DECOMPOSED READOUT ============ */
+  .rd { background: #07080a; color: #f2f4f0; }
+  .rd-top { flex: none; padding: 24px 22px 0; display: flex; justify-content: space-between; font-family: ui-monospace, monospace; font-size: 9px; letter-spacing: .24em; color: #676e63; }
+  .rd-top b { color: #c8ff2e; font-weight: 400; }
+  .verdict { flex: none; padding: 18px 22px 0; }
+  .verdict .k { font-family: ui-monospace, monospace; font-size: 8.5px; letter-spacing: .3em; color: #c8ff2e; }
+  .verdict .v { font-size: 24px; line-height: 1.22; font-weight: 300; letter-spacing: -.01em; margin-top: 10px; color: #f6f8f2; }
+  .verdict .v em { font-style: normal; border-bottom: 2px solid #c8ff2e; }
+  .rd-body { flex: 1; padding: 22px 22px 0; overflow: hidden; }
+  .mod { margin-bottom: 20px; }
+  .mod > .h { display: flex; align-items: baseline; gap: 8px; font-family: ui-monospace, monospace; font-size: 8.5px; letter-spacing: .26em; color: #676e63; margin-bottom: 10px; }
+  .mod > .h u { flex: 1; text-decoration: none; border-bottom: 1px solid #1b1e1a; }
+  .gauge { position: relative; height: 22px; }
+  .gauge .track { position: absolute; top: 9px; left: 0; right: 0; height: 2px; background: #1b1e1a; }
+  .gauge .fill { position: absolute; top: 9px; left: 0; width: 78%; height: 2px; background: #c8ff2e; }
+  .gauge .pin { position: absolute; top: 2px; left: 78%; width: 2px; height: 16px; background: #c8ff2e; box-shadow: 0 0 10px #c8ff2e; }
+  .gauge .lb { position: absolute; top: 0; right: 0; font-family: ui-monospace, monospace; font-size: 10px; color: #c8ff2e; }
+  .gauge .tk { position: absolute; top: 13px; left: 0; right: 0; display: flex; justify-content: space-between; }
+  .gauge .tk i { width: 1px; height: 5px; background: #262a24; }
+  .ev { display: flex; align-items: baseline; gap: 8px; padding: 7px 0; border-bottom: 1px solid #141713; }
+  .ev .f { font-family: ui-monospace, monospace; font-size: 10.5px; color: #cdd4c8; }
+  .ev u { flex: 1; text-decoration: none; border-bottom: 1px dotted #262a24; }
+  .ev .s { display: flex; gap: 2px; }
+  .ev .s i { width: 4px; height: 4px; border-radius: 50%; background: #262a24; }
+  .ev .s i.on { background: #c8ff2e; }
+  .steps { position: relative; padding-left: 20px; }
+  .steps::before { content: ""; position: absolute; left: 5px; top: 5px; bottom: 8px; width: 1px; background: #262a24; }
+  .steps div { position: relative; font-size: 12.5px; line-height: 1.55; color: #d6dbd0; padding-bottom: 10px; }
+  .steps div::before { content: ""; position: absolute; left: -18px; top: 6px; width: 7px; height: 7px; border: 1px solid #c8ff2e; background: #07080a; }
+  .steps div b { font-family: ui-monospace, monospace; font-size: 9.5px; color: #8f9a84; font-weight: 400; letter-spacing: .1em; }
+  .caveat { border-left: 2px solid #ff7a45; padding: 2px 0 2px 12px; font-size: 12.5px; line-height: 1.55; color: #e4c8b8; }
+  .rd-ask { flex: none; padding: 0 22px 26px; }
+  .rd-ask .l { height: 1px; background: #1b1e1a; margin-bottom: 12px; }
+  .rd-ask .r { display: flex; align-items: center; justify-content: space-between; font-family: ui-monospace, monospace; font-size: 10.5px; letter-spacing: .2em; color: #676e63; }
+  .rd-ask .r b { color: #c8ff2e; font-weight: 400; }
+  /* ============ 09 · HORIZONTAL CORE ============ */
+  .hz { background: #0b0d10; color: #e4f2f6; }
+  .hz::before { content: ""; position: absolute; inset: 0; background: radial-gradient(70% 50% at 20% 45%, rgba(111,242,255,.13), transparent 65%); }
+  .hz-top { flex: none; padding: 22px 22px 0; display: flex; justify-content: space-between; font-family: ui-monospace, monospace; font-size: 9px; letter-spacing: .22em; color: #4d6d76; }
+  .hz-top b { color: #6ff2ff; font-weight: 400; }
+  .stage { flex: 1; position: relative; perspective: 820px; perspective-origin: 26% 50%; overflow: hidden; }
+  .slab {
+    position: absolute; top: 96px; width: 250px; height: 380px; padding: 16px 16px;
+    background: linear-gradient(150deg, rgba(111,242,255,.1), rgba(10,20,26,.9));
+    border: 1px solid rgba(111,242,255,.3); border-radius: 4px;
+    transform-style: preserve-3d; box-shadow: -14px 18px 40px rgba(0,0,0,.55);
+  }
+  .slab.s0 { left: 20px; transform: rotateY(-4deg); z-index: 5; }
+  .slab.s1 { left: 214px; transform: rotateY(-46deg) translateZ(-30px); z-index: 4; opacity: .74; }
+  .slab.s2 { left: 300px; transform: rotateY(-52deg) translateZ(-90px); z-index: 3; opacity: .46; }
+  .slab.s3 { left: 352px; transform: rotateY(-56deg) translateZ(-150px); z-index: 2; opacity: .24; }
+  .slab .who { font-family: ui-monospace, monospace; font-size: 8.5px; letter-spacing: .24em; color: #6ff2ff; }
+  .slab .q { font-size: 12px; line-height: 1.45; color: #8fb6c0; margin: 10px 0 12px; padding-bottom: 12px; border-bottom: 1px solid rgba(111,242,255,.18); }
+  .slab .a { font-size: 13px; line-height: 1.6; color: #dcf1f6; }
+  .layers { position: absolute; left: 16px; right: 16px; bottom: 14px; }
+  .layers i { display: block; height: 4px; margin-top: 4px; background: rgba(111,242,255,.22); border-radius: 2px; }
+  .layers i.on { background: #6ff2ff; }
+  .layers span { font-family: ui-monospace, monospace; font-size: 8px; letter-spacing: .18em; color: #4d6d76; }
+  .hz-hint { position: absolute; left: 22px; bottom: 16px; font-family: ui-monospace, monospace; font-size: 8.5px; letter-spacing: .2em; color: #3d5a63; z-index: 9; }
+  .hz-rule { flex: none; height: 56px; position: relative; margin: 0 22px; }
+  .hz-rule .tk { position: absolute; top: 10px; left: 0; right: 0; display: flex; justify-content: space-between; align-items: flex-start; }
+  .hz-rule .tk i { width: 1px; height: 5px; background: rgba(111,242,255,.28); }
+  .hz-rule .tk i.big { height: 11px; background: rgba(111,242,255,.7); }
+  .hz-rule .head { position: absolute; top: 4px; left: 14%; width: 2px; height: 22px; background: #6ff2ff; box-shadow: 0 0 12px #6ff2ff; }
+  .hz-rule .lb { position: absolute; top: 32px; left: 0; right: 0; display: flex; justify-content: space-between; font-family: ui-monospace, monospace; font-size: 8.5px; letter-spacing: .16em; color: #3d5a63; }
+  .hz-ask { flex: none; margin: 0 22px 24px; display: flex; align-items: center; gap: 10px; border-top: 1px solid rgba(111,242,255,.2); padding-top: 14px; }
+  .hz-ask span { flex: 1; font-size: 12.5px; color: #4d6d76; }
+  .hz-ask i { font-style: normal; font-family: ui-monospace, monospace; font-size: 9px; letter-spacing: .18em; color: #0b0d10; background: #6ff2ff; padding: 6px 10px; }
+  /* ============ 10 · ETCHED GLASS (two planes) ============ */
+  .gl { background: #05100f; color: #cfeae6; }
+  .gl .deep {
+    position: absolute; inset: 0; padding: 120px 30px 0;
+    animation: tilt 9s ease-in-out infinite;
+  }
+  @keyframes tilt { 0%,100% { transform: translate(-6px,-4px) } 50% { transform: translate(6px,4px) } }
+  .gl .deep .who { font-family: ui-monospace, monospace; font-size: 8.5px; letter-spacing: .34em; color: #3f7d75; }
+  .gl .deep .txt {
+    font-size: 19px; line-height: 1.5; font-weight: 300; margin-top: 14px;
+    color: rgba(150,232,220,.62); text-shadow: 0 0 26px rgba(80,220,200,.45);
+  }
+  .gl .deep .txt b { font-weight: 400; color: rgba(200,255,245,.9); text-shadow: 0 0 18px rgba(120,255,230,.8); }
+  .gl .sheen {
+    position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(126deg, transparent 30%, rgba(190,255,245,.07) 45%, transparent 58%);
+    animation: sheen 7s ease-in-out infinite;
+  }
+  @keyframes sheen { 0%,100% { transform: translateX(-30%) } 50% { transform: translateX(30%) } }
+  .gl .bezel { position: absolute; inset: 12px; border: 1px solid rgba(190,255,245,.1); border-radius: 24px; box-shadow: inset 0 1px 0 rgba(220,255,250,.12), inset 0 -1px 0 rgba(0,0,0,.5); pointer-events: none; }
+  .gl .etch { position: absolute; left: 30px; right: 30px; bottom: 118px; text-align: right; }
+  .gl .etch .e {
+    display: inline-block; font-size: 14px; line-height: 1.5; letter-spacing: .01em; max-width: 88%;
+    color: rgba(9,32,30,.92);
+    text-shadow: 0 1px 0 rgba(180,255,242,.34), 0 -1px 0 rgba(0,0,0,.55);
+  }
+  .gl .etch .m { font-family: ui-monospace, monospace; font-size: 8.5px; letter-spacing: .28em; color: #2f6b64; margin-top: 10px; }
+  .gl .hud { position: absolute; top: 30px; left: 0; right: 0; text-align: center; }
+  .gl .hud .n { font-size: 10px; letter-spacing: .6em; color: #45908a; }
+  .gl .hud .b { font-family: ui-monospace, monospace; font-size: 8px; letter-spacing: .24em; color: #2b5f5a; margin-top: 7px; }
+  .gl .cursor { position: absolute; left: 30px; right: 30px; bottom: 58px; display: flex; align-items: center; gap: 8px; }
+  .gl .cursor u { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(120,240,225,.5), rgba(120,240,225,.05)); }
+  .gl .cursor i { font-style: normal; width: 6px; height: 15px; background: rgba(150,255,240,.85); animation: blink 1.1s steps(1) infinite; }
+  .gl .cursor span { font-family: ui-monospace, monospace; font-size: 8.5px; letter-spacing: .24em; color: #2f6b64; }
+  /* ============ 11 · CORE SAMPLE (strata) ============ */
+  .cs { background: #0d0c0b; color: #efe9e0; }
+  .cs-top { flex: none; padding: 20px 20px 0; display: flex; justify-content: space-between; font-family: ui-monospace, monospace; font-size: 9px; letter-spacing: .22em; color: #7a7266; }
+  .cs-top b { color: #efe9e0; font-weight: 400; }
+  .cs-wrap { flex: 1; display: flex; overflow: hidden; padding: 14px 0 0; }
+  .depth { flex: none; width: 46px; position: relative; }
+  .depth i { position: absolute; right: 0; height: 1px; width: 7px; background: #3a352e; }
+  .depth i.big { width: 15px; background: #6b6255; }
+  .depth b { position: absolute; right: 20px; font-family: ui-monospace, monospace; font-size: 8px; color: #6b6255; font-weight: 400; transform: translateY(-4px); }
+  .core { flex: 1; margin-right: 18px; border-left: 1px solid #26221d; border-right: 1px solid #26221d; position: relative; }
+  .strat { padding: 14px 16px; position: relative; }
+  .strat .k { font-family: ui-monospace, monospace; font-size: 8px; letter-spacing: .26em; color: #94897a; }
+  .strat .t { font-size: 13px; line-height: 1.6; margin-top: 8px; }
+  .strat.q { background: linear-gradient(180deg, #221d17, #1b1712); }
+  .strat.q .t { color: #cfc4b4; font-style: italic; }
+  .strat.a { background: linear-gradient(180deg, #16151a, #121116); }
+  .strat.a .t { color: #eee7dc; }
+  .strat.a .t em { font-style: normal; color: #d98b45; }
+  .strat.old { background: linear-gradient(180deg, #191713, #15130f); opacity: .55; }
+  .strat.old .t { font-size: 11.5px; color: #a89c8b; }
+  .strat + .strat::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: rgba(0,0,0,.6); box-shadow: 0 1px 0 rgba(255,255,255,.045); }
+  .grain { position: absolute; inset: 0; pointer-events: none; opacity: .5;
+    background-image: repeating-linear-gradient(94deg, rgba(255,255,255,.026) 0 1px, transparent 1px 4px); }
+  .head-cut { position: relative; height: 26px; background: linear-gradient(180deg, rgba(217,139,69,.28), transparent); }
+  .head-cut u { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: #d98b45; box-shadow: 0 0 14px rgba(217,139,69,.9); }
+  .head-cut span { position: absolute; top: 7px; right: 12px; font-family: ui-monospace, monospace; font-size: 8px; letter-spacing: .2em; color: #d98b45; }
+  .assay { flex: none; width: 16px; padding-top: 8px; }
+  .assay i { display: block; height: 2px; margin-bottom: 3px; background: #3a352e; }
+  .assay i.on { background: #d98b45; }
+  .cs-ask { flex: none; margin: 0 18px 22px 46px; }
+  .cs-ask .b { display: flex; align-items: center; gap: 10px; border: 1px solid #332d26; background: #171512; padding: 12px 14px; }
+  .cs-ask .b span { flex: 1; font-size: 12.5px; color: #7a7266; }
+  .cs-ask .b i { font-style: normal; font-family: ui-monospace, monospace; font-size: 9px; letter-spacing: .2em; color: #d98b45; }
+  .cs-ask .m { display: flex; justify-content: space-between; font-family: ui-monospace, monospace; font-size: 8px; letter-spacing: .18em; color: #5c554b; margin-top: 10px; }
+
+</style>
+</head>
+<body>
+<div class="page-head">
+  <h1>Round 3 · Break the grammar</h1>
+  <p>Why the first seven read as common: they all shared the same skeleton — <b>vertical scroll of bubbles/cards,
+     header on top, input bar at the bottom</b>. Change the palette on that and it's still WhatsApp with a glow.
+     These four change the skeleton itself.</p>
+  <p>Same content in each: one question, one answer, live stats.</p>
+</div>
+
+<div class="deck">
+
+<!-- ================= 08 DECOMPOSED READOUT ================= -->
+<div class="slot">
+  <div class="tag"><span class="num">08</span><span class="name">Decomposed Readout</span></div>
+  <div class="phone">
+    <div class="scr rd">
+      <div class="rd-top"><span>REPORT 07 · <b>OPUS 5</b></span><span>2.14s · 318 OUT</span></div>
+      <div class="verdict">
+        <div class="k">VERDICT</div>
+        <div class="v">Backoff is correct. The <em>resume path</em> has no test coverage.</div>
+      </div>
+      <div class="rd-body">
+        <div class="mod">
+          <div class="h"><span>CONFIDENCE</span><u></u></div>
+          <div class="gauge">
+            <div class="track"></div><div class="fill"></div>
+            <div class="tk"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="pin"></div><div class="lb">78%</div>
+          </div>
+        </div>
+        <div class="mod">
+          <div class="h"><span>EVIDENCE</span><u></u><span>3 FILES</span></div>
+          <div class="ev"><span class="f">retry.ts:41</span><u></u><span class="s"><i class="on"></i><i class="on"></i><i class="on"></i></span></div>
+          <div class="ev"><span class="f">sse.ts:118</span><u></u><span class="s"><i class="on"></i><i class="on"></i><i></i></span></div>
+          <div class="ev"><span class="f">retry.test.ts</span><u></u><span class="s"><i class="on"></i><i></i><i></i></span></div>
+        </div>
+        <div class="mod">
+          <div class="h"><span>MECHANISM</span><u></u></div>
+          <div class="steps">
+            <div><b>01</b> &nbsp;500 ms base, doubling, ±20% jitter</div>
+            <div><b>02</b> &nbsp;Only 429 and 5xx re-enter the loop</div>
+            <div><b>03</b> &nbsp;Cap of four attempts, then surface the error</div>
+          </div>
+        </div>
+        <div class="mod">
+          <div class="h"><span>CAVEAT</span><u></u></div>
+          <div class="caveat">Mid-stream reconnect resumes from the last event id — untested, and duplicate deltas would render twice.</div>
+        </div>
+      </div>
+      <div class="rd-ask">
+        <div class="l"></div>
+        <div class="r"><span>ASK<span style="animation:blink 1s steps(1) infinite">_</span></span><b>DRILL DOWN ▾</b></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>Kills the bubble entirely.</b> JARVIS doesn't chat, he <i>reports</i>: verdict first in big type, then a
+    confidence gauge, evidence rows with file refs and strength dots, numbered mechanism, caveat in warning ink.
+    <ul>
+      <li>The answer is parsed into modules, so the screen is scannable in one second instead of read paragraph by paragraph.</li>
+      <li>Acid-lime on near-black — deliberately not sci-fi cyan.</li>
+      <li><b>Build cost:</b> medium. Layout is cheap; the work is prompting the model to emit sections
+          (<code>verdict / confidence / evidence / mechanism / caveat</code>) and falling back to plain prose when it doesn't.</li>
+    </ul>
+  </div>
+</div>
+<!-- ================= 09 HORIZONTAL CORE ================= -->
+<div class="slot">
+  <div class="tag"><span class="num">09</span><span class="name">Horizontal Core</span></div>
+  <div class="phone">
+    <div class="scr hz">
+      <div class="hz-top"><span>TURN <b>06</b> / 06</span><span>OPUS 5 · 41 T/S</span></div>
+      <div class="stage">
+        <div class="slab s3"><span class="who">TURN 03</span></div>
+        <div class="slab s2"><span class="who">TURN 04</span></div>
+        <div class="slab s1"><span class="who">TURN 05</span><div class="q">How does the gateway pick a provider?</div></div>
+        <div class="slab s0">
+          <span class="who">TURN 06 · LIVE</span>
+          <div class="q">Summarise the retry logic in our SSE transport.</div>
+          <div class="a">
+            Retries use exponential backoff with jitter, capped at four attempts. Only
+            <span style="color:#6ff2ff">429</span> and <span style="color:#6ff2ff">5xx</span> re-enter the loop;
+            a mid-stream disconnect resumes from the last event id.
+          </div>
+          <div class="layers">
+            <span>DEPTH · ANSWER</span>
+            <i class="on"></i><i></i><i></i>
+          </div>
+        </div>
+        <div class="hz-hint">◀ SWIPE TIME ▶ &nbsp;·&nbsp; ▲ PULL FOR DEPTH</div>
+      </div>
+      <div class="hz-rule">
+        <div class="tk">
+          <i class="big"></i><i></i><i></i><i></i><i class="big"></i><i></i><i></i><i></i>
+          <i class="big"></i><i></i><i></i><i></i><i class="big"></i><i></i><i></i><i></i><i class="big"></i>
+        </div>
+        <div class="head"></div>
+        <div class="lb"><span>22:14</span><span>SESSION 0x1F</span><span>NOW</span></div>
+      </div>
+      <div class="hz-ask"><span>Ask…</span><i>SEND</i></div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>Time runs sideways, detail runs up.</b> Turns are slabs receding into the distance; you thumb-swipe
+    horizontally through history and the vertical axis is freed for <i>depth</i> — pull up on the live slab and it
+    peels open: answer → reasoning → raw stream → token accounting.
+    <ul>
+      <li>Real 3D perspective, which is why it won't look like any chat app: they're all flat lists.</li>
+      <li>The bottom ruler is the whole session at a glance, with a playhead you can drag.</li>
+      <li><b>Risk:</b> long answers need internal scrolling inside a slab — two scroll axes, needs care.</li>
+      <li><b>Build cost:</b> medium-high — Reanimated pager with <code>rotateY</code>/<code>translateZ</code>; RN supports both natively.</li>
+    </ul>
+  </div>
+</div>
+<!-- ================= 10 ETCHED GLASS ================= -->
+<div class="slot">
+  <div class="tag"><span class="num">10</span><span class="name">Etched Glass · Two Planes</span></div>
+  <div class="phone">
+    <div class="scr gl">
+      <div class="deep">
+        <span class="who">JARVIS</span>
+        <div class="txt">
+          Retries use exponential backoff with jitter, capped at <b>four attempts</b>. Only
+          <b>429</b> and <b>5xx</b> re-enter the loop; a mid-stream disconnect resumes from the last event id
+          rather than restarting the turn.
+        </div>
+      </div>
+      <div class="sheen"></div>
+      <div class="hud">
+        <div class="n">JARVIS</div>
+        <div class="b">OPUS 5 · 1204 · 318 · 2.14s</div>
+      </div>
+      <div class="etch">
+        <div class="e">Summarise the retry logic in our SSE transport.</div>
+        <div class="m">YOU · 22:14</div>
+      </div>
+      <div class="cursor"><i></i><u></u><span>SPEAK</span></div>
+      <div class="bezel"></div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>The screen is a window, not a page.</b> Two physical planes: your words are <i>carved into</i> the near
+    surface (dark, engraved, catching a highlight), JARVIS lives behind the glass — larger, softer, glowing,
+    drifting a few pixels against your text as you tilt the phone. No bubbles, no bars, no cards. The only chrome
+    is a hairline bezel and a caret sitting on the glass.
+    <ul>
+      <li>Parallax is driven by the gyro, so the depth is real, not decorative — and it makes "who said this" a
+          spatial fact rather than a colour convention.</li>
+      <li>One turn at a time by design; history is a pinch-out gesture that pulls the glass stack apart.</li>
+      <li><b>Trade-off:</b> the etched style is low contrast by nature. I'd ship it with a "flatten" accessibility
+          toggle that raises contrast and stops the motion.</li>
+      <li><b>Build cost:</b> medium — <code>expo-sensors</code> for tilt, layered text with shadows. Reduce-motion must disable the drift.</li>
+    </ul>
+  </div>
+</div>
+<!-- ================= 11 CORE SAMPLE ================= -->
+<div class="slot">
+  <div class="tag"><span class="num">11</span><span class="name">Core Sample</span></div>
+  <div class="phone">
+    <div class="scr cs">
+      <div class="cs-top"><span>BORE <b>0x1F</b></span><span>DEPTH <b>3.42 m</b> · 06 STRATA</span></div>
+      <div class="cs-wrap">
+        <div class="depth">
+          <i class="big" style="top:0"></i><b style="top:0">0.0</b>
+          <i style="top:34px"></i><i style="top:68px"></i><i style="top:102px"></i>
+          <i class="big" style="top:136px"></i><b style="top:136px">1.0</b>
+          <i style="top:170px"></i><i style="top:204px"></i><i style="top:238px"></i>
+          <i class="big" style="top:272px"></i><b style="top:272px">2.0</b>
+          <i style="top:306px"></i><i style="top:340px"></i><i style="top:374px"></i>
+          <i class="big" style="top:408px"></i><b style="top:408px">3.0</b>
+          <i style="top:442px"></i><i style="top:476px"></i>
+        </div>
+        <div class="core">
+          <div class="grain"></div>
+          <div class="strat old">
+            <div class="k">STRATUM 04 · GATEWAY</div>
+            <div class="t">Provider selection walks the priority list, skipping any marked unreachable…</div>
+          </div>
+          <div class="strat q">
+            <div class="k">STRATUM 05 · QUERY</div>
+            <div class="t">Summarise the retry logic in our SSE transport.</div>
+          </div>
+          <div class="strat a">
+            <div class="k">STRATUM 06 · OPUS 5</div>
+            <div class="t">
+              Retries use exponential backoff with jitter, capped at four attempts. Only
+              <em>429</em> and <em>5xx</em> re-enter the loop; a mid-stream disconnect resumes from the last
+              event id rather than restarting the turn.
+            </div>
+          </div>
+          <div class="head-cut"><u></u><span>CUTTING · 41 T/S</span></div>
+        </div>
+        <div class="assay">
+          <i></i><i class="on"></i><i class="on"></i><i></i><i></i><i class="on"></i><i></i><i class="on"></i>
+          <i class="on"></i><i></i><i></i><i class="on"></i><i></i><i></i><i class="on"></i><i class="on"></i>
+        </div>
+      </div>
+      <div class="cs-ask">
+        <div class="b"><span>Drill deeper…</span><i>▼ BORE</i></div>
+        <div class="m"><span>1204 IN · 318 OUT</span><span>PINCH TO SCALE CORE</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="notes">
+    <b>The session as a geological core.</b> No cards, no bubbles, no gaps — one continuous column where every turn
+    is a stratum with its own tint and grain, the newest at the drill head with a glowing cutting line. A depth
+    ruler down the left measures the conversation in metres; the assay ticks on the right are token spend.
+    <ul>
+      <li>Pinch to change scale: zoom out and hours of work compress into readable bands you can navigate by colour.</li>
+      <li>Warm ochre and rust on graphite — the palette alone puts it nowhere near any AI app on your phone.</li>
+      <li><b>Build cost:</b> low. It's a list with edge-to-edge backgrounds and a ruler; the pinch-scale is the only new mechanic.</li>
+    </ul>
+  </div>
+</div>
+
+</div>
+
+</body>
+</html>

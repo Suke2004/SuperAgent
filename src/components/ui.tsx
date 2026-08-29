@@ -36,6 +36,8 @@ import type { StyleProp, TextInputProps, TextStyle, ViewProps, ViewStyle } from 
 import { useTheme } from '@/theme';
 import type { Palette, Theme } from '@/theme';
 
+import { Glyph } from './Glyph';
+
 /* -------------------------------------------------------------------------- */
 /* Focus                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -158,10 +160,10 @@ export function Section({
       {title ? (
         <Text
           style={{
-            color: t.colors.textDim,
+            color: t.colors.textFaint,
             fontSize: t.fontSize.xs,
-            fontWeight: '700',
-            letterSpacing: 0.8,
+            fontWeight: '600',
+            letterSpacing: 0.9,
             textTransform: 'uppercase',
             marginBottom: t.spacing.sm,
           }}
@@ -172,7 +174,7 @@ export function Section({
       <View
         style={{
           backgroundColor: t.colors.surface,
-          borderRadius: t.radius.md,
+          borderRadius: t.radius.lg,
           borderWidth: StyleSheet.hairlineWidth,
           borderColor: t.colors.border,
           overflow: 'hidden',
@@ -304,10 +306,29 @@ export function Body({
   );
 }
 
+/**
+ * A screen or section title.
+ *
+ * Serif, at a normal weight. In this design the serif is the identity cue — it marks
+ * names and titles, while everything a user actually reads at length stays sans.
+ */
 export function Heading({ children, style }: { children: ReactNode; style?: StyleProp<TextStyle> }) {
   const t = useTheme();
   return (
-    <Text style={[{ color: t.colors.text, fontSize: t.fontSize.xl, fontWeight: '700' }, style]}>{children}</Text>
+    <Text
+      style={[
+        {
+          color: t.colors.text,
+          fontFamily: t.serifFont,
+          fontSize: t.fontSize.xl,
+          fontWeight: '400',
+          letterSpacing: -0.3,
+        },
+        style,
+      ]}
+    >
+      {children}
+    </Text>
   );
 }
 
@@ -351,8 +372,8 @@ export function Note({
         backgroundColor: map.bg,
         borderLeftWidth: 3,
         borderLeftColor: map.border,
-        borderRadius: t.radius.sm,
-        paddingVertical: t.spacing.sm,
+        borderRadius: t.radius.md,
+        paddingVertical: t.spacing.sm + 2,
         paddingHorizontal: t.spacing.md,
       }}
     >
@@ -380,25 +401,30 @@ export function Badge({
   srLabel?: string;
 }) {
   const t = useTheme();
+  // Hairline pills rather than filled chips: the list rows carry several of these at
+  // once, and solid blocks of colour would out-shout the message text they annotate.
+  // Semantic tones keep their soft fill, because there the colour *is* the message.
   const map = {
-    neutral: { bg: t.colors.surfaceAlt, fg: t.colors.textDim },
-    accent: { bg: t.colors.accentSoft, fg: t.colors.accent },
-    success: { bg: t.colors.successSoft, fg: t.colors.success },
-    warning: { bg: t.colors.warningSoft, fg: t.colors.warning },
-    danger: { bg: t.colors.dangerSoft, fg: t.colors.danger },
+    neutral: { bg: 'transparent', fg: t.colors.textFaint, border: t.colors.border },
+    accent: { bg: t.colors.accentSoft, fg: t.colors.accent, border: t.colors.accentSoft },
+    success: { bg: t.colors.successSoft, fg: t.colors.success, border: t.colors.successSoft },
+    warning: { bg: t.colors.warningSoft, fg: t.colors.warning, border: t.colors.warningSoft },
+    danger: { bg: t.colors.dangerSoft, fg: t.colors.danger, border: t.colors.dangerSoft },
   }[tone];
   return (
     <View
       style={{
         backgroundColor: map.bg,
         borderRadius: t.radius.sm,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: map.border,
         paddingHorizontal: t.spacing.sm,
-        paddingVertical: 3,
+        paddingVertical: 2,
         alignSelf: 'flex-start',
       }}
     >
       <Text
-        style={{ color: map.fg, fontSize: t.fontSize.xs, fontWeight: '700' }}
+        style={{ color: map.fg, fontSize: t.fontSize.xs, fontWeight: '600', letterSpacing: 0.3 }}
         {...(srLabel !== undefined ? { accessibilityLabel: srLabel } : {})}
       >
         {label}
@@ -441,13 +467,13 @@ export function Button({
 
   const palette: Record<ButtonVariant, { bg: string; fg: string; border: string }> = {
     primary: { bg: t.colors.accent, fg: t.colors.accentText, border: t.colors.accent },
-    secondary: { bg: t.colors.surfaceAlt, fg: t.colors.text, border: t.colors.border },
+    secondary: { bg: t.colors.surface, fg: t.colors.text, border: t.colors.borderStrong },
     danger: { bg: t.colors.dangerSoft, fg: t.colors.danger, border: t.colors.danger },
     ghost: { bg: 'transparent', fg: t.colors.accent, border: 'transparent' },
   };
   const c = palette[variant];
   const vPad = size === 'sm' ? t.spacing.xs + 2 : t.spacing.sm + 2;
-  const hPad = size === 'sm' ? t.spacing.md : t.spacing.lg;
+  const hPad = size === 'sm' ? t.spacing.md : t.spacing.xl;
   // `md` reaches 48dp on its own. `sm` exists for dense toolbars, so it keeps the
   // smaller box and makes up the remainder in hitSlop. Vertical only: horizontal
   // slop would overlap the neighbouring button in an `Inline`.
@@ -469,7 +495,8 @@ export function Button({
             backgroundColor: c.bg,
             borderColor: c.border,
             borderWidth: variant === 'ghost' ? 0 : StyleSheet.hairlineWidth,
-            borderRadius: t.radius.md,
+            // Pill, per the design language: actions are rounded, containers are not.
+            borderRadius: t.radius.pill,
             paddingVertical: vPad,
             paddingHorizontal: hPad,
             minHeight,
@@ -704,7 +731,7 @@ export function Segmented<T extends string>({
         style={{
           flexDirection: 'row',
           backgroundColor: t.colors.surfaceAlt,
-          borderRadius: t.radius.md,
+          borderRadius: t.radius.lg,
           padding: 2,
           borderWidth: StyleSheet.hairlineWidth,
           borderColor: t.colors.border,
@@ -771,8 +798,8 @@ function Segment<T extends string>({
           flex: 1,
           paddingVertical: size === 'sm' ? t.spacing.sm : t.spacing.md,
           minHeight,
-          borderRadius: t.radius.sm,
-          backgroundColor: selected ? t.colors.bg : 'transparent',
+          borderRadius: t.radius.md,
+          backgroundColor: selected ? t.colors.surface : 'transparent',
           opacity: off ? 0.6 : 1,
           alignItems: 'center',
           justifyContent: 'center',
@@ -785,7 +812,7 @@ function Segment<T extends string>({
         style={{
           color: selected ? t.colors.text : t.colors.textDim,
           fontSize: size === 'sm' ? t.fontSize.xs : t.fontSize.sm,
-          fontWeight: selected ? '700' : '500',
+          fontWeight: selected ? '600' : '500',
         }}
       >
         {option.label}
@@ -839,10 +866,10 @@ export const Field = forwardRef<TextInput, FieldProps>(function Field(
           {
             flexDirection: 'row',
             alignItems: multiline ? 'flex-start' : 'center',
-            backgroundColor: t.colors.surfaceAlt,
-            borderRadius: t.radius.md,
+            backgroundColor: t.colors.surface,
+            borderRadius: t.radius.lg,
             borderWidth: error || focused ? 1 : StyleSheet.hairlineWidth,
-            borderColor: error ? t.colors.danger : focused ? t.colors.focus : t.colors.border,
+            borderColor: error ? t.colors.danger : focused ? t.colors.focus : t.colors.borderStrong,
           },
           ring,
         ]}
@@ -979,9 +1006,9 @@ function StepButton({
           borderRadius: t.radius.sm,
           alignItems: 'center',
           justifyContent: 'center',
-          backgroundColor: pressed ? t.colors.surfaceActive : t.colors.surfaceAlt,
+          backgroundColor: pressed ? t.colors.surfaceActive : t.colors.surface,
           borderWidth: StyleSheet.hairlineWidth,
-          borderColor: t.colors.border,
+          borderColor: t.colors.borderStrong,
           opacity: disabled ? 0.6 : 1,
         },
         ring,
@@ -992,11 +1019,18 @@ function StepButton({
   );
 }
 
+/**
+ * Busy indicator.
+ *
+ * The Jarvis mark rather than a platform spinner: the app's one long wait is a model
+ * thinking, and the same turning mark stands for it everywhere — in a stream header,
+ * on a settings screen doing a reachability probe, on the splash.
+ */
 export function Spinner({ label }: { label?: string }) {
   const t = useTheme();
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.spacing.sm }}>
-      <ActivityIndicator size="small" color={t.colors.accent} />
+      <Glyph size={20} state="thinking" />
       {label ? <Text style={{ color: t.colors.textDim, fontSize: t.fontSize.sm }}>{label}</Text> : null}
     </View>
   );
@@ -1007,7 +1041,16 @@ export function Empty({ title, body }: { title: string; body?: string }) {
   const t = useTheme();
   return (
     <View style={{ alignItems: 'center', gap: t.spacing.sm, paddingVertical: t.spacing.xxl }}>
-      <Text style={{ color: t.colors.textDim, fontSize: t.fontSize.md, fontWeight: '600' }}>{title}</Text>
+      <Text
+        style={{
+          color: t.colors.text,
+          fontFamily: t.serifFont,
+          fontSize: t.fontSize.lg,
+          fontWeight: '400',
+        }}
+      >
+        {title}
+      </Text>
       {body ? (
         <Text style={{ color: t.colors.textFaint, fontSize: t.fontSize.sm, textAlign: 'center', maxWidth: 300 }}>
           {body}
