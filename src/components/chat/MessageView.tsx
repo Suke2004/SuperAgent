@@ -245,10 +245,42 @@ function MessageViewInner({
 }
 
 /**
- * Memoised because a transcript re-renders on every stream delta.
+ * Memoised on the fields a stored message can actually change in, rather than on
+ * the identity of the message object.
  *
- * The comparison is deliberately shallow on the fields that can actually change
- * for an already-stored message: the store replaces the message object on edit, so
- * identity is enough for content, and the rest are primitives.
+ * The distinction matters because several stores paths — a reload after an edit,
+ * a fork, the end of a stream — replace the whole transcript array with freshly
+ * parsed rows. Every object identity changes, so a default shallow `memo` re-runs
+ * markdown parsing and syntax highlighting for a thousand untouched messages to
+ * arrive at pixel-identical output. Comparing the fields the render reads keeps
+ * those rows.
+ *
+ * `content` is compared by reference on purpose: it is parsed once per row when
+ * the row is read out of SQLite, so a new array means new blocks, and deep
+ * comparison of block trees on every render would cost more than the render it
+ * saves. `usage` and `meta` are treated the same way, with a null-vs-set check so
+ * a footer appearing is never missed.
  */
-export const MessageView = memo(MessageViewInner);
+export const MessageView = memo(MessageViewInner, (prev, next) => {
+  if (prev.now !== next.now) return false;
+  if (prev.thinkingExpanded !== next.thinkingExpanded) return false;
+  if (prev.pricing !== next.pricing) return false;
+  if (prev.onAction !== next.onAction || prev.onExplainCost !== next.onExplainCost) return false;
+
+  const a = prev.message;
+  const b = next.message;
+  return (
+    a.id === b.id &&
+    a.role === b.role &&
+    a.seq === b.seq &&
+    a.createdAt === b.createdAt &&
+    a.text === b.text &&
+    a.content === b.content &&
+    a.model === b.model &&
+    a.error === b.error &&
+    a.stopReason === b.stopReason &&
+    a.excluded === b.excluded &&
+    a.usage === b.usage &&
+    a.meta === b.meta
+  );
+});

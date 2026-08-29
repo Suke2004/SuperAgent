@@ -28,4 +28,32 @@ module.exports = {
   transformIgnorePatterns: ['node_modules/(?!(marked|refractor|hastscript|hast-util|property-information|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|parse-entities|character-entities|is-decimal|is-hexadecimal|is-alphanumerical|is-alphabetical)/)'],
   clearMocks: true,
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.test.ts', '!src/**/__tests__/**'],
+  /**
+   * A ratchet, not a target.
+   *
+   * These numbers are two points below what the suite currently measures, which is
+   * the only setting that is useful: a threshold above where you are fails every
+   * run and gets deleted, and a threshold far below it never fires. Two points of
+   * slack absorbs the noise of adding a pure module before its tests land in the
+   * same change, and still fails when a whole file arrives untested.
+   *
+   * The absolute figures are low and honestly so. `collectCoverageFrom` is `src`
+   * only, but `src/components/` is in it and is deliberately not unit-tested (see
+   * `testMatch`: `.ts` only, never `.tsx`) — so a large, permanently uncovered
+   * denominator is baked in. `functions` is the lowest for the same reason: most
+   * uncovered functions are component bodies and the store actions that exist
+   * only to call one. Judge a change by whether it moves these *down*, not by the
+   * distance to 100.
+   *
+   * Raise them when a run comes in comfortably higher. Never lower them to make a
+   * red run green — that is the one edit that makes the gate meaningless.
+   */
+  coverageThreshold: {
+    global: {
+      lines: 62,
+      statements: 61,
+      branches: 60,
+      functions: 48,
+    },
+  },
 };

@@ -15,6 +15,17 @@
  *     tidy would rewrite every row for no benefit.
  */
 
+import {
+  addTagSql,
+  chunk,
+  clearTagsSql,
+  deleteConversationsSql,
+  normaliseIds,
+  removeTagSql,
+  setArchivedSql,
+} from '@/db/bulk';
+import { buildListQuery, DEFAULT_PAGE_SIZE, nextCursor } from '@/db/list-query';
+import type { ListCursor } from '@/db/list-query';
 import { database, localDay } from '@/db/schema';
 import { buildFtsQuery, buildLikePattern, excerpt, LIKE_ESCAPE } from '@/db/search';
 import { newId } from '@/lib/id';
@@ -289,8 +300,16 @@ export function flattenContent(blocks: readonly ContentBlock[]): string {
   return parts.join('\n\n').trim();
 }
 
-/** First non-empty line, trimmed to fit a list row. */
-function previewOf(text: string): string {
+/**
+ * First non-empty line, trimmed to fit a list row.
+ *
+ * Exported because the chat store patches the same column optimistically while a
+ * turn lands, and it has to produce the *same* string the database will hold.
+ * Writing the raw message text there instead was debt D-04: the row showed a
+ * whole paragraph — or a markdown heading's `#` — until the next relaunch swapped
+ * it for the stored one-liner, which reads as a rendering glitch.
+ */
+export function previewOf(text: string): string {
   const line = text
     .split('\n')
     .map((l) => l.replace(/^#+\s*/, '').trim())
@@ -382,41 +401,34 @@ export interface ListOptions {
   tag?: string;
   profileId?: string;
   limit?: number;
+  /** The cursor returned by the previous page. Omit for the first page. */
+  after?: ListCursor | null;
+}
+
+/** A page of conversations plus the cursor for the next one, `null` at the end. */
+export interface ConversationPage {
+  conversations: Conversation[];
+  cursor: ListCursor | null;
 }
 
 /**
- * The conversation list, pinned first then newest.
+ * The conversation list, pinned first then newest, one page at a time.
  *
- * Tags and message counts are correlated subqueries rather than joins, so one
- * conversation with three tags stays one row and the pinned/updated index is
- * still usable for ordering.
+ * The SQL lives in `./list-query` because a test asserts on the plan SQLite
+ * picks for it; see the note there on why paging is keyset rather than `OFFSET`.
  */
 export async function listConversations(options: ListOptions = {}): Promise<Conversation[]> {
+  return (await listConversationPage(options)).conversations;
+}
+
+/** As {@link listConversations}, but keeping the cursor the caller needs to page on. */
+export async function listConversationPage(options: ListOptions = {}): Promise<ConversationPage> {
   const { db } = await database();
-  const where: string[] = ['c.archived = ?'];
-  const params: (string | number)[] = [options.archived ? 1 : 0];
-
-  if (options.profileId) {
-    where.push('c.profile_id = ?');
-    params.push(options.profileId);
-  }
-  if (options.tag) {
-    where.push('EXISTS (SELECT 1 FROM conversation_tags t WHERE t.conversation_id = c.id AND t.tag = ?)');
-    params.push(options.tag);
-  }
-
-  const limit = options.limit ?? 500;
-  const rows = await db.getAllAsync<ConversationRow>(
-    `SELECT c.*,
-            (SELECT group_concat(tag, char(1)) FROM conversation_tags WHERE conversation_id = c.id) AS tags,
-            (SELECT count(*) FROM messages WHERE conversation_id = c.id) AS message_count
-       FROM conversations c
-      WHERE ${where.join(' AND ')}
-      ORDER BY c.pinned DESC, c.updated_at DESC
-      LIMIT ?`,
-    [...params, limit],
-  );
-  return rows.map(toConversation);
+  const limit = Math.max(1, Math.floor(options.limit ?? DEFAULT_PAGE_SIZE));
+  const { sql, params } = buildListQuery({ ...options, limit });
+  const rows = await db.getAllAsync<ConversationRow>(sql, params);
+  const conversations = rows.map(toConversation);
+  return { conversations, cursor: nextCursor(conversations, limit) };
 }
 
 export interface ConversationPatch {
@@ -533,6 +545,112 @@ export async function allTags(): Promise<{ tag: string; count: number }[]> {
   return db.getAllAsync<{ tag: string; count: number }>(
     `SELECT tag, count(*) AS count FROM conversation_tags GROUP BY tag ORDER BY count DESC, tag ASC`,
   );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Bulk operations                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Deletes many conversations in **one** transaction.
+ *
+ * One transaction is the whole point, and it is a correctness requirement rather
+ * than a performance one. Fifty separate deletes can be interrupted — the app
+ * backgrounded, the process killed, a `Pressable` fired twice — leaving a
+ * selection half destroyed, and there is no undo to reach for and no way for the
+ * user to tell which half went. All or nothing is the only outcome that can be
+ * described honestly afterwards.
+ *
+ * `usage_events` survive by design: `conversation_id` there is a plain column,
+ * not a foreign key, because spend history is an accounting record of money
+ * already spent (see [docs/05_Data_Model.md](../../docs/05_Data_Model.md) §5.2).
+ * Deleting the thread does not refund the tokens, so the dashboard must not
+ * start disagreeing with the invoice because someone tidied up their list.
+ *
+ * Returns how many conversation rows were removed, which is not necessarily
+ * `ids.length` — an id that no longer exists is not an error here, because the
+ * list the selection was made from can be a few seconds stale.
+ */
+export async function deleteConversations(ids: readonly string[]): Promise<number> {
+  const wanted = normaliseIds(ids);
+  if (!wanted.length) return 0;
+  const { db } = await database();
+  let removed = 0;
+  await db.withTransactionAsync(async () => {
+    for (const batch of chunk(wanted)) {
+      const result = await db.runAsync(deleteConversationsSql(batch.length), [...batch]);
+      removed += result.changes;
+    }
+  });
+  log.info('db', 'Deleted conversations in bulk', { requested: wanted.length, removed });
+  return removed;
+}
+
+/**
+ * Archives or restores many conversations in one transaction.
+ *
+ * Returns how many rows actually *moved*, which the SQL enforces with an
+ * `archived <> ?` guard. A selection that spans both states is normal — you can
+ * multi-select in the archive too — and "8 archived" is a true statement where
+ * "12 archived" would not be.
+ */
+export async function setArchivedBulk(ids: readonly string[], archived: boolean): Promise<number> {
+  const wanted = normaliseIds(ids);
+  if (!wanted.length) return 0;
+  const { db } = await database();
+  const flag = archived ? 1 : 0;
+  let changed = 0;
+  await db.withTransactionAsync(async () => {
+    for (const batch of chunk(wanted)) {
+      const result = await db.runAsync(setArchivedSql(batch.length), [flag, flag, ...batch]);
+      changed += result.changes;
+    }
+  });
+  return changed;
+}
+
+/**
+ * How a bulk retag combines with the tags a conversation already has.
+ *
+ * Three modes rather than one, because they are three different intentions and
+ * collapsing them loses information the user cannot get back. `replace` is the
+ * destructive one: it discards tags the selection already carried, including
+ * tags on conversations the user never looked at before selecting them.
+ */
+export type TagMode = 'add' | 'remove' | 'replace';
+
+/**
+ * Applies tags to many conversations in one transaction.
+ *
+ * Returns how many conversations were addressed rather than how many tag rows
+ * changed. Row counts are the wrong unit for the confirmation: adding two tags
+ * to ten conversations where six already had one of them is a meaningless "14",
+ * and the user selected conversations, not rows.
+ */
+export async function tagConversations(
+  ids: readonly string[],
+  tags: readonly string[],
+  mode: TagMode,
+): Promise<number> {
+  const wanted = normaliseIds(ids);
+  const cleaned = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+  if (!wanted.length) return 0;
+  // `replace` with no tags means "clear them all", which is a legitimate wish;
+  // `add` or `remove` with no tags is a no-op, and doing nothing is better than
+  // opening a transaction to prove it.
+  if (!cleaned.length && mode !== 'replace') return 0;
+
+  const { db } = await database();
+  await db.withTransactionAsync(async () => {
+    for (const batch of chunk(wanted)) {
+      if (mode === 'replace') await db.runAsync(clearTagsSql(batch.length), [...batch]);
+      for (const tag of cleaned) {
+        const sql = mode === 'remove' ? removeTagSql(batch.length) : addTagSql(batch.length);
+        await db.runAsync(sql, [tag, ...batch]);
+      }
+    }
+  });
+  return wanted.length;
 }
 
 /* -------------------------------------------------------------------------- */

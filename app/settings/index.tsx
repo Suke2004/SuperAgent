@@ -9,6 +9,7 @@
 import { useRouter } from 'expo-router';
 
 import { Row, Screen, Section, SwitchRow } from '@/components/ui';
+import { useMemory } from '@/stores/memory';
 import { useProviders } from '@/stores/providers';
 import { useSettings } from '@/stores/settings';
 
@@ -17,6 +18,7 @@ export default function SettingsHub() {
   const profiles = useProviders((s) => s.profiles);
   const activeId = useProviders((s) => s.activeId);
   const settings = useSettings();
+  const memoryCount = useMemory((s) => s.memories.length);
   const active = profiles.find((p) => p.id === activeId);
 
   return (
@@ -41,6 +43,20 @@ export default function SettingsHub() {
           subtitle="Retry on the backup domain when the primary is unreachable. Never on a 401 or 429 — those mean the primary answered."
           value={settings.autoFailover}
           onChange={(v) => settings.set('autoFailover', v)}
+        />
+      </Section>
+
+      <Section
+        title="Memory"
+        note="Durable notes about you, carried into new conversations. Inspect, edit or delete them here."
+      >
+        <Row
+          first
+          chevron
+          label="Memory"
+          value={settings.memoryEnabled ? `${memoryCount} remembered` : 'Off'}
+          subtitle="What the app has learned about you, and the switch that stops it"
+          onPress={() => router.push('/settings/memory')}
         />
       </Section>
 

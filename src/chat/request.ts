@@ -269,6 +269,8 @@ export interface BuildInput {
   messages: UnifiedMessage[];
   /** Prepended to the system prompt when the `summarise` strategy has run. */
   summary?: string;
+  /** Long-term memory, already budgeted and rendered by `@/chat/memory`. */
+  memory?: string;
   tools?: ChatRequest['tools'];
   /** Overrides the conversation's params for one message. */
   paramOverrides?: Partial<SamplingParams>;
@@ -278,7 +280,7 @@ export function buildRequest(input: BuildInput): ChatRequest {
   const params = mergeParams(input.capabilities, { ...input.config.params, ...input.paramOverrides });
   const reasoning = resolveReasoning(input.transport, input.capabilities, input.config.reasoning);
 
-  const system = composeSystem(input.systemPrompt, input.summary);
+  const system = composeSystem(input.systemPrompt, input.summary, input.memory);
 
   const request: ChatRequest = {
     model: input.model,
@@ -293,15 +295,22 @@ export function buildRequest(input: BuildInput): ChatRequest {
 }
 
 /**
- * Joins the user's system prompt with any rolling summary.
+ * Joins the user's system prompt with the memory block and any rolling summary.
  *
- * The summary goes after the prompt and under a heading, so a model reading it
- * treats it as context rather than as instructions that might outrank the ones
- * the user wrote.
+ * Order is the whole content of this function. The user's prompt comes first
+ * because it is the only part they wrote. Memory comes next, framed as notes and
+ * explicitly subordinate, so a remembered "prefers terse answers" cannot quietly
+ * outrank a prompt asking for detail today. The summary comes last, under its own
+ * heading, so a model reading it treats it as context rather than as instructions.
  */
-export function composeSystem(prompt: string | undefined, summary: string | undefined): string | undefined {
+export function composeSystem(
+  prompt: string | undefined,
+  summary: string | undefined,
+  memory?: string,
+): string | undefined {
   const parts: string[] = [];
   if (prompt?.trim()) parts.push(prompt.trim());
+  if (memory?.trim()) parts.push(memory.trim());
   if (summary?.trim()) {
     parts.push(
       `# Summary of earlier conversation\n\nEarlier turns were removed to fit the context window. ` +

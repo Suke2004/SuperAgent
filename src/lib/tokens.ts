@@ -19,7 +19,7 @@
  * single long word can swing the count by a whole token.
  */
 
-import type { ChatRequest, ContentBlock, TokenUsage, UnifiedMessage } from '@/transports/types';
+import type { ChatRequest, ContentBlock, TokenUsage, ToolDefinition, UnifiedMessage } from '@/transports/types';
 
 /**
  * Characters per token for scripts written with an alphabet.
@@ -40,10 +40,10 @@ const CJK_TOKENS_PER_CHAR = 0.9;
  * Per-message framing: role markers and delimiters that both wire formats add
  * around every message. Small, but a 200-turn conversation is 800 tokens of it.
  */
-const MESSAGE_OVERHEAD = 4;
+export const MESSAGE_OVERHEAD = 4;
 
 /** Framing around the whole request: system prompt wrapper, BOS, and similar. */
-const REQUEST_OVERHEAD = 8;
+export const REQUEST_OVERHEAD = 8;
 
 /**
  * Flat estimate for an image whose dimensions aren't known here.
@@ -56,7 +56,7 @@ const REQUEST_OVERHEAD = 8;
 const IMAGE_TOKENS = 2_500;
 
 /** Per-tool-definition overhead: name, description and JSON Schema all cost. */
-const TOOL_DEFINITION_OVERHEAD = 12;
+export const TOOL_DEFINITION_OVERHEAD = 12;
 
 const CJK_PATTERN =
   /[ᄀ-ᇿ⺀-⻿　-〿぀-ヿ㄰-㆏㐀-䶿一-鿿ꥠ-꥿가-힯豈-﫿＀-ﾟ]/;
@@ -162,6 +162,28 @@ export interface RequestEstimate {
 }
 
 /**
+ * Estimated input tokens for one tool definition.
+ *
+ * Exported because the tool budgeter in `@/chat/tools` has to cost each
+ * definition individually to decide which ones fit — and if it used a different
+ * arithmetic from the request estimate, a set of tools chosen as "within budget"
+ * would arrive over it.
+ *
+ * The schema dominates in practice. A tool with four described parameters is
+ * typically 150–400 tokens of JSON Schema against 20 of name and description,
+ * which is why `slimSchema` in the budgeter targets the schema rather than the
+ * prose.
+ */
+export function estimateToolTokens(tool: ToolDefinition): number {
+  return (
+    TOOL_DEFINITION_OVERHEAD +
+    estimateTextTokens(tool.name) +
+    estimateTextTokens(tool.description) +
+    estimateTextTokens(safeJson(tool.inputSchema))
+  );
+}
+
+/**
  * Estimated input tokens for a whole request.
  *
  * Counts tool definitions, which is easy to forget and can dominate: a chatty
@@ -172,13 +194,7 @@ export function estimateRequestTokens(request: Pick<ChatRequest, 'system' | 'mes
   const system = request.system ? estimateTextTokens(request.system) : 0;
   const messages = estimateMessagesTokens(request.messages);
   let tools = 0;
-  for (const tool of request.tools ?? []) {
-    tools +=
-      TOOL_DEFINITION_OVERHEAD +
-      estimateTextTokens(tool.name) +
-      estimateTextTokens(tool.description) +
-      estimateTextTokens(safeJson(tool.inputSchema));
-  }
+  for (const tool of request.tools ?? []) tools += estimateToolTokens(tool);
   return { system, messages, tools, total: system + messages + tools + REQUEST_OVERHEAD };
 }
 
