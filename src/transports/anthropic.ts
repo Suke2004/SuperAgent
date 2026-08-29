@@ -21,7 +21,7 @@
 import { GatewayError, validationError } from './errors';
 import { HttpClient, type FetchLike, type ParamDropInfo, type SendOptions } from './http';
 import { describeBaseUrlIssue, parseModelList, pickProbeModel, summariseFailure } from './openai';
-import type { RetryPolicy } from './retry';
+import type { RetryAttempt, RetryPolicy } from './retry';
 import { parseEventData, type SseEvent } from './sse';
 import {
   createResultAccumulator,
@@ -43,6 +43,21 @@ import { resolveThinkingBudget, validateAnthropicRequest } from './validate';
 
 /** The version header Anthropic has required since 2023. */
 export const DEFAULT_ANTHROPIC_VERSION = '2023-06-01';
+
+/**
+ * Last-resort probe model, used only when discovery failed *and* the profile has
+ * no configured model. A gateway that hides `/v1/models` still has to be probed
+ * with something, and a Claude id is the likeliest to exist on this path.
+ *
+ * Not a fallback for a *configured* model: probing something other than what the
+ * profile is set to is how a working key gets reported as `403 Forbidden`.
+ */
+const LAST_RESORT_PROBE_MODEL = 'claude-opus-4-6';
+
+function fallbackProbeModel(configured: string | undefined): string {
+  const wanted = configured?.trim();
+  return wanted ? wanted : LAST_RESORT_PROBE_MODEL;
+}
 
 /**
  * Optional body keys the gateway may reject, in which case the request is retried
@@ -69,10 +84,14 @@ export class AnthropicTransport implements Transport {
   readonly kind = 'anthropic' as const;
   readonly baseUrl: string;
 
+  /** The profile's configured model. Read by {@link testConnection} only. */
+  private readonly defaultModel?: string;
+
   private readonly http: HttpClient;
 
   constructor(options: AnthropicTransportOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '');
+    if (options.defaultModel) this.defaultModel = options.defaultModel;
     this.http = new HttpClient({
       transport: 'anthropic',
       baseUrl: this.baseUrl,
@@ -264,15 +283,29 @@ export class AnthropicTransport implements Transport {
         durationMs: Date.now() - modelsStarted,
       });
       // Model discovery is a convenience; /v1/messages is the transport. Keep going
-      // with the known default so a missing model list doesn't mask a working path.
+      // with the configured model so a missing model list doesn't mask a working path.
       steps.push({
         label: 'Model discovery fallback',
         status: 'ok',
-        detail: 'Falling back to the built-in default claude-opus-4-6 for the message probe.',
+        detail: `Falling back to ${fallbackProbeModel(this.defaultModel)} for the message probe.`,
       });
     }
 
-    const probeModel = models && models.length > 0 ? pickProbeModel(models) : 'claude-opus-4-6';
+    const probeModel =
+      models && models.length > 0
+        ? pickProbeModel(models, this.defaultModel)
+        : fallbackProbeModel(this.defaultModel);
+
+    if (models && models.length > 0 && this.defaultModel && probeModel !== this.defaultModel) {
+      steps.push({
+        label: 'Configured model',
+        status: 'failed',
+        detail:
+          `${this.defaultModel} is not in the gateway's model list, so it would fail with a permission error. ` +
+          `Probing ${probeModel} instead — switch the profile to a listed model.`,
+      });
+    }
+
     const chatStarted = Date.now();
     try {
       const result = await this.complete(
@@ -302,6 +335,7 @@ export class AnthropicTransport implements Transport {
         ok: false,
         steps,
         ...(models ? { models } : {}),
+        probedModel: probeModel,
         summary: summariseFailure(gatewayError),
       };
     }
@@ -310,6 +344,7 @@ export class AnthropicTransport implements Transport {
       ok: true,
       steps,
       ...(models ? { models } : {}),
+      probedModel: probeModel,
       summary: models
         ? `Anthropic-compatible transport is working. ${models.length} models available.`
         : 'Anthropic-compatible transport is working, though the model list could not be read.',
@@ -337,6 +372,12 @@ export class AnthropicTransport implements Transport {
         pending.push({ type: 'param_dropped', param: info.param, message: info.message });
         options.onParamDropped?.(info.param, info.message);
       },
+      ...(options.onRetry
+        ? {
+            onRetry: (info: RetryAttempt) =>
+              options.onRetry?.({ attempt: info.attempt, delayMs: info.delayMs, message: info.error.message }),
+          }
+        : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     };
   }

@@ -328,11 +328,28 @@ export function formatTokens(count: number): string {
   return `${(count / 1_000_000).toFixed(2)}M`;
 }
 
-/** `1.2k in · 830 out · 4.1k cached` — omits parts the provider didn't report. */
+/**
+ * `1.2k in · 830 out · 4.1k cached`.
+ *
+ * The optional fields are omitted when absent, but `input` and `output` are named
+ * as *not reported* instead. They are the two numbers the cost is computed from, so
+ * silently printing `0 in` for a gateway that returned no prompt usage claims the
+ * turn was free — and a missing count and a genuinely free turn have to be
+ * distinguishable. An empty usage object still formats as `''`: nothing at all was
+ * reported, and the caller decides how to say so.
+ */
 export function formatUsage(usage: Partial<TokenUsage>): string {
+  const known =
+    usage.input !== undefined ||
+    usage.output !== undefined ||
+    usage.thinking !== undefined ||
+    usage.cacheRead !== undefined ||
+    usage.cacheWrite !== undefined;
+  if (!known) return '';
+
   const parts: string[] = [];
-  if (usage.input !== undefined) parts.push(`${formatTokens(usage.input)} in`);
-  if (usage.output !== undefined) parts.push(`${formatTokens(usage.output)} out`);
+  parts.push(usage.input !== undefined ? `${formatTokens(usage.input)} in` : 'input not reported');
+  parts.push(usage.output !== undefined ? `${formatTokens(usage.output)} out` : 'output not reported');
   if (usage.thinking !== undefined) parts.push(`${formatTokens(usage.thinking)} thinking`);
   if (usage.cacheRead) parts.push(`${formatTokens(usage.cacheRead)} cache read`);
   if (usage.cacheWrite) parts.push(`${formatTokens(usage.cacheWrite)} cache write`);

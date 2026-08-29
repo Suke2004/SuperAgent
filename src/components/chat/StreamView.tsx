@@ -7,9 +7,11 @@
  * optional, and every consumer then guessing which state it was in.
  *
  * The phase label is the point of this component. A request that is being prepared,
- * summarised, connected, streamed or saved all look identical from outside — a
- * spinner — and the four of them fail for entirely different reasons. Naming the
- * phase turns "it's stuck" into "it's stuck connecting", which is actionable.
+ * summarised, connected, retried, streamed or saved all look identical from outside —
+ * a spinner — and they fail for entirely different reasons. Naming the phase turns
+ * "it's stuck" into "it's stuck connecting", which is actionable. A backoff wait goes
+ * further and shows the gateway's reason plus a countdown, because a silent 20-second
+ * sleep is the single most convincing impression of a hang this app can give.
  */
 
 import { useEffect, useState } from 'react';
@@ -20,13 +22,14 @@ import { Markdown } from '@/components/markdown/Markdown';
 import { Badge, Body, Button, Inline, Note, Spinner } from '@/components/ui';
 import { estimateTextTokens } from '@/lib/tokens';
 import { formatDuration, formatRate } from '@/lib/when';
-import type { StreamPhase, StreamState } from '@/stores/chat';
+import type { RetryState, StreamPhase, StreamState } from '@/stores/chat';
 import { useTheme } from '@/theme';
 
 const PHASE_LABEL: Record<StreamPhase, string> = {
   preparing: 'Preparing the request',
   summarising: 'Summarising older messages',
   connecting: 'Connecting',
+  retrying: 'Waiting to retry',
   streaming: 'Streaming',
   saving: 'Saving',
 };
@@ -52,6 +55,32 @@ function useElapsed(startedAt: number, running: boolean): number {
   }, [running, startedAt]);
 
   return Math.max(0, now - startedAt);
+}
+
+/**
+ * Whole seconds left on a backoff sleep, or `undefined` when nothing is waiting.
+ *
+ * A wait with no visible clock is the same "is it stuck?" problem the phase label
+ * solves, one level down: "retrying in 8s" is a promise the UI can be held to, while
+ * "retrying" is not. Ticks at 250ms so the number does not appear to skip.
+ */
+function useRetryCountdown(retry: RetryState | undefined): number | undefined {
+  const [now, setNow] = useState(() => Date.now());
+  const at = retry?.at;
+
+  useEffect(() => {
+    if (at === undefined) return;
+    const timer = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(timer);
+  }, [at]);
+
+  if (!retry) return undefined;
+  // `now` can be older than this wait, because the first render after a retry is
+  // scheduled happens before the interval has ticked. Clamped to the full delay
+  // rather than resetting the clock from inside the effect: a stale `now` would
+  // otherwise read as *more* than the wait actually is.
+  const remaining = Math.min(retry.delayMs, retry.at + retry.delayMs - now);
+  return Math.max(0, Math.ceil(remaining / 1000));
 }
 
 function PartialTool({ name, partialJson }: { name: string; partialJson: string }) {
@@ -109,12 +138,22 @@ export function StreamView({
   onStop,
   onDismiss,
   onRetry,
+  onEditRequest,
 }: {
   stream: StreamState;
   showThinking: boolean;
   onStop: () => void;
   onDismiss: () => void;
   onRetry?: () => void;
+  /**
+   * Opens the sampling controls.
+   *
+   * "Try again" is the wrong and only answer when the failure was caused by the
+   * request itself — a temperature the gateway refuses, a thinking budget above
+   * `max_tokens` — because retrying an invalid request reproduces the error. This
+   * puts the thing that has to change one tap from the message saying it is wrong.
+   */
+  onEditRequest?: () => void;
 }) {
   const t = useTheme();
   const failed = stream.error !== undefined;
@@ -127,6 +166,12 @@ export function StreamView({
   const tokens = reported ?? estimateTextTokens(stream.text + stream.thinking);
   const rate = formatRate(tokens, elapsed);
 
+  // Time to first byte, frozen once it lands. It is the number that separates "the
+  // gateway is slow to answer" from "the model is slow to write", and after the fact
+  // the total duration cannot tell you which of the two you waited on.
+  const ttft = stream.firstByteAt === undefined ? undefined : stream.firstByteAt - stream.startedAt;
+  const remaining = useRetryCountdown(failed ? undefined : stream.retry);
+
   const phase = stream.aborting ? 'Stopping' : PHASE_LABEL[stream.phase];
 
   return (
@@ -136,6 +181,11 @@ export function StreamView({
         <Body size="xs" tone="faint" mono>
           {formatDuration(elapsed)}
         </Body>
+        {ttft !== undefined ? (
+          <Body size="xs" tone="faint" mono accessibilityLabel={`First byte after ${formatDuration(ttft)}`}>
+            {`${formatDuration(ttft)} to first byte`}
+          </Body>
+        ) : null}
         {rate ? (
           <Body size="xs" tone="faint" mono>
             {reported === undefined ? `~${rate}` : rate}
@@ -143,6 +193,16 @@ export function StreamView({
         ) : null}
         <Badge label={stream.model} tone="neutral" />
       </Inline>
+
+      {/* The backoff, named and counted down. Live so a screen reader hears the wait
+          start rather than discovering it on the next swipe. */}
+      {stream.retry && !failed ? (
+        <Note tone="warning" live>
+          {`Attempt ${stream.retry.attempt} failed: ${stream.retry.message} · retrying${
+            remaining ? ` in ${remaining}s` : ' now'
+          }.`}
+        </Note>
+      ) : null}
 
       {stream.thinking && showThinking ? <LiveThinking text={stream.thinking} /> : null}
       {stream.text ? <Markdown source={stream.text} /> : null}
@@ -170,6 +230,9 @@ export function StreamView({
         {failed ? (
           <>
             {onRetry ? <Button label="Try again" onPress={onRetry} variant="secondary" size="sm" /> : null}
+            {onEditRequest ? (
+              <Button label="Edit request" onPress={onEditRequest} variant="ghost" size="sm" />
+            ) : null}
             <Button label="Dismiss" onPress={onDismiss} variant="ghost" size="sm" />
           </>
         ) : (

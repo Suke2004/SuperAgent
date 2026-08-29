@@ -12,9 +12,10 @@ import { useState } from 'react';
 import { Alert } from 'react-native';
 
 import { Badge, Body, Button, Empty, Field, Inline, Note, Row, Screen, Section, Stack } from '@/components/ui';
-import { resolveTransport } from '@/lib/gateway';
+import { invalidateTransports, resolveTransport } from '@/lib/gateway';
 import { entryKey, useModels } from '@/stores/models';
-import { useProviders } from '@/stores/providers';
+import { adoptDiscoveredModel, useProviders } from '@/stores/providers';
+import { useReachability } from '@/stores/reachability';
 import { summariseFailure } from '@/transports';
 import { GatewayError } from '@/transports/errors';
 import { useTheme } from '@/theme';
@@ -53,9 +54,27 @@ export default function ModelsScreen() {
       const parts = [`${discovered.length} model(s) listed`];
       if (added.length) parts.push(`${added.length} new`);
       if (missing.length) parts.push(`${missing.length} no longer listed (kept, flagged)`);
+      // A `defaultModel` the gateway does not list fails as a permission error that
+      // reads like a bad key, so discovery gets to correct it — and say so.
+      const adopted = adoptDiscoveredModel(
+        profile.id,
+        discovered.map((model) => model.id),
+      );
+      if (adopted) {
+        invalidateTransports(profile.id);
+        parts.push(`default model set to ${adopted} (the old one is not served here)`);
+      }
       setOutcome(`${parts.join(' · ')}.`);
+      // A model list is a round trip like any other, so it is evidence too.
+      useReachability.getState().markReachable();
     } catch (err) {
-      setError(summariseFailure(err instanceof GatewayError ? err : GatewayError.wrap(err)));
+      const gatewayError = err instanceof GatewayError ? err : GatewayError.wrap(err);
+      setError(summariseFailure(gatewayError));
+      if (gatewayError.kind === 'network') {
+        useReachability.getState().markUnreachable(gatewayError.message, profile.baseUrl);
+      } else {
+        useReachability.getState().markReachable();
+      }
     } finally {
       setRefreshing(false);
     }

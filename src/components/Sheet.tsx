@@ -15,6 +15,7 @@
 import { useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 
+import { useDialogKeys } from '@/components/dialog';
 import { Body, Button, Divider, Field, Inline } from '@/components/ui';
 import { useTheme } from '@/theme';
 
@@ -33,16 +34,25 @@ export function Sheet({
   visible,
   title,
   subtitle,
+  body,
   actions,
   onClose,
 }: {
   visible: boolean;
   title: string;
   subtitle?: string;
+  /**
+   * A paragraph above the actions, for a sheet whose job is to explain something.
+   *
+   * `subtitle` is clamped to two lines because it describes the thing the actions
+   * act on; this is for the sheets that are the explanation.
+   */
+  body?: string;
   actions: readonly SheetAction[];
   onClose: () => void;
 }) {
   const t = useTheme();
+  const trap = useDialogKeys(visible, onClose);
 
   return (
     <Modal
@@ -61,7 +71,10 @@ export function Sheet({
         {/* A second Pressable that swallows the press, so a tap inside the sheet
             does not fall through to the backdrop and close it. */}
         <Pressable
+          ref={trap}
           onPress={() => {}}
+          // iOS's own focus trap: VoiceOver stops offering the screen underneath.
+          accessibilityViewIsModal
           style={{
             backgroundColor: t.colors.surface,
             borderTopLeftRadius: t.radius.lg,
@@ -81,6 +94,13 @@ export function Sheet({
           <Divider />
 
           <ScrollView>
+            {body ? (
+              <View style={{ paddingHorizontal: t.spacing.md, paddingTop: t.spacing.md }}>
+                <Body size="sm" tone="dim">
+                  {body}
+                </Body>
+              </View>
+            ) : null}
             {actions.map((action, index) => (
               <View key={action.label}>
                 {index > 0 ? <Divider /> : null}
@@ -185,6 +205,7 @@ function PromptBody({
 }: PromptSheetProps) {
   const t = useTheme();
   const [text, setText] = useState(initial);
+  const trap = useDialogKeys(true, onCancel);
 
   const blocked = !allowEmpty && text.trim().length === 0;
 
@@ -195,7 +216,9 @@ function PromptBody({
       style={{ flex: 1, backgroundColor: '#00000088', justifyContent: 'flex-end' }}
     >
       <Pressable
+        ref={trap}
         onPress={() => {}}
+        accessibilityViewIsModal
         style={{
           backgroundColor: t.colors.surface,
           borderTopLeftRadius: t.radius.lg,
