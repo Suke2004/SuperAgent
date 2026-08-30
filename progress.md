@@ -7,11 +7,11 @@
 npx tsc --noEmit && npx eslint . && npx jest
 ```
 
-→ tsc clean, eslint clean, **1012 tests / 36 suites** in ~4 s.
+→ tsc clean, eslint clean, **1131 tests / 48 suites** in ~8 s.
 
-Coverage is now a **gate, not a note**: `npx jest --coverage` measures lines 64.20%, statements 63.27%, branches 62.58%, functions 51.71%, and `jest.config.js` carries a `coverageThreshold` a point or two under each of those, so the runner fails rather than the number going stale in this file. The functions figure is low for a structural reason, not a negligent one — `app/` and `src/components/` are excluded from unit testing by design (see the note on `jest.config.js` below), and every uncovered function is a component or a store action that only exists to call one.
+Coverage is now a **gate, not a note**: `npx jest --coverage` measures lines 65.25%, statements 64.01%, branches 62.14%, functions 57.37%, and `jest.config.js` carries a `coverageThreshold` a point or two under each of those, so the runner fails rather than the number going stale in this file. The functions figure is low for a structural reason, not a negligent one — `app/` and `src/components/` are excluded from unit testing by design (see the note on `jest.config.js` below), and every uncovered function is a component or a store action that only exists to call one.
 
-The same three gates run in CI on every push and pull request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), which is the only thing that makes the paragraph above worth reading. `pnpm gates` runs them locally in one command.
+The same three gates run in CI on every push and pull request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), which is the only thing that makes the paragraph above worth reading. `pnpm gates` runs them locally in one command. CI runs a **fourth** step the local command does not: `expo export --platform android`, a full Metro bundle whose output is discarded. It is there because the other three gates structurally cannot see a broken screen — `testMatch` is `.ts` only, so no component is ever imported by the suite, and `tsc` resolves types rather than resolving what Metro resolves.
 
 Run all three at the end of every phase and fix what they surface. Don't pause between phases to ask whether to continue.
 
@@ -265,8 +265,8 @@ The Eng Plan's Phase 4 is **Sprint 9 (context pressure and exclusions)** and **S
 | 2 | Model + reasoning controls. Per-conversation model plus single-message override; temperature, top_p, max_tokens, stop sequences, seed, presence/frequency penalties on the OpenAI path; saveable presets; OpenAI `reasoning_effort` (`minimal`/`low`/`medium`/`high`) sent only for reasoning-flagged models; Anthropic extended thinking with an explicit `budget_tokens` slider plus the `low`→`max` effort ladder; thinking streamed into a collapsible pane, collapsed by default but remembering the preference; per-message usage split into input / output / thinking / cached **read from the API response, never estimated**. Every control greys out with an explanation when the model or transport doesn't support it. |
 | 3 | Multimodal. Camera, multi-select gallery, file picker; on-device resize + recompress before upload; base64 blocks for Anthropic vs data URLs for OpenAI; composer thumbnail strip with per-image removal; attachment blocked with a reason on non-vision models; PDFs and text files (extract text for OpenAI, native document blocks for Anthropic); on-device speech-to-text and system TTS; feature-detect `/v1/images/generations` and only surface it if the gateway answers (expect disabled); register as an Android share target for text and images. |
 | 4 | Skills. `SKILL.md` with YAML frontmatter (`name`, `description`) + Markdown body; create / edit / duplicate / delete / import-export zip; per-conversation enable toggles; **progressive disclosure** — inject only name + description, expose an `invoke_skill` tool, return the body as the tool result; log invocations visibly in the transcript. **Delivered** — see "Skills" above; import/export is a single `SKILL.md`, not a zip. |
-| 5 | MCP over the network. Streamable HTTP and SSE only, never stdio; add by URL with headers or bearer token, plus OAuth 2.1 + PKCE; discover tools / resources / prompts with per-tool enable-disable; bridge into both API formats; agentic loop with a configurable iteration cap; **approval gate with ask-every-time / always-allow / deny showing full arguments**; tool calls and results as distinct collapsible transcript entries; server errors and timeouts returned to the model as an error result rather than crashing the loop. |
-| 6 | Power features. Prompt library with variable substitution; export to Markdown and JSON and via the share sheet; settings backup/restore; automatic failover to the backup domain with a visible active-domain indicator; usage dashboard by day and model from local data; request-level debug log, copyable, **key redacted**; offline send queue that retries on reconnect. |
+| 5 | MCP over the network. Streamable HTTP and SSE only, never stdio; add by URL with headers or bearer token, plus OAuth 2.1 + PKCE; discover tools / resources / prompts with per-tool enable-disable; bridge into both API formats; agentic loop with a configurable iteration cap; **approval gate with ask-every-time / always-allow / deny showing full arguments**; tool calls and results as distinct collapsible transcript entries; server errors and timeouts returned to the model as an error result rather than crashing the loop. **Delivered** — see "Phase 5" below. |
+| 6 | Power features. Prompt library with variable substitution; export to Markdown and JSON and via the share sheet; settings backup/restore; automatic failover to the backup domain with a visible active-domain indicator; usage dashboard by day and model from local data; request-level debug log, copyable, **key redacted**; offline send queue that retries on reconnect. **Delivered** — see "Phase 6" below. |
 
 ---
 
@@ -298,15 +298,47 @@ Storage is migration 3 → 4 (`SCHEMA_VERSION = 4`) with a unique index on `name
 
 ---
 
+### Phase 5 — MCP over the network — ✅ COMPLETE
+
+**Layered so that almost all of it is testable without a socket.** `src/mcp/protocol.ts` is pure: JSON-RPC framing, the defensive parsers for what a server *claims* it can do, the MCP→`ToolDefinition` bridge, the approval decision, and every PKCE/OAuth string. `src/mcp/client.ts` owns the socket and takes `fetch` by injection, the same trick the transports use. `src/mcp/oauth.ts` is the only file that cannot be unit-tested at all, because its two jobs are handing the user to a browser and waiting for a deep link. 290 + 340 tests' worth of coverage sits on the first two; `client.test.ts` scripts a whole server — paged `tools/list`, a session id that has to be echoed, an SSE reply, a *buffered* SSE reply, a hanging call, a 401 versus a 500, and the legacy `endpoint` event.
+
+**stdio is rejected at the field, not at connect time.** `parseServerUrl` accepts http(s) only. A phone has no child processes, so a `stdio` entry can only be a config pasted from a desktop client, and saying so in the form is clearer than a connection that cannot be made.
+
+**A server's tool names are not trusted.** They arrive from a third party and land in a request body where both APIs enforce `^[a-zA-Z0-9_-]{1,64}$`. `bridgeTools` rewrites them to `mcp__<server>__<tool>`, capped at 64 characters, and *keeps the mapping* rather than parsing the wire name back apart later. The prefix also means an MCP tool can never be mistaken for `invoke_skill`.
+
+**Every failure is a tool result.** Server error, timeout, expired token, user denial — all of them come back as content with `isError`, never as a thrown turn. Same reason as skills: an unanswered `tool_use` block invalidates every later request in the conversation, so crashing the loop would cost the user the thread rather than the call. `timeoutMs` is per call and separate from the 30 s connect timeout.
+
+**The approval gate is mid-turn, which is what makes it awkward.** `useMcp.invoke` parks a promise in `pending` and the sheet — rendered by the chat screen from the store — resolves it. Ask-every-time / always-allow / deny / never, with the full arguments shown; "always" and "never" are per tool and persisted, so they survive the process dying. Leaving the screen resolves nothing: coming back shows the same question. `confirmToolCalls` in settings is the global default and `maxToolIterations` is the round cap.
+
+**Tokens never enter the store.** An access token goes to `expo-secure-store` through the same path as the API key, which also registers it with the redactor — so it is scrubbed from the debug log and from every export from the moment it exists. Discovery results, enabled-tool sets and approval modes are SQLite (migration 4 → 5, `mcp_servers`); the token is not.
+
+**No new dependency.** The plan had `expo-web-browser` + `expo-auth-session` pencilled in for the OAuth flow; `expo-linking`, already installed for deep links, does both halves — `openURL` out and a listener back — so neither was added.
+
+### Phase 6 — power features — ✅ COMPLETE
+
+Three of the seven items predate this phase: export to Markdown/JSON/share sheet landed in Sprint 6, the redacted request-level debug log in Phase 1, and failover to the backup domain with an active-domain indicator in the transports. What this phase added:
+
+**Prompt library.** `src/chat/prompts.ts` is the whole of the logic and it is 82 lines: `{{variable}}` and nothing else — no filters, no defaults, no conditionals, because a template language is a program and a program needs debugging, and the thing being built is a way to avoid retyping "review this diff for" on a phone keyboard. A variable with no value is left as its own placeholder rather than becoming an empty string, and values are not interpreted as `$&`-style replacement patterns. Ranking is `uses DESC, updated_at DESC` **in SQL**, and `noteUsed` re-reads rather than re-sorting in JS so the two cannot drift.
+
+**Usage dashboard.** `usageByDay` / `usageByModel` / `usageTotals` are `GROUP BY`s over the `usage_events` table that was already being written. Two honesty problems shape the screen: a gateway that reports no count stores a zero, so a total is a floor and is labelled as one *once* at the top rather than with an asterisk per row; and cost is arithmetic against a hand-entered price table, so a bucket where some events had no pricing is marked partial rather than quietly under-reported.
+
+**Settings backup/restore.** `src/chat/backup.ts` is pure, which is the only reason its security property is testable — it returns the artefact, so `backup.test.ts` can grep it. What travels: settings, provider metadata, model overrides, skills, prompts, MCP servers. What structurally cannot: keys and tokens (they live in the Keystore), conversations, memories, `hasKey`/`keyFingerprint`. Every section is rebuilt field by field rather than spread, so a field added to a store later cannot ride along unnoticed, and the finished JSON goes through `redactString` a second time. Model overrides are keyed by the profile's **name**, not its id: `entryKey` is `profileId::modelId` and profile ids are generated per device, so an id-keyed backup would restore nothing on the phone it was carried to. Restore **merges and never overwrites** — an existing name is skipped, an unknown setting key is ignored, a setting whose type does not match the live one is ignored — and it says what it did and that the API keys need re-pasting.
+
+**Offline send queue.** No table, no `NetInfo`: the user's message is already a row, so the queue holds conversation ids in a persisted store. `handleTurnFailure`'s existing `kind === 'network'` branch enqueues, `runTurn` and `dismissError` dequeue (dismissing the failure is also how you say "don't send this on reconnect"), and a `useReachability` subscription flushes on real evidence — a first streamed byte or a successful test — because this app records evidence it produced itself and never claims the user is offline. A flush stops at the first sign the gateway is still down rather than burning one request per queued conversation to learn what the first one already proved, and a throwing retry does not abandon the rest. The one case with no traffic to learn from is a cold foreground, which reuses `verifyProfile` as a probe. `retryTurn` now expresses "run the last turn again" once, for both the queue and the transcript's Try again.
+
+**Tests.** 1131 tests / 48 suites; new suites for the MCP client and protocol, the MCP store, the `mcp_servers` migration, prompt substitution, the prompt and skill and model stores, the backup artefact, and the queue's ordering rules.
+
+---
+
 ## What to do next, in order
 
-Phase 2 (Eng Plan Sprints 5–6) is finished, as is the harness token-optimization sprint that followed it, Phase 3 (Sprints 7–8), Phase 4 (Sprints 9–10), the navigation change, and Skills. Next:
+Phase 2 (Eng Plan Sprints 5–6) is finished, as is the harness token-optimization sprint that followed it, Phase 3 (Sprints 7–8), Phase 4 (Sprints 9–10), the navigation change, Skills, Phase 5 (MCP) and Phase 6 (power features). **Every phase in the PRD table is now delivered.** What is left is not a phase:
 
-1. **Phase 5, MCP over the network** — the tool-call loop Skills needed (`runTurn`'s rounds, the `tool_result` turn, the round cap) is now in place and is the same machinery MCP needs; what MCP adds on top is transport, discovery and the approval gate.
-2. Then Phase 6 as scoped in the Eng Plan. Note that Phase 6's export item is **already delivered** in Sprint 6 — what remains is the prompt library, settings backup/restore, and the offline send queue.
-3. The PRD's Phase 3 leftovers, if they are wanted at all: on-device speech-to-text, system TTS, `/v1/images/generations` feature detection, and Android share-target registration. The Eng Plan does not schedule any of them and none is delivered. `expo-speech` is still uninstalled.
-4. The ±15% estimator-accuracy corpus, once a real key is available — it needs the gateway's own reported prompt counts to measure against.
-5. Physical-device verification, which nothing in Jest substitutes for. See "Known gaps".
+1. **Physical-device verification**, which nothing in Jest or the CI bundle substitutes for. The APK has never been built or installed. See "Known gaps".
+2. The PRD's Phase 3 leftovers, if they are wanted at all: on-device speech-to-text, system TTS, `/v1/images/generations` feature detection, and Android share-target registration. The Eng Plan does not schedule any of them and none is delivered. `expo-speech` is still uninstalled.
+3. The ±15% estimator-accuracy corpus, once a real key is available — it needs the gateway's own reported prompt counts to measure against.
+4. Skills' bulk zip import/export, still not worth doing until moving several at once is an actual need.
+5. The five-item fix queue at the end of [docs/flaws.md](docs/flaws.md), recorded deliberately without acting on it.
 
 ---
 
@@ -315,8 +347,9 @@ Phase 2 (Eng Plan Sprints 5–6) is finished, as is the harness token-optimizati
 **Tests:**
 - ✅ **The debug log never contains the API key** — `src/lib/redact.test.ts`. Done.
 - ✅ **The API key never appears in an exported conversation**, verified by greping the produced artefact — `src/chat/export.test.ts`. Done. Both 1.0-gate security tests now pass.
-- Skill frontmatter parser (Phase 4)
-- Mocked-transport tool-call loop: multi-round tool use, an iteration-cap trip, a tool returning an error (Phase 5)
+- ✅ Skill frontmatter parser (Phase 4) — `src/chat/skill.test.ts`.
+- ✅ **MCP against a scripted server** (Phase 5) — `src/mcp/client.test.ts` and `src/mcp/protocol.test.ts`: a server error, a timeout, an expired token and a denial all arriving as tool *results*.
+- Mocked-transport tool-call loop: multi-round tool use, an iteration-cap trip, a tool returning an error. Still outstanding — `src/stores/chat.ts` is 1,600 lines of orchestration with no test double for the database, which is the reason it sits at 0% coverage. The loop's *decisions* are tested where they are pure (`selectTools`, `resolveSkillCall`, `decideApproval`, `failedCall`); what is untested is the wiring between them.
 
 Already covered: both transport adapters, the SSE parser (incl. split and malformed events), token counting, request building and validation, search, the markdown parser, the highlighter, the LaTeX subset, link sanitising, fence languages, relative-time formatting, conversation list grouping, the list query plan and keyset paging against real SQLite, FTS integrity checking, long-term memory (parsing, the secret screen, dedupe, budget, and the schema), bulk operations against real SQLite (cascade, transaction rollback, FTS trigger, surviving usage events), the bulk confirmation wording, export in both formats including the key-leak gate, and the harness budgeting layer (turn budget, the trim ladder, tool-manifest slimming and selection, cache breakpoint planning, and the adapter's `cache_control` placement).
 
@@ -401,6 +434,7 @@ Installed and in use: `expo ~57.0.15`, `react 19.2.3`, `react-native 0.86.2`, `t
 
 Still to install:
 - `expo-speech` and `expo-sharing` — for the PRD's Phase 3 leftovers (system TTS) and a "save as a file" export action. Neither is scheduled; export currently ships through `expo-clipboard` and React Native's `Share`, which needed no native additions. Now that `expo-file-system` is in the tree for attachments, a save-to-file export action is cheap whenever it is wanted — it was never a gap in the export module.
-- Phase 5 — `expo-web-browser` / `expo-auth-session` for the MCP OAuth 2.1 + PKCE flow
+
+Nothing else. `expo-web-browser` / `expo-auth-session` were pencilled in for Phase 5's OAuth flow and turned out to be unnecessary: `expo-linking` was already in the tree for deep links and does both halves of the hand-off.
 
 `.npmrc` sets `legacy-peer-deps` (an ERESOLVE peer conflict in the Expo 57 tree). `package.json` has an `allowScripts` entry for `unrs-resolver`, whose skipped postinstall was what made Jest fail to resolve `babel-jest` by bare name — hence the `require.resolve('babel-jest')` in `jest.config.js`.

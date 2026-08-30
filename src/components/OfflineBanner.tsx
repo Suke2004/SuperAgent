@@ -9,6 +9,7 @@
 
 import { Badge, Note } from '@/components/ui';
 import { useReachability } from '@/stores/reachability';
+import { useSendQueue } from '@/stores/queue';
 
 /** `4 minutes`, `just now`. Coarse on purpose: a stopwatch here means nothing. */
 function elapsedPhrase(since: number): string {
@@ -26,18 +27,24 @@ export function OfflineBanner() {
   const since = useReachability((s) => s.since);
   const detail = useReachability((s) => s.detail);
   const failures = useReachability((s) => s.failures);
+  const queued = useSendQueue((s) => s.ids.length);
 
   if (status !== 'unreachable') return null;
 
   const when = since ? elapsedPhrase(since) : undefined;
   const forHowLong = when === undefined ? '' : when === 'just now' ? ' just now' : ` for ${when}`;
   const attempts = failures > 1 ? ` ${failures} attempts have failed.` : '';
+  // Said only when it is true: a queue count of zero and "will be sent" is the kind
+  // of promise that teaches a user to distrust the banner.
+  const waiting = queued
+    ? ` ${queued === 1 ? 'One conversation is' : `${queued} conversations are`} waiting, and will be retried when the gateway answers again.`
+    : ' Sending will keep failing until the connection comes back.';
 
   return (
     <Note tone="warning" live>
       {`The gateway could not be reached${forHowLong}.${attempts} ${
         detail ?? 'The last request could not connect.'
-      } Sending will keep failing until the connection comes back — your message stays in the composer.`}
+      }${waiting}`}
     </Note>
   );
 }

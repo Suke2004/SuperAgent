@@ -70,6 +70,15 @@ jobs:
       - name: Test
         run: pnpm test -- --ci --coverage --coverageReporters=text-summary --coverageReporters=json-summary
 
+      # The gate the other three cannot be: `testMatch` is `.ts` only, so no screen
+      # is ever imported by the suite, and `tsc` resolves types without resolving
+      # what Metro will actually resolve — a bad `@/` alias, a missing asset, a
+      # module that only exists on web all pass the first three steps and fail on
+      # the device. A full Android bundle is the cheapest thing that proves the app
+      # still builds; the output is thrown away, only the exit code matters.
+      - name: Bundle
+        run: pnpm expo export --platform android --output-dir .expo-export
+
       # `if: always()` so the summary is written even when the gate above failed —
       # a red run is exactly when you want to see which threshold slipped. Reads
       # the artefact Jest already wrote; it does not re-run the suite.

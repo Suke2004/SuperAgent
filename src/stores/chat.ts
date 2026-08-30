@@ -50,6 +50,8 @@ import type {
 import type { ListCursor } from '@/db/list-query';
 import { buildRequest, composeSystem, validateConfig, hasBlockingIssue } from '@/chat/request';
 import { INVOKE_SKILL, invokeSkillTool, renderSkillCatalogue, resolveSkillCall } from '@/chat/skill';
+import type { Skill } from '@/chat/skill';
+import { MCP_TOOL_PREFIX } from '@/mcp/protocol';
 import { planTurn } from '@/chat/budget';
 import { boundSummary, summaryRequestBody, SUMMARY_FAILED_NOTE } from '@/chat/summary';
 import { reportedUsage } from '@/chat/usage';
@@ -63,7 +65,9 @@ import { capabilitiesFor, useModels, wireHintsFor } from '@/stores/models';
 import { useCalibration } from '@/stores/calibration';import { activeProfile, useProviders } from '@/stores/providers';
 import { useMemory } from '@/stores/memory';
 import { useSkills } from '@/stores/skills';
+import { useMcp } from '@/stores/mcp';
 import { useReachability } from '@/stores/reachability';
+import { useSendQueue } from '@/stores/queue';
 import { getSetting } from '@/stores/settings';
 import { GatewayError } from '@/transports/errors';
 import { summariseFailure } from '@/transports/index';
@@ -332,6 +336,14 @@ export interface ChatState {
   deleteMessage(conversationId: string, messageId: string): Promise<void>;
   fork(conversationId: string, messageId: string): Promise<string>;
   abort(conversationId: string): void;
+  /**
+   * Runs the last turn again, whatever it was.
+   *
+   * What "Try again" and the offline queue both mean: rewind to the last message and
+   * ask for an answer. Expressed once here rather than as `regenerate(id, lastId)` at
+   * two call sites that each have to work out what "last" is.
+   */
+  retryTurn(conversationId: string): Promise<void>;
   dismissError(conversationId: string): void;
   /** Clears the last turn's context note once the user has read it. */
   dismissContextNote(conversationId: string): void;
@@ -695,7 +707,20 @@ export const useChat = create<ChatState>()((set, get) => ({
     controller.abort();
   },
 
+  async retryTurn(conversationId) {
+    if (get().streams[conversationId]?.phase === 'streaming') return;
+    const messages = get().messages[conversationId] ?? (await listMessages(conversationId));
+    const last = messages[messages.length - 1];
+    if (!last) return;
+    get().dismissError(conversationId);
+    // `regenerate` already knows the difference: a user message is answered again, a
+    // partial assistant reply is rewound over.
+    await get().regenerate(conversationId, last.id);
+  },
+
   dismissError(conversationId) {
+    // Dismissing the failure is also the way to say "don't send this on reconnect".
+    useSendQueue.getState().drop(conversationId);
     set((state) => {
       const stream = state.streams[conversationId];
       if (!stream) return {};
@@ -790,14 +815,41 @@ interface RunOptions {
 }
 
 /**
- * How many `invoke_skill` rounds one turn may run before the app stops it.
+ * How many tool rounds one turn may run before the app stops it.
  *
- * Every round is a billed request carrying the whole history plus a skill body, and
- * a model that keeps loading skills instead of answering would spend real money
- * doing it. Three is enough to read a skill, then a second one it referred to, and
- * still answer.
+ * Every round is a billed request carrying the whole history plus whatever the tool
+ * returned, and a model that keeps calling tools instead of answering would spend
+ * real money doing it. The user's `maxToolIterations` is the ceiling; it is clamped
+ * to at least one round because zero would make every tool in the request a trap.
  */
-const MAX_TOOL_ROUNDS = 3;
+function maxToolRounds(): number {
+  return Math.max(1, getSetting('maxToolIterations'));
+}
+
+/** What a resolved tool call returns, whichever kind of tool it was. */
+interface ResolvedCall {
+  content: string;
+  isError?: true;
+  /** The skill that was loaded, for the transcript badge. MCP calls have none. */
+  name?: string;
+}
+
+/**
+ * Route one `tool_use` block to whatever can answer it.
+ *
+ * Nothing here throws: an unknown name, a dead server, a user saying no — all of
+ * them are tool *results*, because a `tool_use` left unanswered invalidates every
+ * later request in the conversation.
+ */
+async function resolveCall(
+  call: ToolUseBlock,
+  skills: readonly Skill[],
+  servers: readonly string[] | undefined,
+): Promise<ResolvedCall> {
+  if (call.name === INVOKE_SKILL) return resolveSkillCall(call.input, skills);
+  if (call.name.startsWith(`${MCP_TOOL_PREFIX}_`)) return useMcp.getState().invoke(call.name, call.input, servers);
+  return { content: `There is no tool called "${call.name}".`, isError: true };
+}
 
 /**
  * How many times a paused turn will be resumed before the app stops on its own.
@@ -820,6 +872,10 @@ const MAX_PAUSE_CONTINUATIONS = 3;
 async function runTurn(set: Setter, get: Getter, conversationId: string, options: RunOptions): Promise<void> {
   const conversation = await getConversation(conversationId);
   if (!conversation) return;
+
+  // Any new attempt takes the conversation out of the offline queue; a failure that
+  // is still a network failure puts it straight back.
+  useSendQueue.getState().drop(conversationId);
 
   const profile = useProviders.getState().byId(conversation.profileId) ?? activeProfile();
   const model = options.modelOverride ?? conversation.model;
@@ -909,6 +965,12 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     const enabledSkills = useSkills.getState().enabledFor(conversation.config.skills);
     const skillCatalogue = renderSkillCatalogue(enabledSkills);
 
+    // The same, for MCP servers: the definitions come from what discovery stored, so
+    // an unreachable server still contributes its tools and fails per call rather
+    // than blocking the send.
+    if (conversation.config.servers?.length && !useMcp.getState().loaded) await useMcp.getState().load();
+    const bridged = useMcp.getState().bridge(conversation.config.servers);
+
     const { messages, summary, changed, trim, summaryFailed } = await applyContextStrategy({
       conversationId,
       conversation,
@@ -953,7 +1015,14 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       ...(summary ? { summary } : {}),
       ...(memoryBlock.text ? { memory: memoryBlock.text } : {}),
       ...(skillCatalogue ? { skills: skillCatalogue } : {}),
-      ...(enabledSkills.length ? { tools: [invokeSkillTool(enabledSkills)] } : {}),
+      ...(enabledSkills.length || bridged.length
+        ? {
+            tools: [
+              ...(enabledSkills.length ? [invokeSkillTool(enabledSkills)] : []),
+              ...bridged.map((tool) => tool.definition),
+            ],
+          }
+        : {}),
     });
 
     // Breakpoints last, over the assembled request, and suppressed when history was
@@ -1051,14 +1120,14 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     // Every tool call this turn made, resolved before the assistant row is written so
     // its `meta` can name the skills — which is what puts them in the transcript's
     // badges rather than only in the tool result blocks.
+    //
+    // One at a time, deliberately: an MCP call can stop to ask the user, and two
+    // approval sheets fighting over the screen is not an interface.
     const calls = blocks.filter((block): block is ToolUseBlock => block.type === 'tool_use');
-    const invocations = calls.map((call) => ({
-      call,
-      result:
-        call.name === INVOKE_SKILL
-          ? resolveSkillCall(call.input, enabledSkills)
-          : { content: `There is no tool called "${call.name}".`, isError: true as const },
-    }));
+    const invocations: { call: ToolUseBlock; result: ResolvedCall }[] = [];
+    for (const call of calls) {
+      invocations.push({ call, result: await resolveCall(call, enabledSkills, conversation.config.servers) });
+    }
     const invoked = invocations.map((i) => i.result.name).filter((name): name is string => Boolean(name));
     if (invoked.length) meta.skillsInvoked = invoked;
     if (invocations.length) meta.toolRounds = (options.toolRounds ?? 0) + 1;
@@ -1128,13 +1197,13 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       appendToTranscript(set, conversationId, results);
 
       const done = options.toolRounds ?? 0;
-      if (done + 1 < MAX_TOOL_ROUNDS) toolRound = done + 1;
+      if (done + 1 < maxToolRounds()) toolRound = done + 1;
       else {
-        log.warn('chat', 'The model kept loading skills without answering; stopping', { rounds: done + 1 });
+        log.warn('chat', 'The model kept calling tools without answering; stopping', { rounds: done + 1 });
         setContextNote(
           set,
           conversationId,
-          `The model loaded skills ${done + 1} times without answering, so this turn was stopped. Send again to continue it.`,
+          `The model called tools ${done + 1} times without answering, so this turn was stopped. Send again to continue it.`,
         );
       }
     }
@@ -1228,8 +1297,12 @@ async function handleTurnFailure(
   // the opposite — the host answered — so it clears the banner rather than raising
   // it, which is how "unreachable" stays a claim about the connection rather than a
   // catch-all for "the last request did not work".
-  if (gatewayError?.kind === 'network') useReachability.getState().markUnreachable(detail);
-  else if (gatewayError) useReachability.getState().markReachable();
+  if (gatewayError?.kind === 'network') {
+    useReachability.getState().markUnreachable(detail);
+    // Queued for the reconnect, not resent here: the user's message is already a
+    // row, so the queue only has to remember which conversation is waiting.
+    useSendQueue.getState().queue(conversationId);
+  } else if (gatewayError) useReachability.getState().markReachable();
   // The stream entry survives with the error on it, so the composer can show a
   // retry affordance without the transcript losing the failure. Dismissing it is
   // now the only record that disappears, which is the point: nothing was written.
