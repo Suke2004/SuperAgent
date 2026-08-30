@@ -235,6 +235,16 @@ export interface ChatState {
   messages: Record<string, StoredMessage[]>;
   /** Composer text, kept per conversation so switching away doesn't lose it. */
   drafts: Record<string, string>;
+  /**
+   * Staged attachments, kept per conversation alongside the text draft.
+   *
+   * In the store rather than in the screen's `useState` for one reason that is not
+   * tidiness: a resized photo is a megabyte of base64 that cost a permission
+   * prompt, a camera and a re-encode to produce, and losing it because the user
+   * checked something in another conversation is not a small annoyance. It is
+   * cleared by the same code paths that clear the text draft.
+   */
+  attachments: Record<string, ContentBlock[]>;
   streams: Record<string, StreamState>;
 
   loadList(options?: ListOptions): Promise<void>;
@@ -286,6 +296,18 @@ export interface ChatState {
 
   setDraft(conversationId: string, text: string): void;
 
+  /**
+   * Adds already-encoded attachment blocks to the draft.
+   *
+   * Blocks, not files: the picking, resizing and admission all happen in
+   * `@/chat/attach` before anything reaches the store, so this cannot be the place
+   * a 9 MB base64 string gets in by accident.
+   */
+  addAttachments(conversationId: string, blocks: readonly ContentBlock[]): void;
+  /** Drops one staged attachment by position. */
+  removeAttachment(conversationId: string, index: number): void;
+  clearAttachments(conversationId: string): void;
+
   send(conversationId: string, options: SendOptions): Promise<void>;
   regenerate(conversationId: string, messageId: string): Promise<void>;
   editAndResend(conversationId: string, messageId: string, text: string): Promise<void>;
@@ -303,6 +325,7 @@ export const useChat = create<ChatState>()((set, get) => ({
   listLoadingMore: false,
   messages: {},
   drafts: {},
+  attachments: {},
   streams: {},
 
   async loadList(options) {
@@ -434,14 +457,17 @@ export const useChat = create<ChatState>()((set, get) => ({
     set((state) => {
       const messages = { ...state.messages };
       const drafts = { ...state.drafts };
+      const attachments = { ...state.attachments };
       const streams = { ...state.streams };
       delete messages[conversationId];
       delete drafts[conversationId];
+      delete attachments[conversationId];
       delete streams[conversationId];
       return {
         conversations: state.conversations.filter((c) => c.id !== conversationId),
         messages,
         drafts,
+        attachments,
         streams,
       };
     });
@@ -449,6 +475,37 @@ export const useChat = create<ChatState>()((set, get) => ({
 
   setDraft(conversationId, text) {
     set((state) => ({ drafts: { ...state.drafts, [conversationId]: text } }));
+  },
+
+  addAttachments(conversationId, blocks) {
+    if (!blocks.length) return;
+    set((state) => ({
+      attachments: {
+        ...state.attachments,
+        [conversationId]: [...(state.attachments[conversationId] ?? []), ...blocks],
+      },
+    }));
+  },
+
+  removeAttachment(conversationId, index) {
+    set((state) => {
+      const staged = state.attachments[conversationId];
+      if (!staged || index < 0 || index >= staged.length) return {};
+      const next = staged.filter((_, at) => at !== index);
+      const attachments = { ...state.attachments };
+      if (next.length) attachments[conversationId] = next;
+      else delete attachments[conversationId];
+      return { attachments };
+    });
+  },
+
+  clearAttachments(conversationId) {
+    set((state) => {
+      if (!state.attachments[conversationId]) return {};
+      const attachments = { ...state.attachments };
+      delete attachments[conversationId];
+      return { attachments };
+    });
   },
 
   async archiveMany(conversationIds, archived) {
@@ -472,16 +529,19 @@ export const useChat = create<ChatState>()((set, get) => ({
     set((state) => {
       const messages = { ...state.messages };
       const drafts = { ...state.drafts };
+      const attachments = { ...state.attachments };
       const streams = { ...state.streams };
       for (const id of gone) {
         delete messages[id];
         delete drafts[id];
+        delete attachments[id];
         delete streams[id];
       }
       return {
         conversations: state.conversations.filter((c) => !gone.has(c.id)),
         messages,
         drafts,
+        attachments,
         streams,
       };
     });
@@ -509,7 +569,14 @@ export const useChat = create<ChatState>()((set, get) => ({
 
     const message = await appendMessage(conversationId, { role: 'user', content });
     appendToTranscript(set, conversationId, message);
-    set((state) => ({ drafts: { ...state.drafts, [conversationId]: '' } }));
+    // Both drafts clear together, and only after the row is stored: an attachment
+    // dropped from the staging area before its message exists is a photo the user
+    // has to take again.
+    set((state) => {
+      const attachments = { ...state.attachments };
+      delete attachments[conversationId];
+      return { drafts: { ...state.drafts, [conversationId]: '' }, attachments };
+    });
 
     // First message names the conversation, so the list is readable without the
     // user having to rename anything.
@@ -1284,4 +1351,18 @@ export function useConversation(conversationId: string): Conversation | undefine
 
 export function useDraft(conversationId: string): string {
   return useChat((state) => state.drafts[conversationId] ?? '');
+}
+
+const NO_ATTACHMENTS: ContentBlock[] = [];
+
+/**
+ * The attachments staged for this conversation.
+ *
+ * A shared frozen-by-convention empty array rather than `[]`, for the same reason
+ * `useMessages` does it: a fresh literal is a new identity on every render, which
+ * would defeat every memo downstream of the composer on the screen that re-renders
+ * most often.
+ */
+export function useAttachments(conversationId: string): ContentBlock[] {
+  return useChat((state) => state.attachments[conversationId] ?? NO_ATTACHMENTS);
 }

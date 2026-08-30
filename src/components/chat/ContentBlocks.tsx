@@ -14,7 +14,7 @@
  */
 
 import { useState } from 'react';
-import { Image, Pressable, StyleSheet, View } from 'react-native';
+import { Image, Modal, Pressable, StyleSheet, View } from 'react-native';
 import type { ViewStyle } from 'react-native';
 
 import { CodeBlock } from '@/components/markdown/CodeBlock';
@@ -176,23 +176,77 @@ function ToolResult({ content, isError }: { content: string; isError?: boolean }
  * Rendered from base64 that is already on this device — this is our own
  * attachment, not a third-party fetch, so it does not fall under the rule that
  * keeps {@link Inline}'s markdown images unloaded.
+ *
+ * The thumbnail is a fixed-height band in the transcript and a tap opens the
+ * full-screen viewer, because the two things a reader wants from an image here are
+ * mutually exclusive: "which image was this" wants a small stable row, and "what
+ * does it actually say" wants the whole screen. A screenshot of a stack trace is
+ * illegible at 220pt and that is the most common thing anyone attaches.
  */
 function Attachment({ mediaType, data }: { mediaType: string; data: string }) {
   const t = useTheme();
+  const [open, setOpen] = useState(false);
+  const uri = `data:${mediaType};base64,${data}`;
+
   return (
-    <Image
-      source={{ uri: `data:${mediaType};base64,${data}` }}
-      accessibilityIgnoresInvertColors
-      // `contain` rather than `cover`: a cropped screenshot is a different
-      // screenshot, and this is often a screenshot.
-      resizeMode="contain"
-      style={{
-        width: '100%',
-        height: IMAGE_HEIGHT,
-        borderRadius: t.radius.md,
-        backgroundColor: t.colors.surfaceAlt,
-      }}
-    />
+    <>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Attached image"
+        accessibilityHint="Opens the image full screen"
+        onPress={() => setOpen(true)}
+        style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}
+      >
+        <Image
+          source={{ uri }}
+          accessibilityIgnoresInvertColors
+          // `contain` rather than `cover`: a cropped screenshot is a different
+          // screenshot, and this is often a screenshot.
+          resizeMode="contain"
+          style={{
+            width: '100%',
+            height: IMAGE_HEIGHT,
+            borderRadius: t.radius.md,
+            backgroundColor: t.colors.surfaceAlt,
+          }}
+        />
+      </Pressable>
+
+      <Modal
+        visible={open}
+        transparent
+        // Android's hardware back must close the viewer rather than leave the
+        // conversation — without this the modal swallows the gesture entirely.
+        onRequestClose={() => setOpen(false)}
+        animationType="fade"
+        accessibilityViewIsModal
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.94)' }}>
+          {/* The backdrop is the dismiss target: at full screen there is no chrome
+              to aim at, and a tap anywhere is the gesture everyone already tries. */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close image"
+            onPress={() => setOpen(false)}
+            style={{ flex: 1 }}
+          >
+            <Image
+              source={{ uri }}
+              accessibilityIgnoresInvertColors
+              accessibilityLabel="Attached image, full screen"
+              resizeMode="contain"
+              style={{ flex: 1, width: '100%' }}
+            />
+          </Pressable>
+
+          <View style={{ padding: t.spacing.lg, alignItems: 'center' }}>
+            <Body size="xs" style={{ color: '#f0ece4' }}>
+              Tap anywhere to close
+            </Body>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }
 

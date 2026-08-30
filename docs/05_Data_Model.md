@@ -4,8 +4,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.3 |
-| **Status** | Current — describes schema `user_version = 3` (Phase 1 baseline, plus the Phase 2 list index and the `memories` table), and the read paths added in Sprint 6: bulk operations (§5.3) and the export projection (§9.1) |
+| **Version** | 1.4 |
+| **Status** | Current — describes schema `user_version = 3` (Phase 1 baseline, plus the Phase 2 list index and the `memories` table), the read paths added in Sprint 6 (bulk operations §5.3, the export projection §9.1), and the Phase 3 attachment blocks as they are actually flattened (§8.3) |
 | **Audience** | Mid-level engineers and architects joining the persistence, chat-store or search work |
 | **Companion docs** | [PRD.md](../PRD.md) · [TRD.md](../TRD.md) · [ARCHITECTURE.md](../ARCHITECTURE.md) · [progress.md](../progress.md) · [06_Eng_Plan.md](06_Eng_Plan.md) · [07_Deployment.md](07_Deployment.md) |
 
@@ -443,7 +443,7 @@ The violations, all four intentional:
 
 `text` is the flattened, human-readable projection of `content`, produced by `flattenContent()` and stored alongside it. It duplicates data. It is the right call for two reasons.
 
-**Search.** FTS5 indexes a column, not an expression. To full-text search message bodies you need a plain text column. Indexing `content` directly would index JSON syntax — a search for `"type"` would hit every message ever sent, and a search for `image` would hit every attachment's block tag. Worse, base64 image payloads live in `content`; indexing them would inflate the FTS index by megabytes per photo for zero retrieval value. `flattenContent()` drops non-textual blocks entirely, so the index contains prose and nothing else.
+**Search.** FTS5 indexes a column, not an expression. To full-text search message bodies you need a plain text column. Indexing `content` directly would index JSON syntax — a search for `"type"` would hit every message ever sent, and a search for `image` would hit every attachment's block tag. Worse, base64 image payloads live in `content`; indexing them would inflate the FTS index by megabytes per photo for zero retrieval value. `flattenContent()` never emits base64 — an image contributes the four-character marker `[image]` and nothing else — so the index contains prose plus a handful of short tags and no payloads.
 
 **List previews.** The conversation list renders a one-line preview per row. Without `text`/`preview`, each row requires `json_extract` over the latest message — SQLite's JSON1 functions parse the whole document per row, on the UI thread's database, for a string that will be truncated to 160 characters. With 500 conversations that is 500 JSON parses of documents that may each be tens of kilobytes. With `preview` it is a column read.
 
@@ -608,19 +608,25 @@ The tradeoff: a `CHECK` turns a corrupt write into a thrown error at insert time
 ### 8.3 `flattenContent()` — the projection contract
 
 ```ts
-// Conceptual shape; source of truth is src/db/conversations.ts
+// Conceptual shape; source of truth is src/db/content.ts
 function flattenContent(blocks: ContentBlock[]): string {
   // text        → the text
-  // document    → extracted text if present, else the file name
+  // document    → the file name, then the extracted text if there is any. Name
+  //               first and name always, so a search for `invoice-2026.pdf`
+  //               finds the message even when the bytes could not be read
   // thinking    → EXCLUDED: reasoning is not the answer, and indexing it makes
   //               every search hit the model's musings instead of its reply
-  // tool_use    → EXCLUDED: JSON arguments are noise in a prose index
-  // tool_result → recurse into its blocks
-  // image       → EXCLUDED: no text, and base64 would bloat the index
+  // tool_use    → `[tool <name>]`: the name is findable, the JSON arguments
+  //               would be noise in a prose index
+  // tool_result → its content text
+  // image       → `[image]`: a marker, never the base64, so a conversation can
+  //               be found by the fact that it had one without bloating the index
 }
 ```
 
 **If you add a seventh block type, you must decide its flattening in the same commit.** The default of "not included" is a search bug that will not surface until a user cannot find something they can see on screen.
+
+**Where it lives.** The three projection functions — `flattenContent()`, `previewOf()` and `DEFAULT_TITLE` — moved to `src/db/content.ts` in Phase 3. `conversations.ts` re-exports all three, so no caller changed. The reason for the split is testability: `conversations.ts` imports `expo-sqlite` at module scope, which makes everything in it unreachable from Jest's node environment, and this contract has four independent readers (FTS index, list preview, derived title, memory extractor), so a block kind flattened wrongly is wrong in four places silently. It is now covered by `src/db/content.test.ts`, including an assertion that base64 never reaches the index.
 
 ### 8.4 `conversations.config` — `ConversationConfig`
 
@@ -923,11 +929,11 @@ The startup drift check compares **row counts**, which are unchanged by renumber
 2. If a stronger integrity check is ever needed, compare a checksum of `(rowid, text)` samples rather than counts — or make the check `INSERT INTO messages_fts(messages_fts) VALUES ('integrity-check')`, which FTS5 provides for exactly this purpose.
 3. Consider `AS ROWID`-stable storage at the next major migration: an `INTEGER PRIMARY KEY` surrogate on `messages` would make the FTS key explicit and stable, at the cost of a second key to maintain.
 
-### 12.2 In-memory preview drifts from the stored preview
+### 12.2 In-memory preview drifts from the stored preview — **fixed**
 
-`appendToTranscript()` sets the in-memory conversation's `preview` to the message's **full flattened text**, while `touchConversation()` writes `previewOf(text)` to the row — the first non-empty line, truncated to 160 characters. Until the next reload, the store and the database disagree.
+`appendToTranscript()` used to set the in-memory conversation's `preview` to the message's **full flattened text**, while `touchConversation()` wrote `previewOf(text)` to the row — the first non-empty line, truncated to 160 characters. Until the next reload, the store and the database disagreed.
 
-The visible symptom is subtle: a conversation whose reply begins with a fenced code block or a heading shows a different preview immediately after the turn than it does after a restart. The fix is one line — call `previewOf()` on the store side too — and it belongs in the Phase 2 list-polish work rather than as a hotfix, since nothing is lost either way.
+The visible symptom was subtle: a conversation whose reply begins with a fenced code block or a heading showed a different preview immediately after the turn than it did after a restart. The fix was the one line predicted here — the store now calls `previewOf()` too (`src/stores/chat.ts`) — and it landed in the Phase 2 list work as debt item D-04.
 
 ### 12.3 A mid-stream process death loses the partial reply
 
@@ -1300,4 +1306,5 @@ Cross-references: sprint sequencing and the debt items raised here are tracked i
 | 1.0 | 2026-08-29 | Architecture review | Initial issue. Documents schema `user_version = 1` as shipped in Phase 1: full ER diagram and cardinalities, DDL reference, enforced and deliberately unenforced constraints, 1NF→3NF walkthrough with the four intentional violations, floating-point `seq` rationale including the precision limit and the redundant `Number.EPSILON`, JSON schemas for all five JSON columns, the cross-wire content-block encoding matrix, migration strategy for both SQL and JSON evolution, index rationale plus one identified gap, the three-tier synchronisation map, a query cookbook with anti-patterns, and four schema-level hazards (FTS/`VACUUM` desynchronisation, preview drift, mid-stream loss, hydration race). Appendix D corrects three stale entries in `progress.md`. |
 | 1.1 – 1.2 | 2026-08-30 | Phase 2 | Not written up as separate rows at the time; recorded here for completeness. `user_version` 1 → 2 replaced `conversations_order` with the composite `conversations_list` index that the list query actually uses, and 2 → 3 added the `memories` table (§4.6) with its soft, deliberately unenforced reference to `conversations` — a memory is meant to outlive the conversation it was learned from. |
 | 1.3 | 2026-08-30 | Sprint 6 | **§5.3 The blast radius of a bulk delete** — the table of what cascades and what deliberately survives, the load-bearing `PRAGMA foreign_keys = ON`, one-transaction-or-nothing as a correctness requirement, and `BULK_CHUNK` against `SQLITE_MAX_VARIABLE_NUMBER`. **§9.1 The export projection** — `ContentBlock[]`'s third destination, base64 never leaving, `signature` never exported, double redaction and why the artefact is greped rather than the call site checked, and `EXPORT_SCHEMA_VERSION` being independent of `user_version`. §11.1 and §11.3 corrected: `conversations_order` was replaced by `conversations_list (archived, pinned DESC, updated_at DESC, id DESC)` in migration 1 → 2, so the "known index gap" is closed and the planner assertion that proves it is named. No schema change; `user_version` remains 3. |
+| 1.4 | 2026-08-30 | Phase 3 | No schema change; `user_version` remains 3. §8.3 rewritten against the shipped code: the projection's source of truth moved to `src/db/content.ts` (split out of `conversations.ts`, which re-exports all three names, because that module's top-level `expo-sqlite` import makes it unreachable under Jest's node environment), and the block table corrected — a document contributes its **name first and always** then its extracted text, an image contributes the `[image]` marker rather than being dropped, and `tool_use` contributes `[tool <name>]`. §7 correspondingly no longer claims non-textual blocks are dropped entirely; what it guarantees is that base64 never reaches the index, which is now an assertion in `src/db/content.test.ts`. §12.2 (preview drift) marked **fixed** — the store calls `previewOf()`, closing D-04. |
 

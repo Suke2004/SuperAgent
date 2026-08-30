@@ -26,6 +26,7 @@ import {
 } from '@/db/bulk';
 import { buildListQuery, DEFAULT_PAGE_SIZE, nextCursor } from '@/db/list-query';
 import type { ListCursor } from '@/db/list-query';
+import { DEFAULT_TITLE, flattenContent, previewOf } from '@/db/content';
 import { database, localDay } from '@/db/schema';
 import { buildFtsQuery, buildLikePattern, excerpt, LIKE_ESCAPE } from '@/db/search';
 import { newId } from '@/lib/id';
@@ -266,65 +267,13 @@ function toMessage(row: MessageRow): StoredMessage {
 }
 
 /**
- * The searchable, previewable text of a block list.
- *
- * Thinking is excluded: searching your own history for a phrase and landing on
- * the model's scratchpad rather than its answer is noise, and the reasoning pane
- * is collapsed by default anyway. Images contribute a marker so a conversation
- * can be found by the fact that it had one.
+ * The block→text projection, the list preview and the default title all live in
+ * `src/db/content.ts` now: this module imports `expo-sqlite`, which makes anything
+ * declared in it untestable under Jest's node environment, and those three are
+ * pure. Re-exported rather than moved outright, because a dozen call sites import
+ * them from here and the contract they implement is a database one.
  */
-export function flattenContent(blocks: readonly ContentBlock[]): string {
-  const parts: string[] = [];
-  for (const block of blocks) {
-    switch (block.type) {
-      case 'text':
-        parts.push(block.text);
-        break;
-      case 'document':
-        if (block.name) parts.push(block.name);
-        if (block.text) parts.push(block.text);
-        break;
-      case 'image':
-        parts.push('[image]');
-        break;
-      case 'tool_use':
-        parts.push(`[tool ${block.name}]`);
-        break;
-      case 'tool_result':
-        parts.push(block.content);
-        break;
-      case 'thinking':
-        break;
-    }
-  }
-  return parts.join('\n\n').trim();
-}
-
-/**
- * First non-empty line, trimmed to fit a list row.
- *
- * Exported because the chat store patches the same column optimistically while a
- * turn lands, and it has to produce the *same* string the database will hold.
- * Writing the raw message text there instead was debt D-04: the row showed a
- * whole paragraph — or a markdown heading's `#` — until the next relaunch swapped
- * it for the stored one-liner, which reads as a rendering glitch.
- */
-export function previewOf(text: string): string {
-  const line = text
-    .split('\n')
-    .map((l) => l.replace(/^#+\s*/, '').trim())
-    .find((l) => l.length > 0);
-  if (!line) return '';
-  return line.length > 160 ? `${line.slice(0, 159)}…` : line;
-}
-
-/**
- * The title a conversation gets before its first message.
- *
- * Exported because the chat store checks against it to decide whether a title is
- * still automatic and therefore safe to overwrite with a derived one.
- */
-export const DEFAULT_TITLE = 'New conversation';
+export { DEFAULT_TITLE, flattenContent, previewOf } from '@/db/content';
 
 /**
  * A title derived from the first user message.
