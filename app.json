@@ -19,6 +19,7 @@
     "android": {
       "package": "org.lyric.agentrouter",
       "versionCode": 1,
+      "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#262624",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -41,7 +42,8 @@
           "photosPermission": "Jarvis needs your photo library to attach an image to a message. Attachments stay on this device until you press send.",
           "cameraPermission": "Jarvis needs the camera to attach a photo to a message. The photo stays on this device until you press send."
         }
-      ]
+      ],
+      "./plugins/with-no-backup.js"
     ],
     "experiments": {
       "typedRoutes": true

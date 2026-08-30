@@ -1,11 +1,142 @@
 # Daily Use
 
-1. On first launch open Settings → Providers. Use the AgentRouter tab for the default gateway, or Custom URL for another compatible endpoint. Save the API key, then run Test connection.
-2. Start a conversation from the New conversation button. Pick a discovered model from the conversation menu.
-3. Open Model controls to set max output, sampling, and reasoning. Anthropic exposes a thinking budget; OpenAI exposes reasoning effort. Unsupported fields are omitted or explained.
-4. Type a message and send. Stop aborts an active stream while preserving partial text. Long-press a message for copy, edit, regenerate, delete, exclude, or fork.
-5. Use the conversation menu for the system prompt, rename, tags, pinning, and model changes. Search on the home screen searches both conversation metadata and message content.
-6. Settings → Models lets you correct vision, document, tools, reasoning, context, output, wire, and pricing metadata when the gateway does not report it.
-7. Settings → Debug log shows request metadata and gateway errors with the API key redacted. No telemetry or third-party crash reporting is enabled.
+A walkthrough of the app as it actually behaves. Everything here is on-device: no
+account, no telemetry, and nothing but your own requests leaves the phone.
 
-Physical-device verification remains recommended for Android keyboard insets, live FlashList anchoring, markdown baseline geometry, and token-by-token rendering.
+## 1. First launch
+
+The app opens **straight into an empty chat** rather than a list — the thing you
+almost always want is a new conversation. Past chats are in the drawer: swipe from
+the left edge, or tap the history button in the header. The drawer is also where
+rename, pin, tag, archive and delete live, by long-pressing a row.
+
+Before the first send, give it a key: header menu → **Provider profile**, or
+Settings → **Providers**.
+
+## 2. The key and the transport
+
+Settings → Providers → the profile you want:
+
+- **Wire format** — Anthropic or OpenAI. This is not cosmetic; it decides the base
+  URL shape, and the two AgentRouter endpoints are **not** interchangeable:
+  - Anthropic: `https://agentrouter.org` (no `/v1`) → `POST /v1/messages`
+  - OpenAI: `https://agentrouter.org/v1` → `POST /v1/chat/completions`, `GET /v1/models`
+- **API key** — stored in Android Keystore through `expo-secure-store`, never in
+  app storage and never in a backup. The screen shows only a salted fingerprint, so
+  two keys can be told apart without the key being readable anywhere.
+- **Extra headers** — for gateways that want something more. `Authorization` is
+  applied last and cannot be overridden here; a header whose *name* looks like a
+  credential is refused, because this list is ordinary app storage.
+- **Test connection** — four steps, each reported separately: base URL shape, then
+  `GET /models`, then a one-token completion, then whether the gateway serves
+  `/images/generations` at all. The last one is information about the gateway, not
+  a requirement: it is probed with an empty body so nothing is generated and
+  nothing is billed, and it never fails the test.
+
+A failed step quotes the gateway's own words. A 401 from this gateway is
+deliberately reported as one ambiguous conclusion naming both causes — a wrong key
+and a client-allowlist rejection produce byte-identical bodies, so anything more
+specific would be a guess.
+
+## 3. Having a conversation
+
+Type and send. While a reply streams, the button is **Stop**, and stopping keeps
+the partial text and marks it aborted rather than throwing it away.
+
+Long-press any message for: copy, **read aloud** (the system voice; choose it again
+to stop), edit and resend, edit in place, regenerate, fork from here, exclude from
+context, delete. Excluding keeps a message in the transcript but stops sending it —
+the cheapest way to drop a wrong turn without losing the thread.
+
+There is no in-app dictation, and none is needed: the keyboard's own microphone
+types into the composer like any other text field.
+
+The header menu carries the system prompt, model, provider profile, model controls,
+skills, MCP servers, rename, tags, pin, **bring in a message** (quote from another
+chat), the prompt library, export and delete.
+
+## 4. Model and reasoning controls
+
+Header menu → **Model controls**. Max output tokens, sampling, and reasoning:
+Anthropic takes a thinking budget, OpenAI takes an effort level. Two rules are
+enforced rather than explained after the fact — thinking cannot be switched off at
+the top effort levels, and the thinking budget must leave room under `max_tokens`,
+because on the Anthropic wire that number is the *total* output allowance.
+
+Anything a model does not support is shown disabled with the reason, never hidden.
+Wrong or missing capability data is editable under Settings → **Models**.
+
+## 5. Attachments
+
+The paperclip takes a photo, picks images, or attaches a document. Images are
+resized before encoding and ingested one at a time — a 12 MP photo is otherwise a
+multi-megabyte string in memory. If the model has no native document support the
+composer says so *before* you send, because afterwards the only symptom is an
+answer that ignored your tables.
+
+## 6. Context pressure
+
+The gauge under the composer measures against **usable** space (context window
+minus reserved output), since the failure you actually hit is a truncated reply.
+When a conversation outgrows it, the per-conversation strategy decides: warn,
+drop oldest, or summarise into a rolling summary. Nothing is ever silently
+dropped without a note in the transcript.
+
+## 7. Skills
+
+Settings → **Skills**. A skill is a name, a one-line description and a body of
+instructions. Only names and descriptions go into the prompt; the body is sent
+only when the model asks for it, so a dozen skills cost a couple of lines a turn.
+Switch them on per conversation from the header menu.
+
+Import a single `SKILL.md`, or a **zip** of them — a folder from a desktop client
+imports in one go, with a name collision renamed rather than clobbering what you
+have, and any member that is not a skill reported rather than silently dropped.
+**Export all as zip** writes into a folder you pick (Downloads is fine); a single
+skill exports through the share sheet.
+
+Importing somebody else's skill runs their instructions in your conversations.
+Read one before switching it on.
+
+## 8. MCP servers
+
+Settings → **MCP servers**. Add by URL — http(s) only, because a phone cannot
+spawn the local processes stdio needs, and a field that can never work is worse
+than an honest refusal. Sign in if the server wants OAuth (tokens go to the
+Keystore beside the API key, so they are redacted from logs and exports from the
+moment they exist), then choose which tools are offered.
+
+Tool calls are approved mid-turn: allow once, always allow this tool, deny, or
+never. The full arguments are shown. Leaving the screen resolves nothing — you
+come back to the same question. Every failure, including a denial, comes back as a
+tool *result*, so a refused call never costs you the conversation.
+
+## 9. Prompts, memory, usage, backup
+
+- **Prompt library** (Settings, or the header menu) — reusable prompts with
+  `{{variable}}` placeholders, ranked by how often you use them.
+- **Memory** — what the app has distilled about you, and the switch that stops it.
+  Off means nothing is collected *and* nothing is sent. Anything containing what
+  looks like a secret is dropped rather than stored redacted, and a new memory is
+  confirmed before it is kept.
+- **Usage** — tokens and estimated cost by day and by model, from the gateway's own
+  reported numbers only. A gateway that reports nothing stores a zero, so totals
+  are a floor and say so.
+- **Backup and restore** — settings, provider metadata, model overrides, skills,
+  prompts and MCP servers. Structurally never keys, tokens, conversations or
+  memories. Restore merges and never overwrites; keys must be re-pasted.
+
+## 10. Export and diagnostics
+
+Header menu → **Export** — Markdown or JSON, to the share sheet or the clipboard.
+Exports never carry attachment bytes and are redacted twice.
+
+Settings → **Debug log** — requests, status codes, stream events and dropped
+parameters, with the key redacted at the write boundary. No telemetry, no
+analytics, no third-party crash reporting.
+
+---
+
+Physical-device verification is still recommended for Android keyboard insets,
+FlashList anchoring during a live stream, markdown baseline geometry, and the
+attachment pipeline's memory behaviour. See "Known gaps" in `progress.md`.

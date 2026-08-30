@@ -116,12 +116,73 @@ export function redact<T>(value: T, seen: WeakSet<object> = new WeakSet()): T {
 }
 
 /**
+ * Header names a profile is not allowed to set.
+ *
+ * `SECRET_KEY_RE` names the credential-bearing ones: the key lives in the Keystore
+ * and is attached at request time, so an `authorization` typed into the extra-headers
+ * box can only do harm — it would be persisted to AsyncStorage in cleartext, which
+ * is exactly the one place the key must never reach. `user-agent` is here for a
+ * different reason: the app sends one honest, static UA, and circumventing the
+ * gateway's client allowlist by wearing another client's name is a bannable offence,
+ * so the box must not be a way to do it.
+ */
+export function isForbiddenHeaderName(name: string): boolean {
+  const lower = name.trim().toLowerCase();
+  return SECRET_KEY_RE.test(lower) || lower === 'user-agent';
+}
+
+/**
+ * Drop headers a profile must not carry, by name or by the look of the value.
+ *
+ * The value test is `redactString`: if redaction would rewrite it, it is a secret
+ * by the app's own definition, whatever it was called. Returns a fresh object;
+ * callers store the result rather than the input.
+ */
+export function safeHeaders(headers: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    if (isForbiddenHeaderName(name)) continue;
+    if (redactString(value) !== value) continue;
+    out[name] = value;
+  }
+  return out;
+}
+
+/**
  * A display fingerprint for a key: enough to tell two keys apart in the UI
  * without revealing either. Never logged alongside the key itself.
+ *
+ * It used to read `sk-a…9f0c (48 chars)`, which is four real characters of the
+ * secret plus its exact length — the two things an offline guess wants most, on a
+ * screen anyone holding the phone can photograph, and in a screenshot pasted into
+ * a support thread. A hash prefix tells two keys apart just as well and tells an
+ * attacker nothing: `a3f1c8` is not a substring of anything.
+ *
+ * FNV-1a rather than SHA-256 because this is a label, not a MAC — it must be
+ * synchronous (`expo-crypto`'s digest is async and this is called during render)
+ * and it only has to be stable and collision-shy across the handful of keys one
+ * person owns. The salt is the point: without it the same key produces the same
+ * label in every install of the app, which turns the label into a global
+ * identifier for the key. It is a build-time constant rather than a per-install
+ * random value so a fingerprint stays comparable across a reinstall.
+ *
+ * ponytail: FNV-1a with a fixed salt. Not preimage-resistant against someone who
+ * reads this source and brute-forces a candidate key — but a candidate key can be
+ * tested against the gateway directly, so the hash is not the weak link. Move to a
+ * real KDF only if fingerprints ever leave the device.
  */
+const FINGERPRINT_SALT = 'agentrouter-mobile/key-fingerprint/v1';
+
 export function keyFingerprint(secret: string | null | undefined): string {
   if (!secret) return '(none)';
   const trimmed = secret.trim();
-  if (trimmed.length <= 8) return `${'*'.repeat(trimmed.length)}`;
-  return `${trimmed.slice(0, 4)}…${trimmed.slice(-4)} (${trimmed.length} chars)`;
+  if (!trimmed) return '(none)';
+  const input = `${FINGERPRINT_SALT}:${trimmed}`;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    // The 32-bit FNV prime, as shifts, because `hash * 16777619` loses precision.
+    hash = (hash + (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
+  }
+  return `#${hash.toString(16).padStart(8, '0')}`;
 }

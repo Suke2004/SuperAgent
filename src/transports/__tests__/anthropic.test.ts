@@ -910,7 +910,7 @@ describe('AnthropicTransport.testConnection', () => {
     expect(result.summary).toContain('model list could not be read');
   });
 
-  it('distinguishes a rejected client from a rejected key on a 401', async () => {
+  it('reports one ambiguous conclusion on a 401, naming both causes', async () => {
     const unauthorized = {
       error: { message: 'unauthorized client detected, contact support for assistance' },
       type: 'unauthorized_client_error',
@@ -920,8 +920,9 @@ describe('AnthropicTransport.testConnection', () => {
     const result = await client.testConnection();
 
     expect(result.ok).toBe(false);
-    expect(result.summary).toContain('rejected this client, not the key');
-    expect(result.steps[3]?.error?.kind).toBe('client_rejected');
+    expect(result.summary).toContain('re-paste');
+    expect(result.summary).toContain('allowlisting');
+    expect(result.steps[3]?.error?.kind).toBe('unauthorized');
   });
 
   it('explains a blocked-language 400 rather than showing a bare 400', async () => {

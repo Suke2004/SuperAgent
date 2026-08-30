@@ -6,13 +6,14 @@
  * formatting side free of both is what lets the security test grep a real
  * artefact without a mock in sight.
  *
- * **Why there is no "save to file".** The app does not depend on
- * `expo-file-system` or `expo-sharing`, so there is no writable path to hand a
- * share target. Adding both to ship a file would mean a native rebuild and a new
- * permission story for a feature that the clipboard and the share sheet already
- * cover — the share sheet's own targets (Drive, Files, mail) are what a user
- * means by "save it" anyway. Documented rather than left as a gap so the next
- * person does not think it was forgotten.
+ * **Why there is no "save to file".** The clipboard and the share sheet already
+ * cover it — the share sheet's own targets (Drive, Files, mail) are what a user
+ * means by "save it". `expo-file-system` is in the tree now (attachments, and the
+ * skills zip export writes through `Directory.pickDirectoryAsync`), so this is a
+ * choice rather than a missing capability: a folder picker is a worse handover for
+ * a transcript than a share sheet, and the same one is there if that changes.
+ * Documented rather than left as a gap so the next person does not think it was
+ * forgotten.
  */
 
 import * as Clipboard from 'expo-clipboard';

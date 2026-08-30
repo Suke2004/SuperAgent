@@ -20,11 +20,13 @@
 import { debugLog, safeStringify } from '@/lib/log';
 import {
   clearRegisteredSecrets,
+  isForbiddenHeaderName,
   keyFingerprint,
   redact,
   redactString,
   registerSecret,
   registeredSecretCount,
+  safeHeaders,
   unregisterSecret,
 } from '@/lib/redact';
 
@@ -258,21 +260,61 @@ describe('redaction of values that are not log entries', () => {
 });
 
 describe('the key fingerprint shown in the UI', () => {
-  it('identifies a key without revealing it', () => {
+  it('identifies a key without carrying any of it, or its length', () => {
     const print = keyFingerprint(KEY);
+    expect(print).toMatch(/^#[0-9a-f]{8}$/);
     expect(print).not.toContain(KEY);
-    expect(print).toContain(KEY.slice(0, 4));
-    expect(print).toContain(KEY.slice(-4));
-    expect(print).toContain(String(KEY.length));
+    // The two things the old `sk-a…9f0c (48 chars)` form leaked, on a screen anyone
+    // holding the phone can photograph: real characters, and the exact length.
+    expect(print).not.toContain(KEY.slice(0, 4));
+    expect(print).not.toContain(KEY.slice(-4));
+    expect(print).not.toContain(String(KEY.length));
   });
 
-  it('reveals nothing at all for a key too short to sample', () => {
-    expect(keyFingerprint('abcd')).toBe('****');
+  it('is stable for one key and different for another, which is all the UI needs', () => {
+    expect(keyFingerprint(KEY)).toBe(keyFingerprint(KEY));
+    // Trailing whitespace is a paste artefact, not a different key.
+    expect(keyFingerprint(`  ${KEY}\n`)).toBe(keyFingerprint(KEY));
+    expect(keyFingerprint(`${KEY}x`)).not.toBe(keyFingerprint(KEY));
+    // One flipped character has to move the label, or two keys read as one.
+    expect(keyFingerprint('sk-aaaaaaaa')).not.toBe(keyFingerprint('sk-aaaaaaab'));
+  });
+
+  it('says nothing for no key at all', () => {
     expect(keyFingerprint(null)).toBe('(none)');
+    expect(keyFingerprint('')).toBe('(none)');
+    expect(keyFingerprint('   ')).toBe('(none)');
   });
 
   it('is safe to log — it never reaches the buffer as a secret', () => {
     debugLog.message('info', 'providers', `using key ${keyFingerprint(KEY)}`);
     expect(logLeaks(KEY)).toEqual([]);
+  });
+});
+
+describe('the header screen a provider profile passes through', () => {
+  it('drops credential headers by name, whatever their casing', () => {
+    expect(safeHeaders({ Authorization: `Bearer ${KEY}`, 'X-Api-Key': 'abc', 'anthropic-beta': 'ok' })).toEqual({
+      'anthropic-beta': 'ok',
+    });
+    expect(isForbiddenHeaderName(' AUTHORIZATION ')).toBe(true);
+    expect(isForbiddenHeaderName('cookie')).toBe(true);
+  });
+
+  it('drops a secret-looking value even under an innocent name', () => {
+    // The name tells you nothing; the value is a key by the app's own definition.
+    expect(safeHeaders({ 'x-note': KEY })).toEqual({});
+  });
+
+  it('refuses to let the app wear another client’s name', () => {
+    expect(isForbiddenHeaderName('User-Agent')).toBe(true);
+    expect(safeHeaders({ 'user-agent': 'SomeOtherClient/1.0' })).toEqual({});
+  });
+
+  it('passes ordinary headers through, and handles no headers at all', () => {
+    expect(safeHeaders({ 'anthropic-beta': 'prompt-caching-2024-07-31' })).toEqual({
+      'anthropic-beta': 'prompt-caching-2024-07-31',
+    });
+    expect(safeHeaders(undefined)).toEqual({});
   });
 });

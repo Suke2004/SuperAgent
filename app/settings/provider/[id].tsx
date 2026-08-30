@@ -29,6 +29,7 @@ import {
 } from '@/components/ui';
 import { countConversationsForProfile, reassignProfile } from '@/db/conversations';
 import { invalidateTransports } from '@/lib/gateway';
+import { isForbiddenHeaderName } from '@/lib/redact';
 import { verifyProfile } from '@/lib/verify';
 import { useChat } from '@/stores/chat';
 import { KNOWN_CLAUDE_MODELS, useProviders } from '@/stores/providers';
@@ -330,7 +331,7 @@ export default function ProviderDetail() {
         </Stack>
       </Section>
 
-      <Section title="Extra headers" note="For things like anthropic-beta. The Authorization header is set automatically and cannot be overridden here.">
+      <Section title="Extra headers" note="For things like anthropic-beta. Credential headers and the User-Agent cannot be set here: the key is attached from the Keystore at request time, and this app sends one honest, static User-Agent.">
         {headerEntries.length === 0 ? (
           <Row first label="None" subtitle="Most setups need none" />
         ) : (
@@ -363,8 +364,12 @@ export default function ProviderDetail() {
           <Button
             label="Add header"
             size="sm"
-            disabled={!headerDraft.key.trim() || !headerDraft.value.trim()}
-            disabledReason="Both a name and a value are required."
+            disabled={!headerDraft.key.trim() || !headerDraft.value.trim() || isForbiddenHeaderName(headerDraft.key)}
+            disabledReason={
+              isForbiddenHeaderName(headerDraft.key)
+                ? 'Credential headers are set from the Keystore at request time, and the User-Agent is fixed. The store drops these, so the button says so first.'
+                : 'Both a name and a value are required.'
+            }
             onPress={() => {
               updateProfile(profile.id, {
                 headers: { ...profile.headers, [headerDraft.key.trim()]: headerDraft.value.trim() },

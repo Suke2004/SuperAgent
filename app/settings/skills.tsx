@@ -14,7 +14,7 @@
 import { useCallback, useState } from 'react';
 import { Alert, Share, View } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
-import { File } from 'expo-file-system';
+import { Directory, File } from 'expo-file-system';
 import { useFocusEffect } from 'expo-router';
 
 import { Sheet } from '@/components/Sheet';
@@ -28,6 +28,7 @@ import {
   slugifySkillName,
 } from '@/chat/skill';
 import type { Skill, SkillDraft } from '@/chat/skill';
+import { packSkills, skillsZipName } from '@/chat/skillZip';
 import { log } from '@/lib/log';
 import { useSkills } from '@/stores/skills';
 import { useTheme } from '@/theme';
@@ -86,8 +87,53 @@ export default function SkillsScreen() {
     }
   };
 
-  const remove = (skill: Skill): void => {
-    Alert.alert('Delete skill', `Delete “${skill.name}”? Conversations using it will simply stop seeing it.`, [
+  /**
+   * Every skill into one zip, in a folder the user picks.
+   *
+   * Not the share sheet, unlike a single skill: Android's share intent carries text
+   * through a Binder parcel, and there is no way to hand it bytes. A folder picked
+   * through the system picker is the one path that does not need a new dependency,
+   * and "Downloads" is what a user means by "save it" anyway.
+   */
+  const exportAll = async (): Promise<void> => {
+    if (!skills.length) return;
+    let folder: Directory;
+    try {
+      folder = await Directory.pickDirectoryAsync();
+    } catch {
+      return; // Dismissed the picker. Not an error, and not worth a message.
+    }
+    try {
+      const file = folder.createFile(skillsZipName(), 'application/zip');
+      file.write(packSkills(skills));
+      setOutcome(`Wrote ${skills.length} skill${skills.length === 1 ? '' : 's'} to ${file.name}.`);
+    } catch (error) {
+      log.warn('skills', 'could not write the archive', error);
+      setOutcome('That folder could not be written to. Pick another one, or try Downloads.');
+    }
+  };
+
+  const importZip = async (): Promise<void> => {
+    const picked = await DocumentPicker.getDocumentAsync({
+      // Android hands a zip either MIME depending on where it came from.
+      type: ['application/zip', 'application/octet-stream'],
+      copyToCacheDirectory: true,
+    });
+    if (picked.canceled) return;
+    const asset = picked.assets[0];
+    if (!asset) return;
+    try {
+      const bytes = await new File(asset.uri).bytes();
+      const { added, skipped } = await useSkills.getState().importZip(bytes);
+      const tail = skipped.length ? ` ${skipped.length} file${skipped.length === 1 ? '' : 's'} skipped: ${skipped[0]}` : '';
+      setOutcome(added.length ? `Imported ${added.length}: ${added.join(', ')}.${tail}` : `Nothing imported.${tail}`);
+    } catch (error) {
+      log.warn('skills', 'could not read the picked archive', error);
+      setOutcome('That file could not be read from storage.');
+    }
+  };
+
+  const remove = (skill: Skill): void => {    Alert.alert('Delete skill', `Delete “${skill.name}”? Conversations using it will simply stop seeing it.`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -190,10 +236,7 @@ export default function SkillsScreen() {
           </View>
         ) : skills.length === 0 ? (
           <View style={{ padding: t.spacing.md }}>
-            <Empty
-              title="No skills yet"
-              body="Write one, or import a SKILL.md you already have."
-            />
+            <Empty title="No skills yet" body="Write one, or import a SKILL.md you already have." />
           </View>
         ) : (
           skills.map((skill, index) => (
@@ -214,6 +257,13 @@ export default function SkillsScreen() {
       <Inline gap="md">
         <Button label="New skill" size="sm" onPress={() => openEditor(null)} />
         <Button label="Import a SKILL.md" size="sm" variant="ghost" onPress={() => void importSkill()} />
+      </Inline>
+
+      <Inline gap="md">
+        <Button label="Import a zip" size="sm" variant="ghost" onPress={() => void importZip()} />
+        {skills.length ? (
+          <Button label="Export all as zip" size="sm" variant="ghost" onPress={() => void exportAll()} />
+        ) : null}
       </Inline>
 
       <Body tone="dim" size="sm">

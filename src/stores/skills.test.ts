@@ -42,9 +42,16 @@ jest.mock('@/db/skills', () => {
   };
 });
 
+import { strToU8, zipSync } from 'fflate';
+
+import { packSkills } from '@/chat/skillZip';
 import { useSkills } from './skills';
 
 const DRAFT = { name: 'code-review', description: 'Reviews a diff.', body: 'Read the diff, then comment.' };
+
+const GOOD_FILE = ['---', 'name: imported-one', 'description: An imported skill.', '---', '', 'Follow these steps.'].join(
+  '\n',
+);
 
 /** The store's own list, indexed without `noUncheckedIndexedAccess` noise in every test. */
 function at(index: number) {
@@ -132,4 +139,25 @@ test('load reads the table into the store', async () => {
   await useSkills.getState().load();
   expect(useSkills.getState().loaded).toBe(true);
   expect(useSkills.getState().skills.map((skill) => skill.name)).toEqual(['code-review']);
+});
+
+test('a zip import takes the members it can and reports the ones it cannot', async () => {
+  await useSkills.getState().create(DRAFT);
+  const bytes = packSkills([
+    { name: 'code-review', description: 'A different reviewer.', body: 'Do it differently.' },
+    { name: 'commit-messages', description: 'Writes commit messages.', body: 'Imperative mood.' },
+  ]);
+
+  const result = await useSkills.getState().importZip(bytes);
+  // The collision is renamed, as with a single file — the archive is usually
+  // somebody else's folder, and one clash must not cost the rest of it.
+  expect(result.added.sort()).toEqual(['code-review 2', 'commit-messages']);
+  expect(result.skipped).toEqual([]);
+  expect(at(0).body).toBe(DRAFT.body);
+
+  // A member that is not a skill is counted, not thrown, and does not stop the rest.
+  const mixed = zipSync({ 'notes.md': strToU8('no frontmatter here'), 'ok.SKILL.md': strToU8(GOOD_FILE) });
+  const second = await useSkills.getState().importZip(mixed);
+  expect(second.added).toEqual(['imported-one']);
+  expect(second.skipped).toHaveLength(1);
 });

@@ -18,6 +18,7 @@ import { create } from 'zustand';
 
 import {
   DISTIL_INSTRUCTION,
+  approvedOnly,
   mergeMemories,
   parseMemory,
   renderMemoryBlock,
@@ -26,6 +27,7 @@ import {
 import type { Memory, MemoryBlock } from '@/chat/memory';
 import {
   addMemory,
+  approveMemory,
   clearMemories,
   confirmMemory,
   deleteMemory as dbDeleteMemory,
@@ -58,6 +60,8 @@ export interface MemoryState {
   promptBlock(): MemoryBlock;
   add(text: string, kind?: Memory['kind']): Promise<void>;
   edit(id: string, text: string): Promise<void>;
+  /** The user agreeing a distilled memory may be sent. Until then it is stored and unused. */
+  approve(id: string): Promise<void>;
   setPinned(id: string, pinned: boolean): Promise<void>;
   forget(id: string): Promise<void>;
   /** Deletes every memory. Returns how many there were. */
@@ -92,7 +96,10 @@ export const useMemory = create<MemoryState>()((set, get) => ({
 
   promptBlock() {
     if (!getSetting('memoryEnabled')) return { included: [], dropped: 0, chars: 0 };
-    return renderMemoryBlock(get().memories);
+    // The review gate: a memory the user has not agreed to is never sent, however
+    // highly it ranks. Filtered here rather than in `listMemories`, because the
+    // settings screen has to be able to see the pending ones to act on them.
+    return renderMemoryBlock(approvedOnly(get().memories));
   },
 
   async add(text, kind = 'fact') {
@@ -110,6 +117,13 @@ export const useMemory = create<MemoryState>()((set, get) => ({
     await editMemory(id, trimmed);
     set((state) => ({
       memories: state.memories.map((m) => (m.id === id ? { ...m, text: trimmed, updatedAt: Date.now() } : m)),
+    }));
+  },
+
+  async approve(id) {
+    await approveMemory(id);
+    set((state) => ({
+      memories: state.memories.map((m) => (m.id === id ? { ...m, approved: true, updatedAt: Date.now() } : m)),
     }));
   },
 
@@ -166,7 +180,12 @@ export const useMemory = create<MemoryState>()((set, get) => ({
 
       const { additions, confirmed } = mergeMemories(get().memories, candidates);
       for (const id of confirmed) await confirmMemory(id);
-      for (const candidate of additions) await addMemory(candidate, input.conversationId);
+      // `false`: stored, listed, and not sent until the user says so. The gate is
+      // here rather than in the UI because this is the only writer whose text the
+      // user never typed — a line in an attached document that reads like a
+      // preference would otherwise become a standing instruction in every later
+      // conversation, outliving the chat it entered through.
+      for (const candidate of additions) await addMemory(candidate, input.conversationId, false);
 
       // Reloaded rather than patched: the hit counts just changed, and the
       // ordering the settings screen shows is derived from them.

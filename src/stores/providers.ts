@@ -19,6 +19,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 import { newId } from '@/lib/id';
+import { safeHeaders } from '@/lib/redact';
 import { deleteApiKey, getKeyStatus, saveApiKey } from '@/lib/secureKey';
 import { expectHydration, persistConfig } from '@/lib/storage';
 import { normaliseBaseUrl } from '@/transports';
@@ -97,7 +98,11 @@ function makeProfile(
     kind: init.kind,
     baseUrl: normaliseBaseUrl(init.kind, init.baseUrl),
     defaultModel: init.defaultModel ?? DEFAULT_MODEL,
-    headers: init.headers ?? {},
+    // Every path that creates a profile — seeds, the editor, duplicate, an
+    // imported backup — funnels through here, so this is the one place the header
+    // screen has to live. See {@link safeHeaders}: no credential header, no
+    // spoofed User-Agent, ever persisted.
+    headers: safeHeaders(init.headers),
     hasKey: init.hasKey ?? false,
     keyFingerprint: init.keyFingerprint ?? '(none)',
     createdAt: init.createdAt ?? Date.now(),
@@ -165,6 +170,7 @@ export const useProviders = create<ProviderState>()(
           profiles: state.profiles.map((profile) => {
             if (profile.id !== id) return profile;
             const merged = { ...profile, ...patch };
+            if (patch.headers !== undefined) merged.headers = safeHeaders(patch.headers);
             // Re-normalise whenever either half of the pair changes, so switching a
             // profile from OpenAI to Anthropic fixes the URL instead of 404ing.
             if (patch.baseUrl !== undefined || patch.kind !== undefined) {

@@ -23,6 +23,7 @@ interface MemoryRow {
   hits: number;
   last_used_at: number | null;
   pinned: number;
+  approved: number;
 }
 
 function toMemory(row: MemoryRow): Memory {
@@ -37,6 +38,7 @@ function toMemory(row: MemoryRow): Memory {
     text: row.text,
     hits: row.hits,
     pinned: row.pinned === 1,
+    approved: row.approved === 1,
     ...(row.source_conversation_id ? { sourceConversationId: row.source_conversation_id } : {}),
     ...(row.last_used_at !== null ? { lastUsedAt: row.last_used_at } : {}),
   };
@@ -69,17 +71,26 @@ export async function countMemories(): Promise<number> {
  * The uniqueness is `(kind, text)` in SQL, which catches the exact restatement;
  * near-duplicates are folded earlier by `mergeMemories`, before this is called.
  * Both layers exist because the SQL one is what makes a retry idempotent.
+ *
+ * `approved` defaults to true because the callers who pass nothing are the user
+ * typing a memory in settings and a restore; the distiller passes false. Note what
+ * the conflict clause leaves alone: a restated memory bumps `hits` but does not
+ * become approved, so re-learning something the user declined does not sneak it in.
  */
-export async function addMemory(candidate: MemoryCandidate, sourceConversationId?: string): Promise<Memory> {
+export async function addMemory(
+  candidate: MemoryCandidate,
+  sourceConversationId?: string,
+  approved = true,
+): Promise<Memory> {
   const { db } = await database();
   const at = Date.now();
   const id = newId('mem_');
 
   await db.runAsync(
-    `INSERT INTO memories (id, created_at, updated_at, kind, text, source_conversation_id, hits, pinned)
-     VALUES (?, ?, ?, ?, ?, ?, 1, 0)
+    `INSERT INTO memories (id, created_at, updated_at, kind, text, source_conversation_id, hits, pinned, approved)
+     VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?)
      ON CONFLICT (kind, text) DO UPDATE SET hits = hits + 1, updated_at = excluded.updated_at`,
-    [id, at, at, candidate.kind, candidate.text, sourceConversationId ?? null],
+    [id, at, at, candidate.kind, candidate.text, sourceConversationId ?? null, approved ? 1 : 0],
   );
 
   const row = await db.getFirstAsync<MemoryRow>('SELECT * FROM memories WHERE kind = ? AND text = ?', [
@@ -94,6 +105,12 @@ export async function addMemory(candidate: MemoryCandidate, sourceConversationId
 export async function confirmMemory(id: string): Promise<void> {
   const { db } = await database();
   await db.runAsync('UPDATE memories SET hits = hits + 1, updated_at = ? WHERE id = ?', [Date.now(), id]);
+}
+
+/** The user agreeing that a distilled memory may be carried into future conversations. */
+export async function approveMemory(id: string): Promise<void> {
+  const { db } = await database();
+  await db.runAsync('UPDATE memories SET approved = 1, updated_at = ? WHERE id = ?', [Date.now(), id]);
 }
 
 /** Corrects a memory in place. Resets nothing: a corrected memory is still the same memory. */
