@@ -22,6 +22,7 @@ import { useHydrated } from '@/lib/storage';
 import { debugLog } from '@/lib/log';
 import { primeRedactorWithStoredKeys } from '@/lib/secureKey';
 import { useMemory } from '@/stores/memory';
+import { useSkills } from '@/stores/skills';
 import { useProviders } from '@/stores/providers';
 import { useSettings } from '@/stores/settings';
 import { ThemeProvider, useTheme } from '@/theme';
@@ -55,6 +56,7 @@ function Navigator() {
         <Stack.Screen name="settings/model/[key]" options={{ title: 'Model' }} />
         <Stack.Screen name="settings/appearance" options={{ title: 'Appearance' }} />
         <Stack.Screen name="settings/memory" options={{ title: 'Memory' }} />
+        <Stack.Screen name="settings/skills" options={{ title: 'Skills' }} />
         <Stack.Screen name="settings/debug" options={{ title: 'Debug log' }} />
       </Stack>
     </>
@@ -111,6 +113,7 @@ export default function RootLayout() {
   useEffect(() => {
     if (!hydrated) return;
     void useMemory.getState().load();
+    void useSkills.getState().load();
   }, [hydrated]);
 
   // Held back until the keys are registered as well as the state loaded: a screen

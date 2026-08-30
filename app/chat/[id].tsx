@@ -25,7 +25,7 @@ import { FlashList } from '@shopify/flash-list';
 import * as Clipboard from 'expo-clipboard';
 import { Stack as NavStack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Modal, Pressable, View } from 'react-native';
+import { Alert, Modal, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { OfflineBadge, OfflineBanner } from '@/components/OfflineBanner';
@@ -72,6 +72,7 @@ import { useCalibration } from '@/stores/calibration';
 import { capabilitiesFor, entryKey, pickableModelIds, useModels } from '@/stores/models';
 import { useProviders } from '@/stores/providers';
 import { useSettings } from '@/stores/settings';
+import { useSkills } from '@/stores/skills';
 import { availableEfforts, controlSupport } from '@/transports/support';
 import type { ContentBlock } from '@/transports/types';
 import { useTheme } from '@/theme';
@@ -88,8 +89,8 @@ export default function ChatScreen() {
   const t = useTheme();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  // The keyboard's own height already clears the navigation bar, so keeping the
-  // safe-area padding while it is open leaves a gap under the composer.
+  // Already includes the navigation bar on Android, so it replaces `insets.bottom`
+  // while the keyboard is open rather than adding to it.
   const keyboardHeight = useKeyboardHeight();
   const { id } = useLocalSearchParams<{ id: string }>();
 
@@ -111,6 +112,7 @@ export default function ChatScreen() {
   const dismissContextNote = useChat((s) => s.dismissContextNote);
 
   const profiles = useProviders((s) => s.profiles);
+  const installedSkills = useSkills((s) => s.skills);
   const entries = useModels((s) => s.entries);
   const showThinkingByDefault = useSettings((s) => s.showThinkingByDefault);
   const memoryEnabled = useSettings((s) => s.memoryEnabled);
@@ -123,6 +125,7 @@ export default function ChatScreen() {
   const [convMenu, setConvMenu] = useState(false);
   const [modelMenu, setModelMenu] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
+  const [skillMenu, setSkillMenu] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [costFor, setCostFor] = useState<StoredMessage | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
@@ -733,6 +736,16 @@ export default function ChatScreen() {
       subtitle: 'Sampling and reasoning for the next message',
       onPress: openModelControls,
     },
+    {
+      label: 'Skills',
+      subtitle:
+        (conversation.config.skills ?? []).length > 0
+          ? (conversation.config.skills ?? []).join(', ')
+          : installedSkills.length
+            ? 'None on for this conversation'
+            : 'None written yet — Settings → Skills',
+      onPress: () => setSkillMenu(true),
+    },
     { label: 'Rename', subtitle: conversation.title, onPress: () => setPrompt({ kind: 'rename' }) },
     {
       label: 'Tags',
@@ -773,6 +786,23 @@ export default function ChatScreen() {
     ...(candidate.hasKey ? {} : { disabled: true, disabledReason: 'No API key saved for this profile.' }),
     onPress: () => void useChat.getState().setProfile(id, candidate.id),
   }));
+
+  // Toggles rather than a picker, and the sheet is left open: switching two skills
+  // on is one visit, and the subtitle is the state — there is no `selected` in a
+  // `SheetAction`, and a checkmark nobody can read to a screen reader would be worse
+  // than the word.
+  const enabledSkills = conversation.config.skills ?? [];
+  const skillActions: SheetAction[] = installedSkills.map((skill) => {
+    const on = enabledSkills.includes(skill.name);
+    return {
+      label: skill.name,
+      subtitle: `${on ? 'On' : 'Off'} · ${skill.description}`,
+      onPress: () =>
+        void useChat.getState().setConfig(id, {
+          skills: on ? enabledSkills.filter((name) => name !== skill.name) : [...enabledSkills, skill.name],
+        }),
+    };
+  });
 
   const promptProps = ((): {
     title: string;
@@ -837,13 +867,13 @@ export default function ChatScreen() {
   /* ---------------------------------------------------------------------- */
 
   return (
-    // `behavior="padding"` on **both** platforms. The previous version applied it on
-    // iOS only, on the theory that Android resizes its own window for the keyboard
-    // (`softwareKeyboardLayoutMode: 'resize'`). It does not: this app is edge-to-edge,
-    // and `adjustResize` shrinks the area inside the system bars, which an
-    // edge-to-edge window draws behind. So nothing moved and the keyboard opened on
-    // top of the composer. See `useKeyboardHeight`.
-    <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
+    // A plain View, not a `KeyboardAvoidingView`. That component's padding is
+    // `frame.y + frame.height - keyboard.screenY`, where `frame` is its layout
+    // *inside the navigator card* — so under a header it computes a lift short by
+    // the header's height, which is the second half of "it moves, but not above
+    // the keyboard". The composer's own `paddingBottom` below does the whole job
+    // from the one number that is actually authoritative: `useKeyboardHeight()`.
+    <View style={{ flex: 1 }}>
       <NavStack.Screen
         options={{
           title: conversation.title,
@@ -946,7 +976,7 @@ export default function ChatScreen() {
         }
       />
 
-      <View style={{ paddingBottom: keyboardHeight > 0 ? 0 : insets.bottom, gap: t.spacing.sm }}>
+      <View style={{ paddingBottom: keyboardHeight > 0 ? keyboardHeight : insets.bottom, gap: t.spacing.sm }}>
         {/* Above the composer rather than at the top of the screen: it is a
             statement about what will happen when you press send. */}
         <View style={{ paddingHorizontal: t.spacing.md }}>
@@ -1080,6 +1110,22 @@ export default function ChatScreen() {
         subtitle="The model list and the wire format both come from this. Switching does not resend anything."
         actions={profileActions}
         onClose={() => setProfileMenu(false)}
+      />
+
+      <Sheet
+        visible={skillMenu}
+        title="Skills"
+        body={
+          installedSkills.length
+            ? 'The names and descriptions of the skills switched on here go into this conversation’s prompt. The instructions themselves are sent only when the model asks for them.'
+            : 'Skills are reusable instruction sets. Write or import one in Settings → Skills, then switch it on here.'
+        }
+        actions={
+          installedSkills.length
+            ? skillActions
+            : [{ label: 'Open Settings → Skills', onPress: () => router.push('/settings/skills') }]
+        }
+        onClose={() => setSkillMenu(false)}
       />
 
       {/* Where `~$0.0042` comes from, said once, on demand.
@@ -1231,6 +1277,6 @@ export default function ChatScreen() {
           </View>
         </View>
       </Modal>
-    </KeyboardAvoidingView>
+    </View>
   );
 }

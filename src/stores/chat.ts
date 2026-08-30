@@ -25,6 +25,7 @@ import {
   flattenContent,
   forkConversation,
   getConversation,
+  isToolTurn,
   listConversationPage,
   listMessages,
   previewOf,
@@ -48,6 +49,7 @@ import type {
 } from '@/db/conversations';
 import type { ListCursor } from '@/db/list-query';
 import { buildRequest, composeSystem, validateConfig, hasBlockingIssue } from '@/chat/request';
+import { INVOKE_SKILL, invokeSkillTool, renderSkillCatalogue, resolveSkillCall } from '@/chat/skill';
 import { planTurn } from '@/chat/budget';
 import { boundSummary, summaryRequestBody, SUMMARY_FAILED_NOTE } from '@/chat/summary';
 import { reportedUsage } from '@/chat/usage';
@@ -60,6 +62,7 @@ import { estimateRequestTokens } from '@/lib/tokens';
 import { capabilitiesFor, useModels, wireHintsFor } from '@/stores/models';
 import { useCalibration } from '@/stores/calibration';import { activeProfile, useProviders } from '@/stores/providers';
 import { useMemory } from '@/stores/memory';
+import { useSkills } from '@/stores/skills';
 import { useReachability } from '@/stores/reachability';
 import { getSetting } from '@/stores/settings';
 import { GatewayError } from '@/transports/errors';
@@ -70,6 +73,7 @@ import type {
   StopReason,
   StreamEvent,
   TokenUsage,
+  ToolUseBlock,
   Transport,
   UnifiedMessage,
 } from '@/transports/types';
@@ -749,7 +753,11 @@ function appendToTranscript(set: Setter, conversationId: string, message: Stored
                 // `previewOf` rather than the raw text: the database stores the
                 // first line, clipped, and an optimistic patch that stored the
                 // whole message made the row change shape on the next relaunch.
-                ...(message.text ? { preview: previewOf(message.text) } : {}),
+                //
+                // A tool-only turn is excluded even though it has text — a skill
+                // body flattens to a paragraph nobody wrote — matching what
+                // `appendMessage` writes.
+                ...(message.text && !isToolTurn(message.content) ? { preview: previewOf(message.text) } : {}),
               }
             : c,
         )
@@ -773,7 +781,23 @@ interface RunOptions {
    * leaking into the next unrelated send.
    */
   pauseContinuations?: number;
+  /**
+   * How many `invoke_skill` rounds this turn has already run.
+   *
+   * Same reasoning as `pauseContinuations`: a property of this turn, not of the app.
+   */
+  toolRounds?: number;
 }
+
+/**
+ * How many `invoke_skill` rounds one turn may run before the app stops it.
+ *
+ * Every round is a billed request carrying the whole history plus a skill body, and
+ * a model that keeps loading skills instead of answering would spend real money
+ * doing it. Three is enough to read a skill, then a second one it referred to, and
+ * still answer.
+ */
+const MAX_TOOL_ROUNDS = 3;
 
 /**
  * How many times a paused turn will be resumed before the app stops on its own.
@@ -821,6 +845,8 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
   let timer: ReturnType<typeof setTimeout> | null = null;
   /** Set to the next continuation index when the turn ended on `pause_turn`. */
   let resume: number | null = null;
+  /** Set to the next round index when the turn ended asking for a skill. */
+  let toolRound: number | null = null;
   const publish = (force = false): void => {
     if (timer) {
       clearTimeout(timer);
@@ -875,6 +901,14 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     const memoryBlock = useMemory.getState().promptBlock();
     const calibrationFactor = useCalibration.getState().factorFor(`${profile.id}::${model}`);
 
+    // The skills this conversation switched on, resolved against what is installed.
+    // Loaded on demand rather than assumed: the startup load is fire-and-forget, and
+    // a send during the first second of the app's life would otherwise silently get
+    // no catalogue.
+    if (conversation.config.skills?.length && !useSkills.getState().loaded) await useSkills.getState().load();
+    const enabledSkills = useSkills.getState().enabledFor(conversation.config.skills);
+    const skillCatalogue = renderSkillCatalogue(enabledSkills);
+
     const { messages, summary, changed, trim, summaryFailed } = await applyContextStrategy({
       conversationId,
       conversation,
@@ -884,6 +918,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       publish,
       signal: controller.signal,
       ...(memoryBlock.text ? { memory: memoryBlock.text } : {}),
+      ...(skillCatalogue ? { skills: skillCatalogue } : {}),
       calibration: calibrationFactor,
     });
 
@@ -917,6 +952,8 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       messages,
       ...(summary ? { summary } : {}),
       ...(memoryBlock.text ? { memory: memoryBlock.text } : {}),
+      ...(skillCatalogue ? { skills: skillCatalogue } : {}),
+      ...(enabledSkills.length ? { tools: [invokeSkillTool(enabledSkills)] } : {}),
     });
 
     // Breakpoints last, over the assembled request, and suppressed when history was
@@ -1002,6 +1039,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     publish(true);
 
     const usage = reportedUsage(live.usage);
+    const blocks = blocksOf(live);
     const meta: MessageMeta = {};
     if (live.droppedParams.length) meta.droppedParams = live.droppedParams.map((d) => d.param);
     if (options.modelOverride) meta.modelOverride = true;
@@ -1010,9 +1048,24 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     if (request.reasoning?.budgetTokens) meta.budgetTokens = request.reasoning.budgetTokens;
     if (live.failover) meta.failedOverTo = live.failover.to;
 
+    // Every tool call this turn made, resolved before the assistant row is written so
+    // its `meta` can name the skills — which is what puts them in the transcript's
+    // badges rather than only in the tool result blocks.
+    const calls = blocks.filter((block): block is ToolUseBlock => block.type === 'tool_use');
+    const invocations = calls.map((call) => ({
+      call,
+      result:
+        call.name === INVOKE_SKILL
+          ? resolveSkillCall(call.input, enabledSkills)
+          : { content: `There is no tool called "${call.name}".`, isError: true as const },
+    }));
+    const invoked = invocations.map((i) => i.result.name).filter((name): name is string => Boolean(name));
+    if (invoked.length) meta.skillsInvoked = invoked;
+    if (invocations.length) meta.toolRounds = (options.toolRounds ?? 0) + 1;
+
     const message = await appendMessage(conversationId, {
       role: 'assistant',
-      content: blocksOf(live),
+      content: blocks,
       model,
       usage,
       stopReason: live.stopReason,
@@ -1042,12 +1095,49 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     // already succeeded and the user is reading the answer. A distillation pass
     // that fails, or that the user navigates away from, must not turn a completed
     // turn into a visible error. The throttle lives in the store.
-    void useMemory.getState().distil({
-      conversationId,
-      profileId: profile.id,
-      model,
-      messages: get().messages[conversationId] ?? [],
-    });
+    //
+    // Skipped on a turn that only asked for a skill: there is no answer yet to learn
+    // anything from, and the round that produces one will run this.
+    if (!invocations.length) {
+      void useMemory.getState().distil({
+        conversationId,
+        profileId: profile.id,
+        model,
+        messages: get().messages[conversationId] ?? [],
+      });
+    }
+
+    // A `tool_use` stop is the model asking for a skill body. The results go in as a
+    // `user` message — the API's convention for tool output, and what
+    // `MessageView` re-attributes so it does not read as something the user said —
+    // and then the turn is run again so the model can answer with what it now knows.
+    //
+    // The results are stored even when the cap stops the loop: a `tool_use` left
+    // unanswered in the history makes every later request invalid, so refusing to
+    // continue must not also refuse to close the call.
+    if (invocations.length) {
+      const results = await appendMessage(conversationId, {
+        role: 'user',
+        content: invocations.map(({ call, result }) => ({
+          type: 'tool_result' as const,
+          toolUseId: call.id,
+          content: result.content,
+          ...(result.isError ? { isError: true } : {}),
+        })),
+      });
+      appendToTranscript(set, conversationId, results);
+
+      const done = options.toolRounds ?? 0;
+      if (done + 1 < MAX_TOOL_ROUNDS) toolRound = done + 1;
+      else {
+        log.warn('chat', 'The model kept loading skills without answering; stopping', { rounds: done + 1 });
+        setContextNote(
+          set,
+          conversationId,
+          `The model loaded skills ${done + 1} times without answering, so this turn was stopped. Send again to continue it.`,
+        );
+      }
+    }
 
     // `pause_turn` is not an answer: it is the API saying "call me again with what
     // you have". The stored assistant message is the partial turn, so resuming is a
@@ -1076,6 +1166,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
   // Outside the `finally`, so the resumed turn registers its own abort controller
   // after this one has been cleaned up rather than racing it.
   if (resume !== null) await runTurn(set, get, conversationId, { ...options, pauseContinuations: resume });
+  else if (toolRound !== null) await runTurn(set, get, conversationId, { ...options, toolRounds: toolRound });
 }
 
 /**
@@ -1229,6 +1320,8 @@ interface StrategyInput {
   signal: AbortSignal;
   /** The rendered memory block, so the budget counts what the request will carry. */
   memory?: string;
+  /** The skill catalogue, for the same reason. */
+  skills?: string;
   /** Correction factor for this model's estimator, from `@/stores/calibration`. */
   calibration?: number;
 }
@@ -1285,10 +1378,10 @@ async function applyContextStrategy(input: StrategyInput): Promise<StrategyResul
     messages: [],
   }).params;
 
-  // The same prefix the request will actually carry — prompt, memory and summary
-  // — rather than the prompt alone. Counting less than is sent is how a budget
-  // declared roomy produces a request over the window.
-  const system = composeSystem(conversation.systemPrompt, previousSummary, input.memory);
+  // The same prefix the request will actually carry — prompt, memory, skills and
+  // summary — rather than the prompt alone. Counting less than is sent is how a
+  // budget declared roomy produces a request over the window.
+  const system = composeSystem(conversation.systemPrompt, previousSummary, input.memory, input.skills);
   const budget = planTurn({
     transport: 'anthropic',
     contextWindow: capabilities.contextWindow,

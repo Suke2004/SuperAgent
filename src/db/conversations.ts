@@ -26,7 +26,7 @@ import {
 } from '@/db/bulk';
 import { buildListQuery, DEFAULT_PAGE_SIZE, nextCursor } from '@/db/list-query';
 import type { ListCursor } from '@/db/list-query';
-import { DEFAULT_TITLE, flattenContent, previewOf } from '@/db/content';
+import { DEFAULT_TITLE, flattenContent, isToolTurn, previewOf } from '@/db/content';
 import { database, localDay } from '@/db/schema';
 import { buildFtsQuery, buildLikePattern, excerpt, LIKE_ESCAPE } from '@/db/search';
 import { newId } from '@/lib/id';
@@ -273,7 +273,7 @@ function toMessage(row: MessageRow): StoredMessage {
  * pure. Re-exported rather than moved outright, because a dozen call sites import
  * them from here and the contract they implement is a database one.
  */
-export { DEFAULT_TITLE, flattenContent, previewOf } from '@/db/content';
+export { DEFAULT_TITLE, flattenContent, isToolTurn, previewOf } from '@/db/content';
 
 /**
  * A title derived from the first user message.
@@ -657,7 +657,11 @@ export async function appendMessage(conversationId: string, input: NewMessage): 
     ],
   );
 
-  await touchConversation(conversationId, createdAt, text);
+  // `''` for a tool-only turn: `touchConversation` leaves the preview column alone
+  // when there is no line to put in it, so a skill body does not become the
+  // conversation's list preview. It still lands in `messages.text` above, so search
+  // finds it.
+  await touchConversation(conversationId, createdAt, isToolTurn(input.content) ? '' : text);
 
   return {
     id,

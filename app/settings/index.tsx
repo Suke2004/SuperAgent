@@ -12,6 +12,7 @@ import { Row, Screen, Section, SwitchRow } from '@/components/ui';
 import { useMemory } from '@/stores/memory';
 import { useProviders } from '@/stores/providers';
 import { useSettings } from '@/stores/settings';
+import { useSkills } from '@/stores/skills';
 
 export default function SettingsHub() {
   const router = useRouter();
@@ -19,6 +20,7 @@ export default function SettingsHub() {
   const activeId = useProviders((s) => s.activeId);
   const settings = useSettings();
   const memoryCount = useMemory((s) => s.memories.length);
+  const skillCount = useSkills((s) => s.skills.length);
   const active = profiles.find((p) => p.id === activeId);
 
   return (
@@ -57,6 +59,20 @@ export default function SettingsHub() {
           value={settings.memoryEnabled ? `${memoryCount} remembered` : 'Off'}
           subtitle="What the app has learned about you, and the switch that stops it"
           onPress={() => router.push('/settings/memory')}
+        />
+      </Section>
+
+      <Section
+        title="Skills"
+        note="Instruction sets you can switch on per conversation. Only the name and description reach the prompt; the instructions are fetched when the model asks for them."
+      >
+        <Row
+          first
+          chevron
+          label="Skills"
+          value={skillCount ? `${skillCount}` : 'None'}
+          subtitle="Write, import, edit or delete reusable instructions"
+          onPress={() => router.push('/settings/skills')}
         />
       </Section>
 

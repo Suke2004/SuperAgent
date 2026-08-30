@@ -10,7 +10,7 @@
  */
 
 /** Bumped whenever {@link MIGRATIONS} grows. Stored in SQLite's `user_version`. */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 /**
  * The FTS index and the three triggers that keep it in step with `messages`.
@@ -185,5 +185,28 @@ export const MIGRATIONS: readonly string[] = [
 
     -- The order the prompt builder reads them in.
     CREATE INDEX IF NOT EXISTS memories_rank ON memories (pinned DESC, hits DESC, updated_at DESC);
+  `,
+  /* 3 → 4 */ `
+    -- Skills: instruction bundles the user writes or imports, switched on per
+    -- conversation. Only \`name\` and \`description\` ever reach a prompt; \`body\`
+    -- is fetched by the \`invoke_skill\` tool, which is the whole reason a phone
+    -- can afford several of these at once.
+    CREATE TABLE IF NOT EXISTS skills (
+      id          TEXT    PRIMARY KEY NOT NULL,
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      -- A slug, because it is the tool argument's enum value: the model has to
+      -- type it back verbatim, so a name with spaces or case is a name it will
+      -- get wrong.
+      name        TEXT    NOT NULL,
+      description TEXT    NOT NULL,
+      body        TEXT    NOT NULL
+    );
+
+    -- Unique because \`ConversationConfig.skills\` stores names, not ids, and two
+    -- skills answering to one name would make an enabled toggle ambiguous.
+    -- \`IF NOT EXISTS\` throughout, like the steps before it: an interrupted
+    -- migration must be safe to re-run.
+    CREATE UNIQUE INDEX IF NOT EXISTS skills_name ON skills (name);
   `,
 ];
