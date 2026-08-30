@@ -24,6 +24,7 @@ import type { ReactNode } from 'react';
 import {
   ActivityIndicator,
   Keyboard,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -33,6 +34,7 @@ import {
   View,
 } from 'react-native';
 import type { StyleProp, TextInputProps, TextStyle, ViewProps, ViewStyle } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useTheme } from '@/theme';
 import type { Palette, Theme } from '@/theme';
@@ -59,8 +61,18 @@ export const MIN_TARGET = 48;
  *
  * `keyboardDidShow` rather than `keyboardWillShow`: Android never emits the
  * `Will` events, so anything built on them is an iOS-only fix.
+ *
+ * The navigation bar is added back on Android because the platform's event
+ * deliberately leaves it out: `ReactRootView` reports
+ * `imeInsets.bottom - barInsets.bottom`, i.e. the keyboard height measured from
+ * the *top of the navigation bar*, on the assumption that the window already
+ * stops there. An edge-to-edge window does not — it runs to the bottom of the
+ * screen — so lifting by the raw number lands a control one navigation bar short
+ * of clear, which is the "it moves, but not far enough" symptom. iOS measures
+ * from the bottom of the screen already and needs no correction.
  */
 export function useKeyboardHeight(): number {
+  const insets = useSafeAreaInsets();
   const [height, setHeight] = useState(0);
   useEffect(() => {
     const shown = Keyboard.addListener('keyboardDidShow', (event) => setHeight(event.endCoordinates.height));
@@ -70,7 +82,8 @@ export function useKeyboardHeight(): number {
       hidden.remove();
     };
   }, []);
-  return height;
+  if (height === 0) return 0;
+  return Platform.OS === 'android' ? height + insets.bottom : height;
 }
 
 /**

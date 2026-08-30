@@ -264,7 +264,7 @@ The Eng Plan's Phase 4 is **Sprint 9 (context pressure and exclusions)** and **S
 |---|---|
 | 2 | Model + reasoning controls. Per-conversation model plus single-message override; temperature, top_p, max_tokens, stop sequences, seed, presence/frequency penalties on the OpenAI path; saveable presets; OpenAI `reasoning_effort` (`minimal`/`low`/`medium`/`high`) sent only for reasoning-flagged models; Anthropic extended thinking with an explicit `budget_tokens` slider plus the `low`→`max` effort ladder; thinking streamed into a collapsible pane, collapsed by default but remembering the preference; per-message usage split into input / output / thinking / cached **read from the API response, never estimated**. Every control greys out with an explanation when the model or transport doesn't support it. |
 | 3 | Multimodal. Camera, multi-select gallery, file picker; on-device resize + recompress before upload; base64 blocks for Anthropic vs data URLs for OpenAI; composer thumbnail strip with per-image removal; attachment blocked with a reason on non-vision models; PDFs and text files (extract text for OpenAI, native document blocks for Anthropic); on-device speech-to-text and system TTS; feature-detect `/v1/images/generations` and only surface it if the gateway answers (expect disabled); register as an Android share target for text and images. |
-| 4 | Skills. `SKILL.md` with YAML frontmatter (`name`, `description`) + Markdown body; create / edit / duplicate / delete / import-export zip; per-conversation enable toggles; **progressive disclosure** — inject only name + description, expose an `invoke_skill` tool, return the body as the tool result; log invocations visibly in the transcript. |
+| 4 | Skills. `SKILL.md` with YAML frontmatter (`name`, `description`) + Markdown body; create / edit / duplicate / delete / import-export zip; per-conversation enable toggles; **progressive disclosure** — inject only name + description, expose an `invoke_skill` tool, return the body as the tool result; log invocations visibly in the transcript. **Delivered** — see "Skills" above; import/export is a single `SKILL.md`, not a zip. |
 | 5 | MCP over the network. Streamable HTTP and SSE only, never stdio; add by URL with headers or bearer token, plus OAuth 2.1 + PKCE; discover tools / resources / prompts with per-tool enable-disable; bridge into both API formats; agentic loop with a configurable iteration cap; **approval gate with ask-every-time / always-allow / deny showing full arguments**; tool calls and results as distinct collapsible transcript entries; server errors and timeouts returned to the model as an error result rather than crashing the loop. |
 | 6 | Power features. Prompt library with variable substitution; export to Markdown and JSON and via the share sheet; settings backup/restore; automatic failover to the backup domain with a visible active-domain indicator; usage dashboard by day and model from local data; request-level debug log, copyable, **key redacted**; offline send queue that retries on reconnect. |
 
@@ -282,12 +282,28 @@ Three things asked for together, because they are one change: a chat-first app n
 
 ---
 
+### Skills — ✅ COMPLETE (PRD Phase 4), except bulk zip import/export
+
+`src/chat/skill.ts` is the whole of the logic and it is pure: frontmatter parse (`js-yaml`'s core-schema `load`, so a hostile `SKILL.md` is a parse error rather than code), name slugification, the description cap, `serialiseSkill`/`skillFileName` for export, `renderSkillCatalogue`, `invokeSkillTool` and `resolveSkillCall`. `src/chat/skill.test.ts` covers it — CRLF/BOM/unknown keys, every failure reason, the round-trip, and the two invariants that matter: an empty catalogue renders `''` so the cached prompt prefix stays byte-identical, and the catalogue never contains a body.
+
+**Progressive disclosure is the point.** The system prompt carries name + description per enabled skill and nothing else; the body arrives only as the result of an `invoke_skill` call whose `name` argument is an `enum` of the enabled names, so the model cannot ask for a skill this conversation has not switched on. `runTurn` resolves the calls, appends a `user` turn of `tool_result` blocks, and re-runs — capped at `MAX_TOOL_ROUNDS = 3`, mirroring `MAX_PAUSE_CONTINUATIONS`, because each round is billed. Results are written **even when the cap fires**: an unanswered `tool_use` block invalidates every later request in the thread. Distillation is skipped on a tool-only round — there is no answer yet to learn from. Invocations land in `meta.skillsInvoked` and render as ordinary tool entries in the transcript.
+
+**One shared predicate, not three.** `isToolTurn` in `src/db/content.ts` is used by the insert path, the optimistic patch and the transcript renderer. It exists because a tool-only turn must not become the conversation's list preview — `appendMessage` passes `''` to `touchConversation`, which leaves the preview column alone, so a 10k-character skill body does not show up as the row subtitle while still being searchable in `messages.text`.
+
+Storage is migration 3 → 4 (`SCHEMA_VERSION = 4`) with a unique index on `name`: `ConversationConfig.skills` stores names rather than ids, so two skills under one name would make an enabled toggle ambiguous. `src/db/__tests__/skills.test.ts` applies the step onto a database that already holds conversations, re-applies it, and proves the index. `src/stores/skills.ts` renames on import via `freeSkillName` rather than refusing or overwriting, and has deliberately **no** global on/off switch — the per-conversation toggle is the switch. `app/settings/skills.tsx` is list plus inline editor plus an action sheet (edit / duplicate / export / delete); `app/chat/[id].tsx` toggles per conversation through the existing `setConfig`.
+
+**Not delivered: the zip.** Import is one `SKILL.md` through `expo-document-picker`, export is one through the share sheet. `fflate` is installed and a bundle is a small addition on top of `serialiseSkill` — worth doing when moving several skills at once is an actual need, not before.
+
+**Tests.** 1033 tests / 38 suites, `tsc --noEmit` and `eslint .` clean.
+
+---
+
 ## What to do next, in order
 
-Phase 2 (Eng Plan Sprints 5–6) is finished, as is the harness token-optimization sprint that followed it, Phase 3 (Sprints 7–8), and Phase 4 (Sprints 9–10). Next:
+Phase 2 (Eng Plan Sprints 5–6) is finished, as is the harness token-optimization sprint that followed it, Phase 3 (Sprints 7–8), Phase 4 (Sprints 9–10), the navigation change, and Skills. Next:
 
-1. **Skills**, which the PRD table calls Phase 4 but the Eng Plan schedules after the context work. `js-yaml` and `fflate` are already dependencies for the frontmatter parser and the import/export zip.
-2. Then Phases 5–6 as scoped in the Eng Plan. Note that Phase 6's export item is **already delivered** in Sprint 6 — what remains of Phase 6 is the prompt library, settings backup/restore, and the offline send queue.
+1. **Phase 5, MCP over the network** — the tool-call loop Skills needed (`runTurn`'s rounds, the `tool_result` turn, the round cap) is now in place and is the same machinery MCP needs; what MCP adds on top is transport, discovery and the approval gate.
+2. Then Phase 6 as scoped in the Eng Plan. Note that Phase 6's export item is **already delivered** in Sprint 6 — what remains is the prompt library, settings backup/restore, and the offline send queue.
 3. The PRD's Phase 3 leftovers, if they are wanted at all: on-device speech-to-text, system TTS, `/v1/images/generations` feature detection, and Android share-target registration. The Eng Plan does not schedule any of them and none is delivered. `expo-speech` is still uninstalled.
 4. The ±15% estimator-accuracy corpus, once a real key is available — it needs the gateway's own reported prompt counts to measure against.
 5. Physical-device verification, which nothing in Jest substitutes for. See "Known gaps".

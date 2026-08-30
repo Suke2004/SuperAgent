@@ -63,17 +63,20 @@ function rows(db: DatabaseSync): MemoryRow[] {
   return db.prepare('SELECT * FROM memories ORDER BY id').all() as unknown as MemoryRow[];
 }
 
+/** The version whose step creates the memories table. Later steps append after it. */
+const MEMORY_VERSION = 3;
+
 describe('the memory migration', () => {
-  it('is the last step in the chain and matches the recorded version', () => {
+  it('is a step in the chain, and the chain matches the recorded version', () => {
     expect(MIGRATIONS).toHaveLength(SCHEMA_VERSION);
-    expect(SCHEMA_VERSION).toBe(3);
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(MEMORY_VERSION);
   });
 
   it('adds the table to a database that already holds conversations', () => {
     // Stop one version short, put data in, then upgrade — the real path.
-    const db = migrated(SCHEMA_VERSION - 1);
+    const db = migrated(MEMORY_VERSION - 1);
     seedConversation(db, 'c1');
-    expect(() => db.exec(MIGRATIONS[SCHEMA_VERSION - 1] as string)).not.toThrow();
+    expect(() => db.exec(MIGRATIONS[MEMORY_VERSION - 1] as string)).not.toThrow();
 
     const kept = db.prepare('SELECT COUNT(*) AS n FROM conversations').get() as unknown as CountRow;
     expect(kept.n).toBe(1);
@@ -84,7 +87,7 @@ describe('the memory migration', () => {
 
   it('is idempotent, so a half-applied upgrade can be retried', () => {
     const db = migrated();
-    expect(() => db.exec(MIGRATIONS[SCHEMA_VERSION - 1] as string)).not.toThrow();
+    expect(() => db.exec(MIGRATIONS[MEMORY_VERSION - 1] as string)).not.toThrow();
     db.close();
   });
 

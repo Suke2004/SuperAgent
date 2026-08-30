@@ -271,6 +271,8 @@ export interface BuildInput {
   summary?: string;
   /** Long-term memory, already budgeted and rendered by `@/chat/memory`. */
   memory?: string;
+  /** The skill catalogue — names and descriptions only — from `@/chat/skill`. */
+  skills?: string;
   tools?: ChatRequest['tools'];
   /** Overrides the conversation's params for one message. */
   paramOverrides?: Partial<SamplingParams>;
@@ -280,7 +282,7 @@ export function buildRequest(input: BuildInput): ChatRequest {
   const params = mergeParams(input.capabilities, { ...input.config.params, ...input.paramOverrides });
   const reasoning = resolveReasoning(input.transport, input.capabilities, input.config.reasoning);
 
-  const system = composeSystem(input.systemPrompt, input.summary, input.memory);
+  const system = composeSystem(input.systemPrompt, input.summary, input.memory, input.skills);
 
   const request: ChatRequest = {
     model: input.model,
@@ -295,22 +297,27 @@ export function buildRequest(input: BuildInput): ChatRequest {
 }
 
 /**
- * Joins the user's system prompt with the memory block and any rolling summary.
+ * Joins the user's system prompt with the memory block, the skill catalogue and any
+ * rolling summary.
  *
  * Order is the whole content of this function. The user's prompt comes first
  * because it is the only part they wrote. Memory comes next, framed as notes and
  * explicitly subordinate, so a remembered "prefers terse answers" cannot quietly
- * outrank a prompt asking for detail today. The summary comes last, under its own
- * heading, so a model reading it treats it as context rather than as instructions.
+ * outrank a prompt asking for detail today. The skill catalogue follows: it is a
+ * list of what is available rather than an instruction, so it belongs below
+ * anything that says what to do. The summary comes last, under its own heading, so
+ * a model reading it treats it as context rather than as instructions.
  */
 export function composeSystem(
   prompt: string | undefined,
   summary: string | undefined,
   memory?: string,
+  skills?: string,
 ): string | undefined {
   const parts: string[] = [];
   if (prompt?.trim()) parts.push(prompt.trim());
   if (memory?.trim()) parts.push(memory.trim());
+  if (skills?.trim()) parts.push(skills.trim());
   if (summary?.trim()) {
     parts.push(
       `# Summary of earlier conversation\n\nEarlier turns were removed to fit the context window. ` +

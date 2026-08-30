@@ -20,6 +20,7 @@ import { Pressable, View } from 'react-native';
 import { ContentBlocks } from '@/components/chat/ContentBlocks';
 import { Glyph } from '@/components/Glyph';
 import { Badge, Body, Inline, MIN_TARGET, Note, verticalSlop } from '@/components/ui';
+import { isToolTurn } from '@/db/content';
 import type { StoredMessage } from '@/db/conversations';
 import { estimateCost, formatCost, formatUsage } from '@/lib/tokens';
 import type { ModelPricing } from '@/lib/tokens';
@@ -161,9 +162,8 @@ function MessageViewInner({
   // A tool result comes back as a `user` message by API convention, but it is not
   // something the user said. Rendering it in the user's bubble would misattribute
   // machine output to a person.
-  const isToolTurn =
-    message.content.length > 0 && message.content.every((block) => block.type === 'tool_result');
-  const asUser = message.role === 'user' && !isToolTurn;
+  const toolTurn = isToolTurn(message.content);
+  const asUser = message.role === 'user' && !toolTurn;
 
   const stop = stopNote(message.stopReason);
   const dropped = message.meta?.droppedParams ?? [];
@@ -222,7 +222,7 @@ function MessageViewInner({
         >
           {body}
         </View>
-      ) : isToolTurn ? (
+      ) : toolTurn ? (
         <View style={{ borderLeftWidth: 2, borderLeftColor: t.colors.border, paddingLeft: t.spacing.sm }}>
           {body}
         </View>
