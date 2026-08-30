@@ -74,10 +74,17 @@ async function open(): Promise<DatabaseHandle> {
       if (!migration) throw new Error(`No migration from schema version ${version}`);
       await db.withTransactionAsync(async () => {
         await db.execAsync(migration);
+        // Inside the transaction, not after it. `PRAGMA user_version` is itself
+        // transactional, so committing the two together is what makes a migration
+        // exactly-once — the app killed between the DDL and the bump used to re-run
+        // the step, which every earlier step survives only because it is written
+        // `IF NOT EXISTS`. Migration 5 → 6 is an `ALTER TABLE ADD COLUMN`, and
+        // SQLite has no `IF NOT EXISTS` for that.
+        //
+        // Cannot be parameterised, and `version + 1` is a loop counter rather than
+        // anything reachable from user input.
+        await db.execAsync(`PRAGMA user_version = ${version + 1}`);
       });
-      // `PRAGMA user_version` cannot be parameterised, and `version + 1` is a
-      // loop counter rather than anything reachable from user input.
-      await db.execAsync(`PRAGMA user_version = ${version + 1}`);
     }
     log.info('db', `Migrated schema ${from} → ${SCHEMA_VERSION}`);
   }

@@ -904,21 +904,40 @@ describe('OpenAiTransport.testConnection', () => {
     expect(result.steps[0]?.detail).toContain('/v1');
   });
 
-  it('reports all three steps on success', async () => {
+  it('reports all four steps on success', async () => {
     const { client } = transport([
       jsonResponse({ data: [{ id: 'claude-opus-4-6' }] }),
       jsonResponse({ choices: [{ message: { content: 'Hi' }, finish_reason: 'stop' }], usage: { prompt_tokens: 8, completion_tokens: 1 } }),
+      gatewayErrorResponse('prompt is required', 400),
     ]);
 
     const result = await client.testConnection();
 
     expect(result.ok).toBe(true);
-    expect(result.steps.map((step) => step.status)).toEqual(['ok', 'ok', 'ok']);
+    expect(result.steps.map((step) => step.status)).toEqual(['ok', 'ok', 'ok', 'ok']);
     expect(result.summary).toContain('1 models available');
     expect(result.steps[2]?.detail).toContain('8 input / 1 output');
+    // A 400 on an empty body is the route answering, so image generation is there.
+    expect(result.steps[3]?.detail).toContain('available');
   });
 
-  it('distinguishes a rejected client from a rejected key on a 401', async () => {
+  it('says image generation is absent on a 404, without failing the test', async () => {
+    const { client, mock } = transport([
+      jsonResponse({ data: [{ id: 'claude-opus-4-6' }] }),
+      jsonResponse({ choices: [{ message: { content: 'Hi' }, finish_reason: 'stop' }] }),
+      gatewayErrorResponse('no such endpoint', 404),
+    ]);
+
+    const result = await client.testConnection();
+
+    expect(result.ok).toBe(true);
+    expect(result.steps[3]).toMatchObject({ status: 'skipped' });
+    expect(result.steps[3]?.detail).toContain('does not serve image generation');
+    // Nothing was asked for, so the probe cannot have generated a billable image.
+    expect(mock.bodies()[2]).toEqual({});
+  });
+
+  it('reports one ambiguous conclusion on a 401, naming both causes', async () => {
     const { client } = transport([
       jsonResponse(
         {
@@ -932,17 +951,20 @@ describe('OpenAiTransport.testConnection', () => {
     const result = await client.testConnection();
 
     expect(result.ok).toBe(false);
-    expect(result.summary).toContain('rejected this client, not the key');
-    expect(result.steps[1]?.error?.kind).toBe('client_rejected');
+    // Credential first, allowlist second — a no-key request returns this same type,
+    // so the type cannot tell the two apart and the summary must not pretend it can.
+    expect(result.summary).toContain('re-paste');
+    expect(result.summary).toContain('allowlisting');
+    expect(result.steps[1]?.error?.kind).toBe('unauthorized');
     // The gateway's own text, verbatim, never a bare "Request failed".
     expect(result.steps[1]?.detail).toContain('unauthorized client detected');
     expect(result.steps[2]).toMatchObject({ status: 'skipped' });
   });
 
-  it('treats a plain 401 as a key problem and says where to check', async () => {
+  it('treats a plain 401 the same way and says where to check', async () => {
     const { client } = transport([gatewayErrorResponse('invalid token', 401)]);
     const result = await client.testConnection();
-    expect(result.steps[1]?.error?.kind).toBe('key_rejected');
+    expect(result.steps[1]?.error?.kind).toBe('unauthorized');
     expect(result.summary).toContain('gateway console');
   });
 

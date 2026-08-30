@@ -328,6 +328,8 @@ export class OpenAiTransport implements Transport {
       };
     }
 
+    steps.push(await this.probeImages(signal));
+
     return {
       ok: true,
       steps,
@@ -335,6 +337,44 @@ export class OpenAiTransport implements Transport {
       probedModel: probeModel,
       summary: `OpenAI-compatible transport is working. ${models.length} models available.`,
     };
+  }
+
+  /**
+   * Does this gateway serve image generation at all?
+   *
+   * Probed with a deliberately empty body: a gateway that has the route rejects it
+   * as a bad request, one that does not returns 404. Nothing is generated, so the
+   * probe cannot cost credits — a valid body would. Never fails the test: this app
+   * does not generate images, so the answer is information about the gateway, not a
+   * requirement of it.
+   */
+  private async probeImages(signal?: AbortSignal): Promise<ConnectionTestStep> {
+    const label = 'POST /images/generations';
+    const started = Date.now();
+    try {
+      await this.http.json<unknown>({ path: '/images/generations', method: 'POST', body: {}, ...(signal ? { signal } : {}) });
+      // A gateway that accepts an empty body is unusual, but it plainly has the route.
+      return { label, status: 'ok', detail: 'Image generation is available.', durationMs: Date.now() - started };
+    } catch (error) {
+      const gatewayError = error instanceof GatewayError ? error : GatewayError.wrap(error);
+      const durationMs = Date.now() - started;
+      if (gatewayError.status === 404 || gatewayError.status === 405) {
+        return { label, status: 'skipped', detail: 'This gateway does not serve image generation.', durationMs };
+      }
+      if (gatewayError.status === 401 || gatewayError.status === 403) {
+        return {
+          label,
+          status: 'skipped',
+          detail: `The route exists but this key may not reach it: ${gatewayError.message}`,
+          durationMs,
+        };
+      }
+      if (gatewayError.status !== undefined && gatewayError.status < 500) {
+        // 400/422 on an empty body is the route saying "you sent nothing" — it is there.
+        return { label, status: 'ok', detail: 'Image generation is available.', durationMs };
+      }
+      return { label, status: 'skipped', detail: `Could not tell: ${gatewayError.message}`, durationMs };
+    }
   }
 
   /* ---------------------------------------------------------------------- */
@@ -820,10 +860,8 @@ export function pickProbeModel(models: DiscoveredModel[], preferred?: string): s
 
 export function summariseFailure(error: GatewayError): string {
   switch (error.kind) {
-    case 'client_rejected':
-      return 'The gateway rejected this client, not the key. The token may be fine — the app needs allowlisting.';
-    case 'key_rejected':
-      return 'The gateway rejected the API key. Verify it in the gateway console and re-paste it.';
+    case 'unauthorized':
+      return 'The gateway refused the request: verify the key in the gateway console and re-paste it. If it looks healthy, the client needs allowlisting.';
     case 'network':
       return 'Could not reach the gateway at all. Check connectivity, or try the backup domain.';
     case 'content_blocked':

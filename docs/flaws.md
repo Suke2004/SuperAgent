@@ -37,7 +37,7 @@ requests reach the application layer. URL shape, `anthropic-version`, Bearer aut
 paths and `expo/fetch` resolution all check out. **The failure is server-side gating
 that fires before the credential is considered.**
 
-### 1a. The 401 classifier draws the wrong conclusion
+### 1a. The 401 classifier draws the wrong conclusion — ✅ fixed
 
 [`src/transports/errors.ts:453`](../src/transports/errors.ts)
 
@@ -102,7 +102,7 @@ entries whose precedence is decided by the native networking layer.
 
 Ordered by impact.
 
-### 2.1 Android auto-backup is enabled — the whole chat history is backup-eligible
+### 2.1 Android auto-backup is enabled — the whole chat history is backup-eligible — ✅ fixed
 
 [`app.json`](../app.json) sets no `android.allowBackup: false` and no
 `dataExtractionRules`; the Expo manifest template defaults to `true`. Eligible for
@@ -125,7 +125,7 @@ userdebug build reads it without unlocking. Defensible for a personal app, but i
 means the considerable care taken over the credential protects the credential only
 — and the transcript is usually the more sensitive asset.
 
-### 2.3 `profile.headers` is persisted plaintext to AsyncStorage
+### 2.3 `profile.headers` is persisted plaintext to AsyncStorage — ✅ fixed
 
 [`src/stores/providers.ts:238`](../src/stores/providers.ts) partializes `profiles`
 wholesale, `headers` included. The type comment says "Never holds the key" and
@@ -136,7 +136,7 @@ and from exports, but not from the store write.
 Fix: screen at the settings boundary — reject a secret-looking header key, or route
 its value into SecureStore beside the API key.
 
-### 2.4 `keyFingerprint` leaks last-4 and exact length into plaintext storage
+### 2.4 `keyFingerprint` leaks last-4 and exact length into plaintext storage — ✅ fixed
 
 [`src/lib/redact.ts:122`](../src/lib/redact.ts) returns `sk-a…9f0c (48 chars)`.
 That string is persisted to AsyncStorage, rendered in the UI, and permitted in
@@ -144,7 +144,7 @@ exports. First-4 is `sk-` and free; last-4 plus exact length is real, if small,
 credential disclosure sitting in the one storage tier that is not protected. A
 salted hash prefix distinguishes two keys just as well.
 
-### 2.5 Memories are stored and replayed with no review gate
+### 2.5 Memories are stored and replayed with no review gate — ✅ fixed
 
 `memoryEnabled: true` by default, and `distil()` writes straight to the table.
 Model-authored text is then prepended to the system prompt of **every** later
@@ -230,10 +230,14 @@ last-used tracking on a credential that gates paid credits.
 
 ---
 
-## 4. Fix queue, ascending size
+## 4. Fix queue, ascending size — ✅ all five done
 
-1. `android.allowBackup: false` + `dataExtractionRules` in `app.json` (§2.1).
-2. The 401 misclassification in `errors.ts` (§1a).
-3. A secret-header guard on the providers store (§2.3).
-4. A fingerprint that does not carry last-4 (§2.4).
-5. A confirm gate before a distilled memory is stored (§2.5).
+1. ✅ `android.allowBackup: false` + `dataExtractionRules` in `app.json` (§2.1) — the
+   config plugin `plugins/with-no-backup.js` writes both, because the managed
+   workflow has no `AndroidManifest.xml` to edit.
+2. ✅ The 401 misclassification in `errors.ts` (§1a) — `client_rejected` and
+   `key_rejected` are now one `unauthorized` kind, since a no-key request returns
+   the same body and the type therefore carries no information about which it was.
+3. ✅ A secret-header guard on the providers store (§2.3).
+4. ✅ A fingerprint that does not carry last-4 (§2.4).
+5. ✅ A confirm gate before a distilled memory is stored (§2.5).
