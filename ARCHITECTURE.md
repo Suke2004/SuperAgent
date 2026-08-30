@@ -46,9 +46,9 @@ SQLite is the source of truth for conversations and messages. `conversations.ts`
 
 The transport boundary converts one unified `ChatRequest` into Anthropic or OpenAI requests and converts both response streams into common events. `streamingFetch.ts` is the only Expo streaming-fetch dependency; tests inject a pure fetch implementation.
 
-### Security: `src/lib/secureKey.ts`, `src/lib/redact.ts`
+### Security: `src/lib/secureKey.ts`, `src/lib/redact.ts`, `src/lib/appLock.ts`
 
-Secure-key access is isolated from stores and UI. A module-scoped cache avoids repeated Keystore reads. Every loaded secret is registered with the redactor, and logs are scrubbed at the write boundary.
+Secure-key access is isolated from stores and UI. A module-scoped cache avoids repeated Keystore reads, and both it and the cached transports holding the key are dropped when the app is backgrounded, with the redactor re-primed on the way back. Every loaded secret is registered with the redactor, and logs are scrubbed at the write boundary. `appLock.ts` gates the app behind the device biometric or PIN when the user turns it on — a lock, not encryption: `expo-sqlite` in the managed workflow exposes no SQLCipher key, so the database is plaintext to root.
 
 ## 3. Request Lifecycle
 
@@ -79,7 +79,7 @@ Final usage/error/stop reason saved to SQLite
 
 | Data | Owner | Persistence |
 |---|---|---|
-| API key | Secure-key module | Android Keystore; browser local storage only on web fallback |
+| API key | Secure-key module | Android Keystore; on web, process memory for the session and nowhere else |
 | Provider metadata | Providers store | AsyncStorage-safe persisted Zustand slice |
 | Model flags/pricing | Models store | Persisted Zustand slice |
 | Conversation/message content | SQLite module | SQLite database |
@@ -100,9 +100,12 @@ Final usage/error/stop reason saved to SQLite
 - Never put API keys in Zustand, AsyncStorage, logs, or exports.
 - Never estimate API-reported usage fields when the response does not provide them.
 - Never retry a non-retryable 4xx or fail over after stream bytes have arrived.
+- Enforce `Authorization`, `x-api-key` and `User-Agent` in `buildHeaders`, not by default ordering: a profile header that collides with any of them is deleted before the real one is set.
 - Never import platform-heavy rendering or transport dependencies into pure test modules.
 - Preserve React Compiler memoization and effect rules; derive values instead of silencing lint failures.
 
 ## 7. Current Boundary and Risks
 
-The current implementation has completed foundation and core-chat phases, with provider setup, model capability editing, reasoning controls, Markdown rendering, search, and streaming chat in place. Multimodal input, skills, MCP, exports, usage dashboard, and offline queue remain planned extensions. Physical Android verification and EAS APK production are external release gates, not guaranteed by unit tests alone.
+Every planned phase is implemented: provider setup, model capability editing, reasoning controls, Markdown rendering, search, streaming chat, multimodal input, skills, MCP, exports, the usage dashboard and the offline queue. The app has been exercised on a physical Android device.
+
+What is still open is listed in [docs/flaws.md](docs/flaws.md): streaming stops when the app is backgrounded (a foreground service needs the bare workflow), the database is plaintext on disk, and live-gateway behaviour — prompt caching, document blocks, estimator accuracy — is unmeasured because the gateway rejects every request before the credential is considered. `expo-speech` and `expo-local-authentication` are native modules, so an APK built before them lacks read aloud and the app lock until it is rebuilt.

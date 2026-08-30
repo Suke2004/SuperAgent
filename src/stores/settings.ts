@@ -38,6 +38,14 @@ export interface SettingsState {
   confirmToolCalls: boolean;
   /** Speak assistant replies with the system voice. */
   ttsEnabled: boolean;
+  /**
+   * Require the device's biometric or PIN before the app opens.
+   *
+   * Off by default: it protects one scenario — an unlocked phone in someone else's
+   * hand — and costs a prompt on every return to the app, which is the wrong default
+   * for most people. It is not encryption; see `@/lib/appLock`.
+   */
+  appLockEnabled: boolean;
   /** Send on Enter instead of inserting a newline. */
   sendOnEnter: boolean;
   /**
@@ -88,6 +96,7 @@ const DEFAULTS = {
   maxToolIterations: 8,
   confirmToolCalls: true,
   ttsEnabled: false,
+  appLockEnabled: false,
   sendOnEnter: false,
   memoryEnabled: true,
   promptCaching: true,

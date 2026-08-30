@@ -19,60 +19,16 @@ import { keyFingerprint, registerSecret, unregisterSecret } from './redact';
 /** One entry per provider profile, so switching profiles switches keys. */
 const PREFIX = 'agentrouter.apiKey.';
 
-/** Web has no Android Keystore. This is development-only compatibility storage. */
-function webStorage(): Storage | null {
-  if (Platform.OS !== 'web') return null;
-  try {
-    return globalThis.localStorage;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Some browser contexts (private/opaque iframes, blocked cookies, SSR) expose
- * `localStorage` but reject access to it. Keep web compatibility in-memory in
- * those contexts, and never fall through to the native SecureStore module.
+ * Web keys live in memory for the session and nowhere else.
+ *
+ * They used to go to `localStorage`, which was labelled development-only and was
+ * still one `expo start --web` from being real: any injected script can read it and
+ * it survives the tab closing. A key that has to be re-pasted after a refresh is a
+ * worse dev experience and a strictly better security story, and web is not a
+ * supported target — Android is.
  */
 const webMemory = new Map<string, string>();
-
-function webSet(id: string, value: string): void {
-  const browser = webStorage();
-  if (browser) {
-    try {
-      browser.setItem(id, value);
-      webMemory.delete(id);
-      return;
-    } catch {
-      // Fall back to session-only memory below.
-    }
-  }
-  webMemory.set(id, value);
-}
-
-function webGet(id: string): string | null {
-  const browser = webStorage();
-  if (browser) {
-    try {
-      return browser.getItem(id) ?? webMemory.get(id) ?? null;
-    } catch {
-      // Fall back to session-only memory below.
-    }
-  }
-  return webMemory.get(id) ?? null;
-}
-
-function webDelete(id: string): void {
-  const browser = webStorage();
-  if (browser) {
-    try {
-      browser.removeItem(id);
-    } catch {
-      // Continue and clear the in-memory copy below.
-    }
-  }
-  webMemory.delete(id);
-}
 
 /**
  * In-memory cache, module-scoped and never persisted.
@@ -113,7 +69,7 @@ export async function saveApiKey(profileId: string, key: string): Promise<KeySta
   if (previous && previous !== trimmed) unregisterSecret(previous);
 
   if (Platform.OS === 'web') {
-    webSet(storageKey(profileId), trimmed);
+    webMemory.set(storageKey(profileId), trimmed);
   } else {
     await SecureStore.setItemAsync(storageKey(profileId), trimmed, {
       keychainAccessible: SecureStore.WHEN_UNLOCKED,
@@ -130,7 +86,8 @@ export async function loadApiKey(profileId: string): Promise<string | null> {
   if (cached !== undefined) return cached;
 
   try {
-    const value = Platform.OS === 'web' ? webGet(id) : await SecureStore.getItemAsync(id);
+    const value =
+      Platform.OS === 'web' ? (webMemory.get(id) ?? null) : await SecureStore.getItemAsync(id);
     if (value) {
       cache.set(id, value);
       registerSecret(value);
@@ -151,7 +108,7 @@ export async function deleteApiKey(profileId: string): Promise<void> {
   if (cached) unregisterSecret(cached);
   cache.delete(id);
   try {
-    if (Platform.OS === 'web') webDelete(id);
+    if (Platform.OS === 'web') webMemory.delete(id);
     else await SecureStore.deleteItemAsync(id);
   } catch {
     // Deleting something already absent is not an error worth surfacing.

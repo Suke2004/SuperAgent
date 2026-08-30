@@ -676,6 +676,10 @@ ${text}` : text);
             : null,
           includeThinking ? 'Reasoning included.' : null,
           'Attachments and API keys are not included.',
+          // Android offers no "sensitive" flag through expo-clipboard, and clearing
+          // the clipboard on a timer would silently destroy whatever the user copied
+          // next. So the persistence is stated instead of quietly worked around.
+          outcome.method === 'copy' ? 'The clipboard holds it until you copy something else.' : null,
         ]
           .filter(Boolean)
           .join(' '),
