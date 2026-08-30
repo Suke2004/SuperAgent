@@ -7,9 +7,9 @@
 npx tsc --noEmit && npx eslint . && npx jest
 ```
 
-→ tsc clean, eslint clean, **996 tests / 34 suites** in ~5 s.
+→ tsc clean, eslint clean, **1012 tests / 36 suites** in ~4 s.
 
-Coverage is now a **gate, not a note**: `npx jest --coverage` measures lines 64.05%, statements 63.10%, branches 62.40%, functions 51.34%, and `jest.config.js` carries a `coverageThreshold` a point or two under each of those, so the runner fails rather than the number going stale in this file. The functions figure is low for a structural reason, not a negligent one — `app/` and `src/components/` are excluded from unit testing by design (see the note on `jest.config.js` below), and every uncovered function is a component or a store action that only exists to call one.
+Coverage is now a **gate, not a note**: `npx jest --coverage` measures lines 64.20%, statements 63.27%, branches 62.58%, functions 51.71%, and `jest.config.js` carries a `coverageThreshold` a point or two under each of those, so the runner fails rather than the number going stale in this file. The functions figure is low for a structural reason, not a negligent one — `app/` and `src/components/` are excluded from unit testing by design (see the note on `jest.config.js` below), and every uncovered function is a component or a store action that only exists to call one.
 
 The same three gates run in CI on every push and pull request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), which is the only thing that makes the paragraph above worth reading. `pnpm gates` runs them locally in one command.
 
@@ -270,6 +270,18 @@ The Eng Plan's Phase 4 is **Sprint 9 (context pressure and exclusions)** and **S
 
 ---
 
+### Navigation: the app opens on a chat, with history in a drawer — ✅ COMPLETE (requested after Phase 4)
+
+Three things asked for together, because they are one change: a chat-first app needs somewhere for the history to live, and once you are never on the list you need a way to reach what is in the other threads.
+
+**Launch lands on a chat.** `app/index.tsx` still owns the list, but on the first mount of a process it loads the list, picks a target with `launchTarget()` and `router.replace`s into `/chat/[id]`. The flag is at **module scope**, not in state: this screen mounts again every time the user comes back to the list, and a per-component flag would redirect out of it every time, making the full list unreachable. `launchTarget()` reuses the newest **empty, non-archived** conversation rather than starting one per launch — otherwise an app opened twice a day leaves thirty blank rows in the history it is meant to be showing — and treats an absent `messageCount` as non-empty, because that field is only populated by the list query and reusing a row of unknown size means landing in someone's transcript. A failure leaves the list on screen with its own error banner rather than a spinner that never resolves.
+
+**The drawer is a `Modal`.** `src/components/Sidebar.tsx` gets the Android back button, the iOS focus trap and the same escape/Tab handling as the sheets for free, and "collapsed" is genuinely unmounted rather than a panel parked off-screen. It carries the rows, a title/model/tag filter (`filterConversations`, the fast pass only), New chat, and links to the full list and Settings — no bulk selection, no export, no archive toggle, no tag filter; those stay on the list screen, one tap away. Switching chats uses `router.replace`, so opening eleven threads from the drawer does not leave eleven screens on the stack. The ☰ takes the header's left slot, where the back arrow was: on most launches there is nothing to go back to, and where there is, the swipe gesture and the hardware button still work.
+
+**Cross-chat content goes through the draft, not the request.** `src/chat/reference.ts` renders one message from another conversation as an attributed markdown blockquote, and `ReferenceSheet` searches for it with the same debounced two-pass `searchMessages` the list screen uses, with the current conversation filtered out of the results. Two deliberate decisions: the quote lands in the **draft** as visible, editable text, so the composer's gauge counts it *before* it is sent and nothing steers a conversation from context the user cannot see; and the message is re-read from the store rather than quoted from the hit, because a `SearchHit.snippet` is a one-line window around the match and quoting it would put half a sentence in the draft and call it a quote. `QUOTE_CHAR_LIMIT` trims a 40k-character reply at a word boundary and says where the rest is. Memories were already shared across conversations via `useMemory.promptBlock()`; message content was the half that was missing.
+
+---
+
 ## What to do next, in order
 
 Phase 2 (Eng Plan Sprints 5–6) is finished, as is the harness token-optimization sprint that followed it, Phase 3 (Sprints 7–8), and Phase 4 (Sprints 9–10). Next:
@@ -308,7 +320,8 @@ Already covered: both transport adapters, the SSE parser (incl. split and malfor
   - `react-hooks/preserve-manual-memoization` — a `useMemo` body that reads `obj?.a.b` has `obj` as its real dependency, so listing `obj?.a.b` is rejected. Read the value into a `const` *above* the memo and depend on that.
   - `react-hooks/set-state-in-effect` — no synchronous `setState` in an effect body. Both places this came up had a better fix available: derive the value instead (the conversation list keys its search results by the query that produced them, so "stale" and "still searching" both fall out of one comparison), or let mounting be the reset (`PromptSheet` renders its body only while visible, so cancelling discards with no effect involved).
 - The API key stays out of all Zustand state.
-- `max_tokens` → `max_completion_tokens` is a rename, not a drop.
+- **The launch redirect's "already launched" flag is at module scope in `app/index.tsx`.** Moving it into component state makes the conversation list unreachable: the screen re-mounts on every return from a chat and would redirect straight back out.
+- **A quote brought in from another chat goes into the draft, not into the request.** It is visible, editable, and counted by the composer's gauge before it is sent. Attaching it invisibly to the next turn would spend tokens on something the user cannot see, review or delete.- `max_tokens` → `max_completion_tokens` is a rename, not a drop.
 - Temperature / top_p / top_k are omitted when Anthropic thinking is on; `TokenUsage.thinking` is left `undefined` on that path rather than estimated.
 - Stream events accumulate non-destructively; `pause_turn` is its own stop reason.
 - Failover fires only on `network` errors and only before the first stream event — a 401 or 429 means the primary answered.

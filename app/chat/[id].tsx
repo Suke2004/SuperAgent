@@ -31,9 +31,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { OfflineBadge, OfflineBanner } from '@/components/OfflineBanner';
 import { useDialogKeys } from '@/components/dialog';
 import { PromptSheet, Sheet } from '@/components/Sheet';
+import { Sidebar } from '@/components/Sidebar';
 import type { SheetAction } from '@/components/Sheet';
 import { Composer } from '@/components/chat/Composer';
 import { MessageView } from '@/components/chat/MessageView';
+import { ReferenceSheet } from '@/components/chat/ReferenceSheet';
 import { StreamView } from '@/components/chat/StreamView';
 import {
   Body,
@@ -51,6 +53,7 @@ import {
 } from '@/components/ui';
 import { hasBlockingIssue, mergeParams, validateConfig } from '@/chat/request';
 import { replyReservation, sendConfirmation } from '@/chat/budget';
+import { appendQuote, quoteMessage } from '@/chat/reference';
 import { captureImage, openAppSettings, pickDocuments, pickImages } from '@/chat/attach';
 import { documentCaveat, documentSupport, imageSupport, MAX_ATTACHMENTS_PER_MESSAGE } from '@/chat/attachments';
 import { useMemory } from '@/stores/memory';
@@ -61,7 +64,7 @@ import type { DeliveryMethod } from '@/chat/deliver';
 import type { ExportFormat } from '@/chat/export';
 import { plural } from '@/chat/selection';
 import { toUnifiedMessages } from '@/db/conversations';
-import type { StoredMessage } from '@/db/conversations';
+import type { SearchHit, StoredMessage } from '@/db/conversations';
 import { estimateMessagesTokens, estimateTextTokens, formatCost, formatTokens, estimateCost } from '@/lib/tokens';
 import type { ContextPressure } from '@/lib/tokens';
 import { useChat, useAttachments, useContextNote, useConversation, useDraft, useMessages, useStream } from '@/stores/chat';
@@ -125,6 +128,10 @@ export default function ChatScreen() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [attachMenu, setAttachMenu] = useState(false);
+  /** The collapsible history drawer. Collapsed is unmounted — see `Sidebar`. */
+  const [sidebar, setSidebar] = useState(false);
+  const [reference, setReference] = useState(false);
+  const [referenceBusy, setReferenceBusy] = useState(false);
   /** What the last pick refused, and whether Settings is the only way to fix it. */
   const [attachNotes, setAttachNotes] = useState<{ notes: string[]; needsSettings: boolean } | null>(null);
   const [attachBusy, setAttachBusy] = useState(false);
@@ -469,8 +476,57 @@ export default function ChatScreen() {
     ]);
   };
 
-  const confirmDelete = (message: StoredMessage): void => {
-    Alert.alert('Delete this message?', 'It is removed from the transcript and from the database.', [
+  /** Switches chats without deepening the stack: the drawer is not a push. */
+  const switchTo = (target: string): void => {
+    setSidebar(false);
+    if (target !== id) router.replace({ pathname: '/chat/[id]', params: { id: target } });
+  };
+
+  const startAnother = (): void => {
+    void useChat
+      .getState()
+      .start()
+      .then(switchTo)
+      .catch((error: unknown) =>
+        Alert.alert('Could not start a chat', error instanceof Error ? error.message : String(error)),
+      );
+  };
+
+  /**
+   * Quotes a message from another conversation into this draft.
+   *
+   * The hit only carries a snippet — a one-line window around the match — so the
+   * message itself is read out of the store, which loads it if this is the first
+   * time that conversation has been opened. Quoting the snippet instead would put
+   * half a sentence in the draft and call it a quote.
+   */
+  const bringIn = async (hit: SearchHit): Promise<void> => {
+    if (referenceBusy) return;
+    setReferenceBusy(true);
+    try {
+      await useChat.getState().open(hit.conversationId);
+      const source = useChat.getState().messages[hit.conversationId]?.find((m) => m.id === hit.messageId);
+      if (!source) {
+        Alert.alert('That message is gone', 'It was deleted after the search ran.');
+        return;
+      }
+      if (!source.text.trim()) {
+        Alert.alert('Nothing to quote', 'That message is an attachment with no text of its own.');
+        return;
+      }
+      setDraft(
+        id,
+        appendQuote(draft, quoteMessage({ title: hit.conversationTitle, role: source.role, text: source.text })),
+      );
+      setReference(false);
+    } catch (error) {
+      Alert.alert('Could not read that message', error instanceof Error ? error.message : String(error));
+    } finally {
+      setReferenceBusy(false);
+    }
+  };
+
+  const confirmDelete = (message: StoredMessage): void => {    Alert.alert('Delete this message?', 'It is removed from the transcript and from the database.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -688,6 +744,11 @@ export default function ChatScreen() {
       onPress: () => void useChat.getState().setPinned(id, !conversation.pinned),
     },
     {
+      label: 'Bring in a message…',
+      subtitle: 'Quotes something from another chat into this draft.',
+      onPress: () => setReference(true),
+    },
+    {
       label: 'Export…',
       subtitle: 'Markdown or JSON. Attachments and keys are left out.',
       onPress: () => setExportOpen(true),
@@ -802,6 +863,23 @@ export default function ChatScreen() {
               </Inline>
             </View>
           ),
+          // Where the back arrow was. The app launches straight into a chat, so on
+          // most launches there is nothing to go back to and the slot was empty;
+          // when there is, the gesture and the hardware button still go back, and
+          // the drawer's own "All chats" reaches the list either way.
+          headerLeft: () => (
+            <Pressable
+              onPress={() => setSidebar(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Chats"
+              accessibilityHint="Opens the list of your chats"
+              hitSlop={12}
+            >
+              <Body size="lg" weight="700">
+                ☰
+              </Body>
+            </Pressable>
+          ),
           headerRight: () => (
             <Pressable
               onPress={() => setConvMenu(true)}
@@ -897,6 +975,36 @@ export default function ChatScreen() {
           onDismissContextNote={() => dismissContextNote(id)}
         />
       </View>
+
+      <Sidebar
+        visible={sidebar}
+        currentId={id}
+        onClose={() => setSidebar(false)}
+        onOpen={switchTo}
+        onNew={startAnother}
+        onAllConversations={() => {
+          setSidebar(false);
+          // `navigate` rather than `push`: the list is a single place, not one more
+          // copy of itself on top of the last one.
+          router.navigate('/');
+        }}
+        onSettings={() => {
+          setSidebar(false);
+          router.push('/settings');
+        }}
+        onReference={() => {
+          setSidebar(false);
+          setReference(true);
+        }}
+      />
+
+      <ReferenceSheet
+        visible={reference}
+        excludeConversationId={id}
+        busy={referenceBusy}
+        onPick={(hit) => void bringIn(hit)}
+        onClose={() => setReference(false)}
+      />
 
       <Sheet
         visible={menuFor !== null}
