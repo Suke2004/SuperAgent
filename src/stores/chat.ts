@@ -47,8 +47,10 @@ import type {
   TagMode,
 } from '@/db/conversations';
 import type { ListCursor } from '@/db/list-query';
-import { buildRequest, composeSystem, SUMMARY_INSTRUCTION, validateConfig, hasBlockingIssue } from '@/chat/request';
+import { buildRequest, composeSystem, validateConfig, hasBlockingIssue } from '@/chat/request';
 import { planTurn } from '@/chat/budget';
+import { boundSummary, summaryRequestBody, SUMMARY_FAILED_NOTE } from '@/chat/summary';
+import { reportedUsage } from '@/chat/usage';
 import { describeTrim, trimToBudget } from '@/chat/trim';
 import type { TrimReport } from '@/chat/trim';
 import { planCacheForRequest } from '@/chat/cache';
@@ -246,6 +248,16 @@ export interface ChatState {
    */
   attachments: Record<string, ContentBlock[]>;
   streams: Record<string, StreamState>;
+  /**
+   * What the last turn's context handling did, per conversation, as one sentence.
+   *
+   * Kept because trimming is the one thing the app does to the user's conversation
+   * without being asked. Before this, the evidence that four turns had been left
+   * out of a request was a debug-log line and a grey badge on rows the user has
+   * already scrolled past. Not persisted: it describes the last request, and after
+   * a relaunch there isn't one.
+   */
+  contextNotes: Record<string, string>;
 
   loadList(options?: ListOptions): Promise<void>;
   /** Appends the next page. A no-op at the end of the list or while one is loading. */
@@ -317,6 +329,8 @@ export interface ChatState {
   fork(conversationId: string, messageId: string): Promise<string>;
   abort(conversationId: string): void;
   dismissError(conversationId: string): void;
+  /** Clears the last turn's context note once the user has read it. */
+  dismissContextNote(conversationId: string): void;
 }
 
 export const useChat = create<ChatState>()((set, get) => ({
@@ -327,6 +341,7 @@ export const useChat = create<ChatState>()((set, get) => ({
   drafts: {},
   attachments: {},
   streams: {},
+  contextNotes: {},
 
   async loadList(options) {
     set({ listLoading: true, listOptions: options });
@@ -685,6 +700,15 @@ export const useChat = create<ChatState>()((set, get) => ({
       return { streams };
     });
   },
+
+  dismissContextNote(conversationId) {
+    set((state) => {
+      if (state.contextNotes[conversationId] === undefined) return {};
+      const contextNotes = { ...state.contextNotes };
+      delete contextNotes[conversationId];
+      return { contextNotes };
+    });
+  },
 }));
 
 /* -------------------------------------------------------------------------- */
@@ -741,7 +765,25 @@ function appendToTranscript(set: Setter, conversationId: string, message: Stored
 interface RunOptions {
   modelOverride?: string;
   regeneratedFrom?: string;
+  /**
+   * How many times this turn has already been resumed after a `pause_turn`.
+   *
+   * Carried through the recursion rather than counted in the store because it is a
+   * property of one turn, and the cap has to survive a screen change without
+   * leaking into the next unrelated send.
+   */
+  pauseContinuations?: number;
 }
+
+/**
+ * How many times a paused turn will be resumed before the app stops on its own.
+ *
+ * `pause_turn` is the API asking to be called again with the partial turn appended;
+ * each resumption is a billed request, so an unbounded loop is a bill the user
+ * never approved. Three is enough for the long server-side tool runs this exists
+ * for and small enough to be affordable when something upstream is stuck.
+ */
+const MAX_PAUSE_CONTINUATIONS = 3;
 
 /**
  * Runs one assistant turn: builds the request, streams it, stores the result.
@@ -777,6 +819,8 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
 
   let lastCommit = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  /** Set to the next continuation index when the turn ended on `pause_turn`. */
+  let resume: number | null = null;
   const publish = (force = false): void => {
     if (timer) {
       clearTimeout(timer);
@@ -831,7 +875,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     const memoryBlock = useMemory.getState().promptBlock();
     const calibrationFactor = useCalibration.getState().factorFor(`${profile.id}::${model}`);
 
-    const { messages, summary, changed, trim } = await applyContextStrategy({
+    const { messages, summary, changed, trim, summaryFailed } = await applyContextStrategy({
       conversationId,
       conversation,
       stored,
@@ -854,6 +898,14 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
         steps: trim.actions.map((action) => `${action.step}:${action.saved}`),
       });
     }
+
+    // The same sentence, on screen. `describeTrim` is written for a person, and the
+    // debug log is not where a user finds out that four of their turns were left
+    // out of the request they just paid for.
+    const note = [trim?.actions.length ? describeTrim(trim) : '', summaryFailed ? SUMMARY_FAILED_NOTE : '']
+      .filter(Boolean)
+      .join(' ');
+    setContextNote(set, conversationId, note);
 
     const request = buildRequest({
       transport: profile.kind,
@@ -949,7 +1001,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     live.phase = 'saving';
     publish(true);
 
-    const usage = normaliseUsage(live.usage);
+    const usage = reportedUsage(live.usage);
     const meta: MessageMeta = {};
     if (live.droppedParams.length) meta.droppedParams = live.droppedParams.map((d) => d.param);
     if (options.modelOverride) meta.modelOverride = true;
@@ -996,11 +1048,34 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       model,
       messages: get().messages[conversationId] ?? [],
     });
+
+    // `pause_turn` is not an answer: it is the API saying "call me again with what
+    // you have". The stored assistant message is the partial turn, so resuming is a
+    // plain send with no new user message — the transcript already ends where the
+    // model left off. Presenting it as a finished reply is how a half-done turn
+    // looks like a model that stopped mid-sentence for no reason.
+    if (live.stopReason === 'pause_turn') {
+      const done = options.pauseContinuations ?? 0;
+      if (done < MAX_PAUSE_CONTINUATIONS) resume = done + 1;
+      else {
+        log.warn('chat', 'The model paused this turn too many times; stopping', { continuations: done });
+        setContextNote(
+          set,
+          conversationId,
+          `The model paused and was resumed ${done} times without finishing, so this turn was stopped. ` +
+            'Send again to continue it.',
+        );
+      }
+    }
   } catch (error) {
     await handleTurnFailure(set, conversationId, live, error, options);
   } finally {
     await finish();
   }
+
+  // Outside the `finally`, so the resumed turn registers its own abort controller
+  // after this one has been cleaned up rather than racing it.
+  if (resume !== null) await runTurn(set, get, conversationId, { ...options, pauseContinuations: resume });
 }
 
 /**
@@ -1044,7 +1119,7 @@ async function handleTurnFailure(
       role: 'assistant',
       content: blocks,
       model: live.model,
-      usage: normaliseUsage(live.usage),
+      usage: reportedUsage(live.usage),
       stopReason: aborted ? 'aborted' : live.stopReason,
       ...(aborted ? {} : { error: detail }),
       ...(Object.keys(meta).length ? { meta } : {}),
@@ -1081,6 +1156,16 @@ function clearStream(set: Setter, conversationId: string): void {
     const streams = { ...state.streams };
     delete streams[conversationId];
     return { streams };
+  });
+}
+
+/** Records (or clears, on an empty string) what the last turn did to the context. */
+function setContextNote(set: Setter, conversationId: string, note: string): void {
+  set((state) => {
+    const contextNotes = { ...state.contextNotes };
+    if (note) contextNotes[conversationId] = note;
+    else delete contextNotes[conversationId];
+    return { contextNotes };
   });
 }
 
@@ -1130,23 +1215,6 @@ function applyEvent(live: LiveStream, event: StreamEvent): void {
   }
 }
 
-/**
- * Copies only the usage fields the gateway actually reported.
- *
- * It used to default `input` and `output` to 0, which made "this gateway does not
- * stream prompt usage" indistinguishable from "this turn cost nothing" — including
- * in the cost column, where a zero is a claim about money.
- */
-function normaliseUsage(partial: Partial<TokenUsage>): Partial<TokenUsage> {
-  const usage: Partial<TokenUsage> = {};
-  if (partial.input !== undefined) usage.input = partial.input;
-  if (partial.output !== undefined) usage.output = partial.output;
-  if (partial.thinking !== undefined) usage.thinking = partial.thinking;
-  if (partial.cacheRead !== undefined) usage.cacheRead = partial.cacheRead;
-  if (partial.cacheWrite !== undefined) usage.cacheWrite = partial.cacheWrite;
-  return usage;
-}
-
 /* -------------------------------------------------------------------------- */
 /* Context strategy                                                            */
 /* -------------------------------------------------------------------------- */
@@ -1172,6 +1240,8 @@ interface StrategyResult {
   changed: boolean;
   /** What the trim ladder gave up, when it ran. Absent when nothing was trimmed. */
   trim?: TrimReport;
+  /** Set when summarisation was wanted and failed, so the turn can say so. */
+  summaryFailed?: boolean;
 }
 
 /**
@@ -1243,12 +1313,19 @@ async function applyContextStrategy(input: StrategyInput): Promise<StrategyResul
     .filter((m): m is StoredMessage => Boolean(m));
   const changed = await setExclusions(eligible, new Set(droppedMessages.map((m) => m.id)));
 
-  const summary =
-    strategy === 'summarise' && droppedMessages.length
-      ? await summariseDropped(input, droppedMessages, previousSummary)
-      : previousSummary;
+  const wantsSummary = strategy === 'summarise' && droppedMessages.length > 0;
+  const outcome = wantsSummary
+    ? await summariseDropped(input, droppedMessages, previousSummary)
+    : { text: previousSummary, failed: false };
+  const summary = outcome.text;
 
-  return { messages: report.messages, ...(summary ? { summary } : {}), changed, trim: report };
+  return {
+    messages: report.messages,
+    ...(summary ? { summary } : {}),
+    changed,
+    trim: report,
+    ...(outcome.failed ? { summaryFailed: true } : {}),
+  };
 }
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
@@ -1277,14 +1354,30 @@ async function setExclusions(messages: readonly StoredMessage[], excluded: Reado
  * re-reading the whole history, so the cost is proportional to what was just
  * dropped rather than to the conversation's length. If it fails, the turn
  * continues with the plain drop: losing the summary is much better than losing
- * the message the user just sent.
+ * the message the user just sent — but the caller is told, because a reply that
+ * quietly forgot the first half of the conversation reads as the model being
+ * stupid rather than as a summarisation that failed.
+ *
+ * Three things here are not incidental:
+ *
+ *  - **The result is bounded** by `boundSummary`, so a summary of summaries
+ *    terminates. Without it the notes grow every time they are extended and are
+ *    charged as input on every remaining turn.
+ *  - **Its usage is its own `usage_event`.** This is the only request the app
+ *    makes that the user did not ask for, and a bill that grows for invisible
+ *    reasons is a trust failure rather than a rounding error. It carries the
+ *    conversation's id, so the dashboard can attribute the spend to the thread
+ *    that caused it.
+ *  - **The config write re-reads the row first.** `input.conversation` was read
+ *    before the stream started; spreading that stale copy would clobber any
+ *    setting changed since — the merge-not-replace rule from the data model.
  */
 async function summariseDropped(
   input: StrategyInput,
   dropped: readonly StoredMessage[],
   previous: string | undefined,
-): Promise<string | undefined> {
-  if (!dropped.length) return previous;
+): Promise<{ text: string | undefined; failed: boolean }> {
+  if (!dropped.length) return { text: previous, failed: false };
 
   input.live.phase = 'summarising';
   input.publish(true);
@@ -1293,41 +1386,51 @@ async function summariseDropped(
     .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${flattenContent(m.content)}`)
     .join('\n\n');
 
-  const body = previous
-    ? `Existing notes:\n\n${previous}\n\nNewly removed turns:\n\n${transcript}\n\n${SUMMARY_INSTRUCTION} ` +
-      'Merge the existing notes with the new turns into one set of notes.'
-    : `${transcript}\n\n${SUMMARY_INSTRUCTION}`;
-
   try {
     const { transport } = await resolveTransport({ profileId: input.conversation.profileId });
     const result = await transport.complete(
       {
         model: input.conversation.model,
-        messages: [{ role: 'user', content: [{ type: 'text', text: body }] }],
+        messages: [{ role: 'user', content: [{ type: 'text', text: summaryRequestBody(previous, transcript) }] }],
         params: { maxTokens: 1_024 },
       },
       { signal: input.signal },
     );
-    const summary = result.content
-      .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
-      .map((block) => block.text)
-      .join('\n')
-      .trim();
-    if (!summary) return previous;
+
+    const usage = reportedUsage(result.usage);
+    if (Object.keys(usage).length) {
+      const pricing = useModels.getState().get(`${input.conversation.profileId}::${input.conversation.model}`)?.pricing;
+      await recordUsage({
+        profileId: input.conversation.profileId,
+        model: input.conversation.model,
+        usage,
+        conversationId: input.conversationId,
+        ...(pricing ? { pricing } : {}),
+      });
+    }
+
+    const summary = boundSummary(
+      result.content
+        .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
+        .map((block) => block.text)
+        .join('\n'),
+    );
+    if (!summary) return { text: previous, failed: true };
 
     const lastDropped = dropped[dropped.length - 1];
+    const fresh = await getConversation(input.conversationId);
     await updateConversation(input.conversationId, {
       config: {
-        ...input.conversation.config,
+        ...(fresh?.config ?? input.conversation.config),
         summary: { throughSeq: lastDropped?.seq ?? 0, text: summary },
       },
     });
-    return summary;
+    return { text: summary, failed: false };
   } catch (error) {
     log.warn('chat', 'Could not summarise the dropped turns; sending without a summary', {
       error: error instanceof Error ? error.message : String(error),
     });
-    return previous;
+    return { text: previous, failed: true };
   }
 }
 
@@ -1351,6 +1454,11 @@ export function useConversation(conversationId: string): Conversation | undefine
 
 export function useDraft(conversationId: string): string {
   return useChat((state) => state.drafts[conversationId] ?? '');
+}
+
+/** What the last turn's context handling did, if it did anything. */
+export function useContextNote(conversationId: string): string | undefined {
+  return useChat((state) => state.contextNotes[conversationId]);
 }
 
 const NO_ATTACHMENTS: ContentBlock[] = [];
