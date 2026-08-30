@@ -27,7 +27,9 @@
  */
 
 import type { ReasoningConfig, SamplingParams, ToolDefinition, TransportKind } from '@/transports/types';
-import { estimateTextTokens, estimateToolTokens, REQUEST_OVERHEAD } from '@/lib/tokens';
+import { estimateTextTokens, estimateToolTokens, formatTokens, REQUEST_OVERHEAD } from '@/lib/tokens';
+import type { ContextPressure } from '@/lib/tokens';
+import type { ContextStrategy } from '@/stores/settings';
 
 /**
  * Slack held back from the history budget, in tokens.
@@ -163,4 +165,35 @@ export function describeTightBudget(budget: TurnBudget, toolCount = 0): string {
   }
   parts.push('Lowering max output tokens also helps, since that allowance is reserved whether or not it is used.');
   return parts.join(' ');
+}
+
+/**
+ * The one confirmation a send over the usable window owes the user, or `null`.
+ *
+ * Only for the `warn` strategy, and only at `over`. `warn` is the strategy that
+ * *doesn't* trim, so a send from here goes out whole and the gateway either
+ * rejects it or truncates the reply — a refusal the user can neither predict from
+ * a green gauge nor undo afterwards. The other two strategies trim silently by
+ * design and say what they did afterwards, and `critical` deliberately gets a
+ * sentence rather than a dialog: a modal on every send at 85% is a modal people
+ * learn to dismiss without reading, which is worse than none.
+ *
+ * Blocking the send is not an option on the table. The estimator is ±12% and the
+ * window figure is a hand-edited registry entry, so a hard stop here would refuse
+ * requests that would have worked.
+ */
+export function sendConfirmation(
+  pressure: ContextPressure,
+  strategy: ContextStrategy,
+): { title: string; body: string } | null {
+  if (strategy !== 'warn' || pressure.level !== 'over') return null;
+  const over = Math.max(1, pressure.used - Math.max(1, pressure.window - pressure.reserved));
+  return {
+    title: 'Over the context window',
+    body:
+      `This request is about ${formatTokens(over)} tokens more than the model can take once ` +
+      `${formatTokens(pressure.reserved)} are held back for the reply. It may be rejected, or answered and cut ` +
+      'short. Exclude some messages, lower max output tokens, or switch this conversation to dropping or ' +
+      'summarising older turns in Settings.',
+  };
 }

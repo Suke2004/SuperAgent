@@ -49,7 +49,7 @@ import {
   SwitchRow,
 } from '@/components/ui';
 import { hasBlockingIssue, mergeParams, validateConfig } from '@/chat/request';
-import { replyReservation } from '@/chat/budget';
+import { replyReservation, sendConfirmation } from '@/chat/budget';
 import { captureImage, openAppSettings, pickDocuments, pickImages } from '@/chat/attach';
 import { documentCaveat, documentSupport, imageSupport, MAX_ATTACHMENTS_PER_MESSAGE } from '@/chat/attachments';
 import { useMemory } from '@/stores/memory';
@@ -62,7 +62,8 @@ import { plural } from '@/chat/selection';
 import { toUnifiedMessages } from '@/db/conversations';
 import type { StoredMessage } from '@/db/conversations';
 import { estimateMessagesTokens, estimateTextTokens, formatCost, formatTokens, estimateCost } from '@/lib/tokens';
-import { useChat, useAttachments, useConversation, useDraft, useMessages, useStream } from '@/stores/chat';
+import type { ContextPressure } from '@/lib/tokens';
+import { useChat, useAttachments, useContextNote, useConversation, useDraft, useMessages, useStream } from '@/stores/chat';
 import { useCalibration } from '@/stores/calibration';
 import { capabilitiesFor, entryKey, pickableModelIds, useModels } from '@/stores/models';
 import { useProviders } from '@/stores/providers';
@@ -99,11 +100,14 @@ export default function ChatScreen() {
   const dismissError = useChat((s) => s.dismissError);
   const addAttachments = useChat((s) => s.addAttachments);
   const removeAttachment = useChat((s) => s.removeAttachment);
+  const contextNote = useContextNote(id);
+  const dismissContextNote = useChat((s) => s.dismissContextNote);
 
   const profiles = useProviders((s) => s.profiles);
   const entries = useModels((s) => s.entries);
   const showThinkingByDefault = useSettings((s) => s.showThinkingByDefault);
   const memoryEnabled = useSettings((s) => s.memoryEnabled);
+  const contextStrategy = useSettings((s) => s.contextStrategy);
 
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -437,6 +441,28 @@ export default function ChatScreen() {
     });
     setConvMenu(false);
     setConfigOpen(true);
+  };
+
+  /**
+   * Send, with the one confirmation an over-window send owes the user.
+   *
+   * The pressure reading comes from the composer rather than being recomputed here:
+   * the dialog quotes a number the user can see on the gauge, and computing it twice
+   * is two chances for the two to disagree. {@link sendConfirmation} returns `null`
+   * for every case that does not need asking — which is all of them except `warn`
+   * at `over`, the one strategy that neither trims nor blocks.
+   */
+  const submit = (pressure: ContextPressure): void => {
+    const payload = { text: draft, ...(attachments.length ? { attachments: [...attachments] } : {}) };
+    const ask = sendConfirmation(pressure, contextStrategy);
+    if (!ask) {
+      void send(id, payload);
+      return;
+    }
+    Alert.alert(ask.title, ask.body, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Send anyway', onPress: () => void send(id, payload) },
+    ]);
   };
 
   const confirmDelete = (message: StoredMessage): void => {
@@ -849,7 +875,7 @@ export default function ChatScreen() {
         <Composer
           value={draft}
           onChangeText={(text) => setDraft(id, text)}
-          onSend={() => void send(id, { text: draft, ...(attachments.length ? { attachments: [...attachments] } : {}) })}
+          onSend={(pressure) => submit(pressure)}
           onStop={() => abort(id)}
           streaming={streaming}
           aborting={stream?.aborting ?? false}
@@ -865,6 +891,8 @@ export default function ChatScreen() {
           {...(attachmentCaveat !== undefined ? { attachmentCaveat } : {})}
           {...(calibration ? { calibration } : {})}
           {...(blocked ? { disabledReason: blocked } : {})}
+          {...(contextNote !== undefined ? { contextNote } : {})}
+          onDismissContextNote={() => dismissContextNote(id)}
         />
       </View>
 
