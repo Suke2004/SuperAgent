@@ -17,10 +17,16 @@
  */
 
 export type GatewayErrorKind =
-  /** 401 with `unauthorized_client_error`: the gateway rejected the *client*. */
-  | 'client_rejected'
-  /** 401 otherwise: the gateway rejected the *key*. */
-  | 'key_rejected'
+  /**
+   * 401. One kind, deliberately, because this gateway does not distinguish.
+   *
+   * A **no-key** request comes back `unauthorized_client_error` too, which proves
+   * that string carries no information about client identity — it is the generic
+   * 401. Splitting it into "client rejected" and "key rejected" on that type meant
+   * every wrong or expired key was diagnosed as an allowlist problem and sent the
+   * user to gateway support for something a re-paste would have fixed.
+   */
+  | 'unauthorized'
   /** 403. */
   | 'forbidden'
   /** 400 where the gateway blocked the content — typically an unsupported language. */
@@ -167,8 +173,7 @@ export class GatewayError extends Error {
 }
 
 export const KIND_LABELS: Record<GatewayErrorKind, string> = {
-  client_rejected: 'Client rejected by gateway',
-  key_rejected: 'API key rejected',
+  unauthorized: 'Rejected: key or client',
   forbidden: 'Forbidden',
   content_blocked: 'Content blocked',
   unsupported_param: 'Unsupported parameter',
@@ -282,8 +287,6 @@ const CREDIT_RE =
 const UNSUPPORTED_PARAM_RE =
   /unrecognized request argument(?:s)? supplied:\s*([A-Za-z0-9_.[\]]+)|unsupported[\s_-]?(?:parameter|param|field|argument)s?[:\s'"]*([A-Za-z0-9_.[\]]+)|unknown (?:parameter|field|argument)[:\s'"]*([A-Za-z0-9_.[\]]+)|(?:parameter|property|field)\s+'?"?([A-Za-z0-9_.[\]]+)'?"?\s+is (?:not supported|unsupported|invalid|unknown)|invalid[\s_-]?(?:parameter|argument)[:\s'"]*([A-Za-z0-9_.[\]]+)|does not support\s+'?"?([A-Za-z0-9_.[\]]+)'?"?/i;
 
-const CLIENT_REJECTED_RE = /unauthorized[\s_-]?client|client[\s_-]?not[\s_-]?(?:allowed|authorized)|unapproved[\s_-]?client/i;
-
 /** Does this 400 look like the gateway blocking the content? */
 export function looksContentBlocked(message: string | undefined, type?: string): boolean {
   return CONTENT_BLOCKED_RE.test(`${message ?? ''} ${type ?? ''}`);
@@ -356,18 +359,17 @@ const LANGUAGE_HINT =
 
 function buildHint(kind: GatewayErrorKind, ctx: { url?: string; param?: string; transport?: string }): string | undefined {
   switch (kind) {
-    case 'client_rejected':
+    case 'unauthorized':
+      // Credential first, because it is both the likelier cause and the one the
+      // user can actually fix. The allowlist is named second rather than not at
+      // all: this gateway does enforce one, and a healthy-looking key in the
+      // console is the signal that the rejection is about identity instead.
       return (
-        'The gateway accepted the request shape but rejected this client — it enforces an allowlist of approved clients, ' +
-        'so this is about identity, not your key. Verify the token is still active in the gateway console, then contact ' +
-        'gateway support to get this app approved. This app sends an honest, static User-Agent and will not impersonate ' +
-        'another client, because circumventing the allowlist is a bannable offence.'
-      );
-    case 'key_rejected':
-      return (
-        'The gateway rejected the credential itself. Open the gateway console, confirm the token exists, is enabled, and ' +
-        'has quota, then re-paste it in Settings → Providers. If the console shows the key as healthy, this is more likely ' +
-        'a client-allowlist rejection — check the error type below.'
+        'The gateway refused the request at the door, and its 401 does not say whether that was the credential or the ' +
+        'client. Start with the credential: open the gateway console, confirm the token exists, is enabled and has quota, ' +
+        'then re-paste it in Settings → Providers. If the console shows the key as healthy, this is a client-allowlist ' +
+        'rejection — contact gateway support to get this app approved. This app sends an honest, static User-Agent and ' +
+        'will not impersonate another client, because circumventing the allowlist is a bannable offence.'
       );
     case 'content_blocked':
       return LANGUAGE_HINT;
@@ -451,10 +453,10 @@ export function classifyHttpError(ctx: ClassifyContext): GatewayError {
   let param: string | undefined;
 
   if (ctx.status === 401) {
-    // Verified live: no-key requests return `unauthorized_client_error`, which is
-    // the client allowlist rather than the credential. Distinguishing these two
-    // is the difference between "re-paste your key" and "get the app approved".
-    kind = CLIENT_REJECTED_RE.test(`${parsed.type ?? ''} ${message}`) ? 'client_rejected' : 'key_rejected';
+    // One conclusion, not two. Verified live: a request with *no* key at all comes
+    // back `unauthorized_client_error`, so that type cannot separate a rejected
+    // credential from a rejected client. The hint names both causes instead.
+    kind = 'unauthorized';
   } else if (ctx.status === 403) {
     kind = looksInsufficientCredits(message, parsed.type, parsed.code) ? 'insufficient_credits' : 'forbidden';
   } else if (ctx.status === 404) {

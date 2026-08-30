@@ -10,7 +10,7 @@
  */
 
 /** Bumped whenever {@link MIGRATIONS} grows. Stored in SQLite's `user_version`. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 /**
  * The FTS index and the three triggers that keep it in step with `messages`.
@@ -267,5 +267,20 @@ export const MIGRATIONS: readonly string[] = [
     );
 
     CREATE INDEX IF NOT EXISTS prompts_rank ON prompts (uses DESC, updated_at DESC);
+  `,
+  /* 5 → 6 */ `
+    -- A review gate on distilled memories.
+    --
+    -- Model-authored text was going straight into the system prompt of every later
+    -- conversation, which makes anything the distiller picks up — including a line
+    -- from an attached document that reads like a preference — persistent
+    -- cross-conversation prompt injection that outlives the chat it entered
+    -- through. An unapproved memory is stored but never sent.
+    --
+    -- \`DEFAULT 1\` so anything already in the table stays in use: those rows were
+    -- learned under the old contract, they are already visible and editable in
+    -- Settings → Memory, and re-reviewing them buys nothing. Only new distillations
+    -- insert a 0.
+    ALTER TABLE memories ADD COLUMN approved INTEGER NOT NULL DEFAULT 1;
   `,
 ];

@@ -63,8 +63,27 @@ export interface Memory extends MemoryCandidate {
   hits: number;
   /** Pinned memories are never dropped by the budget. */
   pinned: boolean;
+  /**
+   * Whether the user has agreed to carry this into future conversations.
+   *
+   * False only for a fresh distillation. An unapproved memory is stored and shown
+   * in settings but never reaches a prompt — see {@link approvedOnly}, which is the
+   * one filter the send path applies.
+   */
+  approved: boolean;
   sourceConversationId?: string;
   lastUsedAt?: number;
+}
+
+/**
+ * The memories that may be sent.
+ *
+ * A function rather than a filter written at each call site, because "which
+ * memories reach the model" is a security boundary and it needs exactly one
+ * answer. The distiller writes rows with `approved: false`; nothing else does.
+ */
+export function approvedOnly(memories: readonly Memory[]): Memory[] {
+  return memories.filter((memory) => memory.approved);
 }
 
 /** One memory longer than this is a summary, not a memory. */

@@ -20,7 +20,7 @@ import { useFocusEffect } from 'expo-router';
 import { PromptSheet, Sheet } from '@/components/Sheet';
 import type { SheetAction } from '@/components/Sheet';
 import { Badge, Button, Empty, Inline, Note, Row, Screen, Section, Spinner, SwitchRow } from '@/components/ui';
-import { MEMORY_BUDGET_CHARS, MEMORY_KINDS, renderMemoryBlock } from '@/chat/memory';
+import { MEMORY_BUDGET_CHARS, MEMORY_KINDS, approvedOnly, renderMemoryBlock } from '@/chat/memory';
 import type { Memory, MemoryKind } from '@/chat/memory';
 import { useMemory } from '@/stores/memory';
 import { useSettings } from '@/stores/settings';
@@ -44,6 +44,7 @@ export default function MemoryScreen() {
   const load = useMemory((s) => s.load);
 
   const [menuFor, setMenuFor] = useState<Memory | null>(null);
+  const [reviewing, setReviewing] = useState<Memory | null>(null);
   const [editing, setEditing] = useState<Memory | null>(null);
   const [adding, setAdding] = useState(false);
   const [outcome, setOutcome] = useState<string | null>(null);
@@ -58,8 +59,11 @@ export default function MemoryScreen() {
 
   // What a request would actually carry, computed from the same function the
   // request builder uses — so the number on this screen cannot drift from the
-  // number being spent.
-  const block = renderMemoryBlock(memories);
+  // number being spent. `approvedOnly` for the same reason: pending memories cost
+  // nothing because they are not sent.
+  const pending = memories.filter((memory) => !memory.approved);
+  const kept = approvedOnly(memories);
+  const block = renderMemoryBlock(kept);
   const share = Math.round((block.chars / MEMORY_BUDGET_CHARS) * 100);
 
   const menuActions = (memory: Memory): SheetAction[] => [
@@ -86,6 +90,33 @@ export default function MemoryScreen() {
       onPress: () => {
         void useMemory.getState().forget(memory.id);
         setMenuFor(null);
+      },
+    },
+  ];
+
+  /** Keep / edit / discard, for a memory the user has not agreed to yet. */
+  const reviewActions = (memory: Memory): SheetAction[] => [
+    {
+      label: 'Keep it',
+      subtitle: 'Starts carrying this into new conversations',
+      onPress: () => {
+        void useMemory.getState().approve(memory.id);
+        setReviewing(null);
+      },
+    },
+    {
+      label: 'Edit, then keep',
+      onPress: () => {
+        setEditing(memory);
+        setReviewing(null);
+      },
+    },
+    {
+      label: 'Discard',
+      destructive: true,
+      onPress: () => {
+        void useMemory.getState().forget(memory.id);
+        setReviewing(null);
       },
     },
   ];
@@ -146,12 +177,35 @@ export default function MemoryScreen() {
         </View>
       ) : null}
 
-      <Section title={`Remembered (${memories.length})`}>
+      {pending.length ? (
+        <Section
+          title={`Waiting for you (${pending.length})`}
+          note={
+            'The model wrote these; nothing is sent until you keep it. A note it picked up from something you pasted ' +
+            'or attached would otherwise become a standing instruction in every later conversation.'
+          }
+        >
+          {pending.map((memory, index) => (
+            <Row
+              key={memory.id}
+              first={index === 0}
+              label={memory.text}
+              subtitle={subtitleFor(memory)}
+              right={<Badge label="not sent" tone="warning" />}
+              onPress={() => setReviewing(memory)}
+              accessibilityLabel={`Pending ${KIND_LABEL[memory.kind]}: ${memory.text}`}
+              accessibilityHint="Opens keep, edit and discard"
+            />
+          ))}
+        </Section>
+      ) : null}
+
+      <Section title={`Remembered (${kept.length})`}>
         {!loaded ? (
           <View style={{ padding: t.spacing.md }}>
             <Spinner label="Loading" />
           </View>
-        ) : memories.length === 0 ? (
+        ) : kept.length === 0 ? (
           <View style={{ padding: t.spacing.md }}>
             <Empty
               title="Nothing remembered yet"
@@ -159,7 +213,7 @@ export default function MemoryScreen() {
             />
           </View>
         ) : (
-          memories.map((memory, index) => (
+          kept.map((memory, index) => (
             <Row
               key={memory.id}
               first={index === 0}
@@ -189,6 +243,14 @@ export default function MemoryScreen() {
         onClose={() => setMenuFor(null)}
       />
 
+      <Sheet
+        visible={reviewing !== null}
+        title={reviewing?.text ?? ''}
+        {...(reviewing ? { subtitle: subtitleFor(reviewing) } : {})}
+        actions={reviewing ? reviewActions(reviewing) : []}
+        onClose={() => setReviewing(null)}
+      />
+
       {editing ? (
         <PromptSheet
           visible
@@ -198,6 +260,9 @@ export default function MemoryScreen() {
           onCancel={() => setEditing(null)}
           onConfirm={(text) => {
             void useMemory.getState().edit(editing.id, text);
+            // Editing a pending memory is the user taking ownership of the sentence,
+            // which is the same act as keeping it — asking twice would be theatre.
+            if (!editing.approved) void useMemory.getState().approve(editing.id);
             setEditing(null);
           }}
         />

@@ -38,7 +38,7 @@ This is already encoded as two distinct transports in `src/transports/`. Don't c
 - Errors come back `{"error":{"message":…,"type":"new_api_error"}}`. Surface `message` **verbatim**. Never show a bare "Request failed".
   - The live 401 body puts `type` at the **top level**, not nested — `parseErrorPayload` handles both, preferring nested.
 - Only Chinese, English, French, German, Russian are accepted. Anything else is `400 content blocked` and gets its own error kind and explanation.
-- A `401` usually means the **client** was rejected, not the key — the gateway runs a client allowlist. Send an honest static UA (`AgentRouterMobile/1.0 (Android)`) and **never spoof another client's identity**; their terms ban circumventing restrictions and it is a bannable offence. On 401, show a diagnostic that distinguishes key-rejected from client-rejected.
+- A `401` may be the **client** allowlist or the key, and this gateway cannot tell you which — a request with no auth header at all returns the identical body (reproduced live; see [docs/flaws.md](docs/flaws.md) §1). Send an honest static UA (`AgentRouterMobile/1.0 (Android)`) and **never spoof another client's identity**; their terms ban circumventing restrictions and it is a bannable offence. On 401, show one conclusion naming both causes, credential first.
 - Credits are free-tier and finite, rate limits undocumented: exponential backoff with jitter on 429 and 5xx, capped retries, **never** retry any other 4xx.
 - Any optional parameter may be silently dropped or rejected. On an unsupported-parameter failure, retry once without it and say which parameter was dropped.
 
@@ -65,7 +65,7 @@ This is already encoded as two distinct transports in `src/transports/`. Don't c
 - `utf8.ts` — incremental decoder for multi-byte characters split across chunks
 - `retry.ts` — backoff with full jitter; connect timeout 30 s, idle timeout 120 s; **no retry once bytes have been yielded**
 - `http.ts` — `USER_AGENT = 'AgentRouterMobile/1.0 (Android)'`
-- `errors.ts` — `GatewayError` with **15** kinds: `client_rejected | key_rejected | forbidden | content_blocked | unsupported_param | not_found | insufficient_credits | rate_limited | server | bad_request | validation | network | aborted | parse | unknown`. The 401 split (`client_rejected` vs `key_rejected`) is the one that matters most operationally, and `validation` is deliberately *this app refusing to send* rather than the gateway refusing — nothing left the device, so there is no gateway message to quote and no log entry to point at.
+- `errors.ts` — `GatewayError` with **14** kinds: `unauthorized | forbidden | content_blocked | unsupported_param | not_found | insufficient_credits | rate_limited | server | bad_request | validation | network | aborted | parse | unknown`. The 401 is deliberately **one** kind: a request with no key at all comes back `unauthorized_client_error` too, so that type carries no information about client identity, and the earlier `client_rejected`/`key_rejected` split diagnosed every wrong or expired key as an allowlist problem. `validation` is deliberately *this app refusing to send* rather than the gateway refusing — nothing left the device, so there is no gateway message to quote and no log entry to point at.
 - `validate.ts`, `support.ts` (`ModelCapabilities`, `DEFAULT_CAPABILITIES`, `TRANSPORT_SUPPORT` where values are *the reason it is unsupported*)
 - `streamingFetch.ts` — the only module that imports `expo/fetch`; injected into the adapters so tests run in pure Node
 - `index.ts` — `resolveTransport()`, cache keyed by profile + key fingerprint + wire signature
@@ -330,15 +330,31 @@ Three of the seven items predate this phase: export to Markdown/JSON/share sheet
 
 ---
 
+## Cleanup sprint — ✅ COMPLETE (the list that was left after Phase 6)
+
+Everything that was recorded as "left over" is now done or has a stated reason it is not.
+
+**The tool-call loop has an end-to-end test.** `src/stores/__tests__/chat.tools.test.ts` runs the store against an in-memory `@/db/conversations` and a **scripted array of streams**, one per round. Three things are pinned, and each is expensive to get wrong in a way no unit test of a pure function reaches: a round trip completes with the skill body arriving as a `tool_result` in the *second* request; the iteration cap stops the loop **and still writes the result row**, because an unanswered `tool_use` invalidates every later request in the conversation; and an unknown tool name is an error *result* the model recovers from inside the same turn, not a thrown turn. The scripted transport is what lets the cap test assert the third round was never *requested* rather than merely counting rows.
+
+**Skills move in bulk.** `src/chat/skillZip.ts` uses `fflate`, already in the tree — no new dependency. The archive is untrusted input, so it has an entry cap, a decompressed-text budget (a 9 MB member inside a 250 kB zip is refused), and it skips non-Markdown, `__MACOSX/` and dot-files while reporting the ones worth reporting. Parsing stays in `parseSkill`, so the two halves cannot disagree about what a skill is. A collision is **renamed**, never overwritten. Export writes into a folder picked with `Directory.pickDirectoryAsync()` rather than through the share sheet: Android's share intent carries text through a Binder parcel and there is no way to hand it bytes.
+
+**Read aloud.** `src/chat/speech.ts` + `expo-speech` (an official Expo SDK module, present in Expo Go — the one new install in this sprint). One action in the message menu that speaks or stops, asking the engine what it is doing rather than keeping a copy of that state in React. Markdown is flattened first: fences become "code block", link URLs are dropped, inline markers are stripped — some TTS engines really do read a bold run as "asterisk asterisk". No rate or pitch settings; that is a settings screen for something used to hear one paragraph.
+
+**Image-generation feature detection.** A fourth step in the OpenAI transport's connection test, probed with a **deliberately empty body**: a gateway with the route answers 400, one without answers 404, and nothing is generated so the probe cannot cost credits. It never fails the test — this app does not generate images, so the answer is information about the gateway rather than a requirement of it.
+
+**README and the usage guide.** [README.md](README.md) carries setup, the layer map, the two-base-URL distinction, how to add a provider *and* a transport, and the security posture. [docs/USAGE.md](docs/USAGE.md) is the day-to-day walkthrough, rewritten from 11 lines that predated skills, MCP, prompts, usage, backup and the chat-first launch.
+
+**The five-item fix queue in [docs/flaws.md](docs/flaws.md) is closed** — auto-backup off via a config plugin, the 401 kinds collapsed to one `unauthorized`, a secret-header guard on the providers store, a fingerprint that no longer carries last-4, and a confirm gate before a distilled memory is stored.
+
+### Two of the PRD's Phase 3 leftovers are deliberately **not** built
+
+- **On-device speech-to-text.** There is no first-party Expo module for it, and the keyboard's own microphone already dictates into the composer like any other `TextInput`. A third-party native module to duplicate a button the user already has is the wrong trade, and it would not survive Expo Go.
+- **Android share-target registration.** The intent filter itself is three lines of `app.json`. *Reading* the `ACTION_SEND` payload needs a native module (`expo-share-intent`), and registering a target that then silently drops what was shared into it is worse than not appearing in the share sheet at all. Both halves or neither; this is neither, on purpose.
+
 ## What to do next, in order
 
-Phase 2 (Eng Plan Sprints 5–6) is finished, as is the harness token-optimization sprint that followed it, Phase 3 (Sprints 7–8), Phase 4 (Sprints 9–10), the navigation change, Skills, Phase 5 (MCP) and Phase 6 (power features). **Every phase in the PRD table is now delivered.** What is left is not a phase:
-
-1. **Physical-device verification**, which nothing in Jest or the CI bundle substitutes for. The APK has never been built or installed. See "Known gaps".
-2. The PRD's Phase 3 leftovers, if they are wanted at all: on-device speech-to-text, system TTS, `/v1/images/generations` feature detection, and Android share-target registration. The Eng Plan does not schedule any of them and none is delivered. `expo-speech` is still uninstalled.
-3. The ±15% estimator-accuracy corpus, once a real key is available — it needs the gateway's own reported prompt counts to measure against.
-4. Skills' bulk zip import/export, still not worth doing until moving several at once is an actual need.
-5. The five-item fix queue at the end of [docs/flaws.md](docs/flaws.md), recorded deliberately without acting on it.
+1. **Physical-device verification**, which nothing in Jest or the CI bundle substitutes for. The APK has never been built or installed. See "Known gaps". `expo-speech` is a native module, so the dev build or APK needs rebuilding once for Read aloud to work — Expo Go already carries it.
+2. The ±15% estimator-accuracy corpus, once a real key is available — it needs the gateway's own reported prompt counts to measure against. This is the only item on the original list that is blocked rather than done.
 
 ---
 
@@ -349,15 +365,15 @@ Phase 2 (Eng Plan Sprints 5–6) is finished, as is the harness token-optimizati
 - ✅ **The API key never appears in an exported conversation**, verified by greping the produced artefact — `src/chat/export.test.ts`. Done. Both 1.0-gate security tests now pass.
 - ✅ Skill frontmatter parser (Phase 4) — `src/chat/skill.test.ts`.
 - ✅ **MCP against a scripted server** (Phase 5) — `src/mcp/client.test.ts` and `src/mcp/protocol.test.ts`: a server error, a timeout, an expired token and a denial all arriving as tool *results*.
-- Mocked-transport tool-call loop: multi-round tool use, an iteration-cap trip, a tool returning an error. Still outstanding — `src/stores/chat.ts` is 1,600 lines of orchestration with no test double for the database, which is the reason it sits at 0% coverage. The loop's *decisions* are tested where they are pure (`selectTools`, `resolveSkillCall`, `decideApproval`, `failedCall`); what is untested is the wiring between them.
+- ✅ **Mocked-transport tool-call loop**: multi-round tool use, an iteration-cap trip, a tool returning an error — `src/stores/__tests__/chat.tools.test.ts`, against an in-memory database double and a scripted transport. Done. The loop's *decisions* were already tested where they are pure (`selectTools`, `resolveSkillCall`, `decideApproval`, `failedCall`); this covers the wiring between them.
 
 Already covered: both transport adapters, the SSE parser (incl. split and malformed events), token counting, request building and validation, search, the markdown parser, the highlighter, the LaTeX subset, link sanitising, fence languages, relative-time formatting, conversation list grouping, the list query plan and keyset paging against real SQLite, FTS integrity checking, long-term memory (parsing, the secret screen, dedupe, budget, and the schema), bulk operations against real SQLite (cascade, transaction rollback, FTS trigger, surviving usage events), the bulk confirmation wording, export in both formats including the key-leak gate, and the harness budgeting layer (turn budget, the trim ladder, tool-manifest slimming and selection, cache breakpoint planning, and the adapter's `cache_control` placement).
 
 **Deliverables:**
 - Release APK — `npm run build:apk` (`eas build --platform android --profile preview`); `eas.json` is configured. Must be confirmed to build before the final phase is declared complete.
-- README — setup, architecture sketch, how to add a provider, the two-base-URL distinction. Proportionate; no filler sections.
-- A separate usage guide — how to actually operate the app day to day (first launch, entering the key, picking a transport, test connection, starting a chat, the model and reasoning controls, skills, MCP, export). The user asked for this explicitly on top of the README.
-- A short closing list of anything that couldn't be implemented or verified against the live gateway, and why.
+- ✅ README — setup, layer map, how to add a provider or a transport, the two-base-URL distinction, security posture.
+- ✅ A separate usage guide — [docs/USAGE.md](docs/USAGE.md), rewritten end to end: first launch and the history drawer, the key, the transport, the four-step connection test, chatting, model and reasoning controls, attachments, context pressure, skills (including the zip), MCP, prompts, memory, usage, backup, export and the debug log.
+- A short closing list of anything that couldn't be implemented or verified against the live gateway, and why — "Known gaps" below is that list, plus the two deliberate non-builds under the cleanup sprint.
 
 ---
 
@@ -430,10 +446,9 @@ Already covered: both transport adapters, the SSE parser (incl. split and malfor
 
 ## Dependencies
 
-Installed and in use: `expo ~57.0.15`, `react 19.2.3`, `react-native 0.86.2`, `typescript ~6.0.3`, `expo-router`, `expo-sqlite`, `expo-secure-store`, `expo-clipboard`, `expo-crypto`, `expo-linking`, `expo-image-picker ~57.0.14`, `expo-image-manipulator ~57.0.14`, `expo-document-picker ~57.0.1`, `expo-file-system ~57.0.6`, `zustand 5`, `@react-native-async-storage/async-storage`, `@shopify/flash-list 2.0.2`, `react-native-safe-area-context`, `react-native-screens`, `marked 18`, `refractor 5`, `js-yaml` (Phase 4 frontmatter), `fflate` (Phase 4 zip).
+Installed and in use: `expo ~57.0.15`, `react 19.2.3`, `react-native 0.86.2`, `typescript ~6.0.3`, `expo-router`, `expo-sqlite`, `expo-secure-store`, `expo-clipboard`, `expo-crypto`, `expo-linking`, `expo-image-picker ~57.0.14`, `expo-image-manipulator ~57.0.14`, `expo-document-picker ~57.0.1`, `expo-file-system ~57.0.6`, `zustand 5`, `@react-native-async-storage/async-storage`, `@shopify/flash-list 2.0.2`, `react-native-safe-area-context`, `react-native-screens`, `marked 18`, `refractor 5`, `expo-speech ~57.0.2` (read aloud), `js-yaml` (Phase 4 frontmatter), `fflate` (skill frontmatter archives — bulk skill import/export).
 
-Still to install:
-- `expo-speech` and `expo-sharing` — for the PRD's Phase 3 leftovers (system TTS) and a "save as a file" export action. Neither is scheduled; export currently ships through `expo-clipboard` and React Native's `Share`, which needed no native additions. Now that `expo-file-system` is in the tree for attachments, a save-to-file export action is cheap whenever it is wanted — it was never a gap in the export module.
+Still to install: nothing. `expo-sharing` was pencilled in for a "save as a file" export and is not needed — `expo-file-system` is in the tree for attachments and the skills zip, so a folder-picked write is already available if a transcript ever wants one; the share sheet is the better handover for text. `expo-speech` was the only install in the cleanup sprint, and it is an official Expo SDK module carried by Expo Go.
 
 Nothing else. `expo-web-browser` / `expo-auth-session` were pencilled in for Phase 5's OAuth flow and turned out to be unnecessary: `expo-linking` was already in the tree for deep links and does both halves of the hand-off.
 

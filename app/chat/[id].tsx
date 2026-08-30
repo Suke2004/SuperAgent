@@ -63,6 +63,7 @@ import { deliverExport } from '@/chat/deliver';
 import type { DeliveryMethod } from '@/chat/deliver';
 import type { ExportFormat } from '@/chat/export';
 import { plural } from '@/chat/selection';
+import { speakOrStop } from '@/chat/speech';
 import { toUnifiedMessages } from '@/db/conversations';
 import type { SearchHit, StoredMessage } from '@/db/conversations';
 import { estimateMessagesTokens, estimateTextTokens, formatCost, formatTokens, estimateCost } from '@/lib/tokens';
@@ -595,6 +596,13 @@ ${text}` : text);
         disabled: !message.text,
         ...(message.text ? {} : { disabledReason: 'This message has no text to copy.' }),
         onPress: () => void Clipboard.setStringAsync(message.text),
+      },
+      {
+        label: 'Read aloud',
+        subtitle: message.text ? 'The system voice. Choose it again to stop.' : 'This message has no text to read.',
+        disabled: !message.text,
+        ...(message.text ? {} : { disabledReason: 'This message has no text to read.' }),
+        onPress: () => void speakOrStop(message.text),
       },
       {
         label: 'Edit and resend',

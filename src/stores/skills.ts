@@ -15,6 +15,7 @@ import { create } from 'zustand';
 
 import { normaliseSkill, parseSkill, validateSkill } from '@/chat/skill';
 import type { Skill, SkillDraft } from '@/chat/skill';
+import { unpackSkills } from '@/chat/skillZip';
 import { addSkill, deleteSkill, freeSkillName, listSkills, updateSkill } from '@/db/skills';
 import { log } from '@/lib/log';
 
@@ -38,6 +39,15 @@ export interface SkillState {
   remove(id: string): Promise<void>;
   /** Imports a `SKILL.md`. Renames rather than clobbering on a name collision. */
   importFile(text: string): Promise<{ ok: true; skill: Skill } | { ok: false; reason: string }>;
+  /**
+   * Imports every skill in a zip, one member at a time.
+   *
+   * Per-member rather than all-or-nothing: an archive is usually a folder somebody
+   * else assembled, and one file in it with a broken fence is not a reason to
+   * refuse the other thirteen. The reasons come back so a partial import is
+   * reported rather than looking like a success that lost things.
+   */
+  importZip(bytes: Uint8Array): Promise<{ added: string[]; skipped: string[] }>;
 }
 
 export const useSkills = create<SkillState>()((set, get) => ({
@@ -110,6 +120,18 @@ export const useSkills = create<SkillState>()((set, get) => ({
     const skill = await addSkill({ ...parsed.skill, name });
     set((state) => ({ skills: [...state.skills, skill].sort(byName) }));
     return { ok: true, skill };
+  },
+
+  async importZip(bytes) {
+    const { files, skipped } = unpackSkills(bytes);
+    const added: string[] = [];
+    const reasons = [...skipped];
+    for (const text of files) {
+      const result = await get().importFile(text);
+      if (result.ok) added.push(result.skill.name);
+      else reasons.push(result.reason);
+    }
+    return { added, skipped: reasons };
   },
 }));
 

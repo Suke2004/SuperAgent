@@ -114,8 +114,7 @@ describe('withRetry — what gets retried', () => {
   it.each([
     'bad_request',
     'validation',
-    'client_rejected',
-    'key_rejected',
+    'unauthorized',
     'forbidden',
     'content_blocked',
     'unsupported_param',

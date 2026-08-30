@@ -89,7 +89,7 @@ function storageKey(profileId: string): string {
 
 export interface KeyStatus {
   present: boolean;
-  /** `sk-a…9f0c (48 chars)`, or `(none)`. Safe to render and to log. */
+  /** A salted hash prefix like `#3f9c1a02`, or `(none)`. Safe to render and to log. */
   fingerprint: string;
 }
 
