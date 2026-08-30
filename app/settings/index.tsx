@@ -7,8 +7,10 @@
  */
 
 import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
 
 import { Row, Screen, Section, SwitchRow } from '@/components/ui';
+import { appLockAvailable, unlockApp } from '@/lib/appLock';
 import { useMemory } from '@/stores/memory';
 import { useProviders } from '@/stores/providers';
 import { useSettings } from '@/stores/settings';
@@ -26,6 +28,11 @@ export default function SettingsHub() {
   const serverCount = useMcp((s) => s.servers.length);
   const promptCount = usePrompts((s) => s.prompts.length);
   const active = profiles.find((p) => p.id === activeId);
+  const [lockAvailable, setLockAvailable] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    void appLockAvailable().then(setLockAvailable);
+  }, []);
 
   return (
     <Screen>
@@ -134,6 +141,40 @@ export default function SettingsHub() {
           label="Backup and restore"
           subtitle="Settings, providers, skills, prompts and servers — never keys or conversations"
           onPress={() => router.push('/settings/backup')}
+        />
+      </Section>
+
+      <Section
+        title="Privacy"
+        note="The transcript database is not encrypted by this app — Android's own file encryption protects it while the device is locked. The app lock covers the case the platform leaves open: an unlocked phone in someone else's hand."
+      >
+        <SwitchRow
+          first
+          label="Require unlock to open"
+          subtitle={
+            lockAvailable === false
+              ? 'This device has no fingerprint, face or screen lock enrolled.'
+              : 'Fingerprint, face or the device PIN, on every return to the app.'
+          }
+          value={settings.appLockEnabled}
+          onChange={(v) => {
+            // Turning it on is confirmed by actually unlocking: a switch that trusts
+            // the prompt it never ran is how a user gets locked out of their own
+            // conversations by a sensor that does not work.
+            if (!v) {
+              settings.set('appLockEnabled', false);
+              return;
+            }
+            void unlockApp().then((ok) => {
+              if (ok) settings.set('appLockEnabled', true);
+            });
+          }}
+          disabled={lockAvailable !== true}
+          disabledReason={
+            lockAvailable === null
+              ? 'Checking what this device supports…'
+              : 'Set up a fingerprint, face unlock or screen lock in Android settings first.'
+          }
         />
       </Section>
 

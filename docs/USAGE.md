@@ -126,10 +126,28 @@ tool *result*, so a refused call never costs you the conversation.
   prompts and MCP servers. Structurally never keys, tokens, conversations or
   memories. Restore merges and never overwrites; keys must be re-pasted.
 
-## 10. Export and diagnostics
+## 10. Privacy and the app lock
+
+Settings → **Privacy** → *Require unlock to open* puts the device's fingerprint,
+face or PIN in front of the app, on launch and on every return from the background.
+Off by default, and switching it on runs the prompt first — a sensor that does not
+work cannot lock you out of your own conversations. The switch is disabled with the
+reason if nothing is enrolled on the device.
+
+It is a lock, not encryption. `expo-sqlite` offers no encrypted-database option, so
+the transcript is plaintext on disk and root reads it without ever seeing the lock
+screen. While the phone is locked, Android's own file encryption is what protects
+it. Auto-backup is off, so it never leaves for Google Drive either.
+
+The API key is separate and always was: it lives in the Android Keystore, is read
+per request, and the in-memory copy is dropped when the app goes to the background.
+
+## 11. Export and diagnostics
 
 Header menu → **Export** — Markdown or JSON, to the share sheet or the clipboard.
-Exports never carry attachment bytes and are redacted twice.
+Exports never carry attachment bytes and are redacted twice. A copy tells you the
+clipboard keeps it until you copy something else: Android offers no "sensitive"
+marker here, and clearing it on a timer would destroy whatever you copied next.
 
 Settings → **Debug log** — requests, status codes, stream events and dropped
 parameters, with the key redacted at the write boundary. No telemetry, no
@@ -137,6 +155,9 @@ analytics, no third-party crash reporting.
 
 ---
 
-Physical-device verification is still recommended for Android keyboard insets,
-FlashList anchoring during a live stream, markdown baseline geometry, and the
-attachment pipeline's memory behaviour. See "Known gaps" in `progress.md`.
+The app has been exercised on a physical Android device: keyboard insets under
+edge-to-edge, FlashList anchoring during a live stream, markdown geometry, and the
+attachment pipeline. Two things a device run cannot fix, both in `docs/flaws.md` §3:
+a reply stops streaming if you background the app mid-turn (the partial text is kept
+and marked aborted), and read-aloud plus the app lock are native modules that need
+an APK rebuild to appear on an older build.

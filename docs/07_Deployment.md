@@ -64,6 +64,13 @@ A **schema migration alone does not force a MAJOR bump** — additive, defaulted
 
 There are four, they are not the same thing, and confusing them is how an OTA update reaches a binary that cannot run it.
 
+> **OTA is currently switched off.** `app.json` sets `updates.enabled: false` and
+> `checkAutomatically: "NEVER"` ([flaws.md](flaws.md) §2.7): nothing in the repo
+> publishes a bundle, so an open channel was remote-code trust bought for nothing.
+> Everything below about channels, `runtimeVersion` and Path B applies from the moment
+> it is turned back on — and that change should add `expo-updates` code signing rather
+> than trusting the EAS project id alone.
+
 ```
 app.json                                       meaning
 ├─ expo.version           "1.0.0"    ← the SemVer users see; also the
@@ -200,7 +207,7 @@ There are four, and only two of them can tell you anything about real behaviour.
 | **Local dev** | Metro + Expo Go / dev client on the maintainer's handset | high for JS, partial for native | iteration, logic | release-mode perf, minification, signing |
 | **Android emulator** | AVD on a desktop | medium | flows, layout, migrations, permission dialogs | scroll performance (desktop CPU), real network transitions, camera, Keystore backing |
 | **Physical devices** | Pixel 6 (reference), Samsung S22 (second) | **the truth** | everything | nothing that matters |
-| **Web export** | static export in a browser / iPad Safari | low | Markdown rendering, large-screen layout | all native behaviour; SecureStore is a `localStorage` stub |
+| **Web export** | static export in a browser / iPad Safari | low | Markdown rendering, large-screen layout | all native behaviour; there is no Keystore, so a web key is session memory only |
 
 The emulator's most dangerous property is that it makes scrolling look fine. A desktop CPU renders a 1,000-message FlashList smoothly while a mid-range phone drops frames, so every performance target in [06_Eng_Plan.md](06_Eng_Plan.md) §12 is defined on the Pixel 6 and emulator numbers are recorded but never used as a gate.
 

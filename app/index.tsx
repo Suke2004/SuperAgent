@@ -640,6 +640,7 @@ export default function Home() {
             ? 'Too large for the share sheet, so it went to the clipboard instead — paste it wherever you meant to send it.'
             : null,
           'Attachments and API keys are not included.',
+          outcome.method === 'copy' ? 'The clipboard holds it until you copy something else.' : null,
         ]
           .filter(Boolean)
           .join(' '),

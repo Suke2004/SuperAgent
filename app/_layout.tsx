@@ -15,12 +15,14 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, AppState, Pressable, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { useHydrated } from '@/lib/storage';
+import { invalidateTransports } from '@/lib/gateway';
+import { unlockApp } from '@/lib/appLock';
 import { debugLog } from '@/lib/log';
-import { primeRedactorWithStoredKeys } from '@/lib/secureKey';
+import { clearCache, primeRedactorWithStoredKeys } from '@/lib/secureKey';
 import { useMemory } from '@/stores/memory';
 import { useChat } from '@/stores/chat';
 import { startSendQueue } from '@/stores/queue';
@@ -85,13 +87,46 @@ function Booting() {
   );
 }
 
+/**
+ * The lock screen.
+ *
+ * Deliberately as bare as {@link Booting} and outside the ThemeProvider: nothing
+ * from the transcript should be on screen behind a lock, and that includes the
+ * navigator's last frame. The retry button exists because a cancelled or
+ * mis-read prompt must not leave a dead screen with no way forward.
+ */
+function Locked({ onUnlock }: { onUnlock: () => void }) {
+  return (
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#262624', gap: 24 }}>
+      <Text style={{ color: '#f5f4ef', fontSize: 20 }}>Jarvis is locked</Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Unlock Jarvis"
+        onPress={onUnlock}
+        style={{ paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10, backgroundColor: '#d97757' }}
+      >
+        <Text style={{ color: '#262624', fontSize: 16 }}>Unlock</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 export default function RootLayout() {
   const hydrated = useHydrated();
   const themeMode = useSettings((s) => s.themeMode);
   const debugEnabled = useSettings((s) => s.debugLogEnabled);
   const debugMirror = useSettings((s) => s.debugMirrorToConsole);
+  const appLockEnabled = useSettings((s) => s.appLockEnabled);
   const profiles = useProviders((s) => s.profiles);
   const [primed, setPrimed] = useState(false);
+  /**
+   * Derived rather than stored, so nothing has to `setState` during an effect to
+   * lock: the app is locked whenever the setting is on and this session has not
+   * been through a prompt. A successful unlock and a trip to the background are the
+   * only two things that move it.
+   */
+  const [unlocked, setUnlocked] = useState(false);
+  const locked = hydrated && appLockEnabled && !unlocked;
 
   // The log module is deliberately store-free — the transports import it, and a
   // transport that reached into a React store would not be testable in node. So the
@@ -132,9 +167,55 @@ export default function RootLayout() {
     return startSendQueue((conversationId) => useChat.getState().retryTurn(conversationId));
   }, [hydrated]);
 
+  /**
+   * Shorten the key's life in the heap.
+   *
+   * The Keystore copy is the only durable one, but the in-memory cache — and the
+   * `HttpClient` inside each cached transport, which holds the key as a field — kept
+   * it live for the whole process. A backgrounded app can sit in memory for hours and
+   * is the state a heap dump is most likely to catch, so both are dropped on the way
+   * out and the Keystore is read again on the way back in.
+   *
+   * Re-priming on `active` is not optional: `clearCache` unregisters the key from the
+   * redactor, and without a re-read a log line written before the next request would
+   * lose its protection.
+   */
+  useEffect(() => {
+    if (!hydrated) return;
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next === 'background') {
+        clearCache();
+        invalidateTransports();
+        setUnlocked(false);
+      } else if (next === 'active') {
+        void primeRedactorWithStoredKeys(profiles.map((p) => p.id));
+      }
+    });
+    return () => subscription.remove();
+  }, [hydrated, profiles]);
+
+  // The prompt follows the locked state rather than the event that caused it, so the
+  // cold start and the return from background share one path.
+  useEffect(() => {
+    if (!locked) return;
+    void unlockApp().then((ok) => {
+      if (ok) setUnlocked(true);
+    });
+  }, [locked]);
+
   // Held back until the keys are registered as well as the state loaded: a screen
   // that logs a request before priming finishes could write an unredacted key.
   if (!hydrated || !primed) return <Booting />;
+  if (locked)
+    return (
+      <Locked
+        onUnlock={() => {
+          void unlockApp().then((ok) => {
+            if (ok) setUnlocked(true);
+          });
+        }}
+      />
+    );
 
   return (
     <SafeAreaProvider>
