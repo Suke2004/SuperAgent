@@ -41,6 +41,7 @@ import {
 } from '@/components/ui';
 import { buildRows, filterConversations, parseTags, tagCounts } from '@/chat/list';
 import type { ListRow } from '@/chat/list';
+import { launchTarget } from '@/chat/launch';
 import { deliverExport, gatherExport } from '@/chat/deliver';
 import type { DeliveryMethod } from '@/chat/deliver';
 import type { ExportFormat } from '@/chat/export';
@@ -62,6 +63,16 @@ import { useChat } from '@/stores/chat';
 import { useProviders } from '@/stores/providers';
 import { useReachability } from '@/stores/reachability';
 import { useTheme } from '@/theme';
+
+/**
+ * Whether this process has already been sent to a chat on launch.
+ *
+ * Module scope, not state: the redirect is a property of the app having just
+ * started, and this screen mounts again every time the user comes back to the
+ * list from a chat. A flag inside the component would fire on each of those and
+ * make the list unreachable.
+ */
+let launched = false;
 
 /** How long to wait after the last keystroke before hitting the database. */
 const SEARCH_DEBOUNCE_MS = 250;
@@ -268,6 +279,8 @@ export default function Home() {
   const [prompt, setPrompt] = useState<{ kind: 'rename' | 'tags'; conversation: Conversation } | null>(null);
   const [keyChecked, setKeyChecked] = useState(false);
   const [starting, setStarting] = useState(false);
+  /** True until the launch redirect below has fired, or given up. */
+  const [redirecting, setRedirecting] = useState(!launched);
   /**
    * Whether the list is showing the archive.
    *
@@ -417,6 +430,36 @@ export default function Home() {
       setStarting(false);
     }
   }, [openConversation, starting]);
+
+  /**
+   * The launch redirect: the app opens on a chat, not on this list.
+   *
+   * It reuses the newest empty conversation rather than creating one per launch —
+   * see {@link launchTarget} — and it runs once per process, so coming back here
+   * from a chat shows the list instead of bouncing straight out of it again.
+   *
+   * A failure leaves the list on screen with its own error banner. Landing on a
+   * usable history is a better answer to "the database would not open" than a
+   * spinner that never resolves.
+   */
+  useEffect(() => {
+    if (launched) return;
+    launched = true;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await useChat.getState().loadList({ archived: false });
+        const existing = launchTarget(useChat.getState().conversations);
+        const target = existing ?? (await useChat.getState().start());
+        if (!cancelled) router.replace({ pathname: '/chat/[id]', params: { id: target } });
+      } catch {
+        if (!cancelled) setRedirecting(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   /**
    * Delete, but only after offering the reversible version of the same wish.
@@ -915,6 +958,16 @@ export default function Home() {
   ) : (
     <Empty title="No conversations yet" body="Start one below." />
   );
+
+  // Nothing of the list is shown while the redirect is in flight: it would appear
+  // for one frame and be replaced, which reads as a flicker rather than a screen.
+  if (redirecting) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center' }}>
+        <Spinner label="Opening a chat" />
+      </View>
+    );
+  }
 
   return (
     <View style={{ flex: 1 }}>
