@@ -5,7 +5,7 @@ An offline-first Expo Android chat client for AgentRouter and other compatible g
 ## Setup
 
 ```bash
-npm install
+pnpm install
 npx expo start
 ```
 
@@ -23,7 +23,7 @@ The two AgentRouter endpoints are intentionally different:
 Build a preview APK with:
 
 ```bash
-npm run build:apk
+pnpm run build:apk
 ```
 
 ## Adding a provider
