@@ -58,6 +58,9 @@
       "policy": "appVersion"
     },
     "updates": {
+      "enabled": false,
+      "checkAutomatically": "NEVER",
+      "fallbackToCacheTimeout": 0,
       "url": "https://u.expo.dev/1203a4d2-78ca-407d-a3fb-058ee83ceb50"
     },
     "ios": {}

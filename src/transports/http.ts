@@ -145,10 +145,20 @@ export class HttpClient {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: streaming ? 'text/event-stream' : 'application/json',
-      'User-Agent': USER_AGENT,
       ...this.extraHeaders,
       ...(extra ?? {}),
     };
+    // Credential and identity headers are enforced here, not merely defaulted.
+    // `safeHeaders` in the providers store screens what a user can save, but this is
+    // the only place every request passes through: a lowercase `authorization` used
+    // to slip past the capitalised default and leave the native layer to pick
+    // between two conflicting entries, and a `User-Agent` set here would be exactly
+    // the client impersonation this app refuses to do.
+    for (const name of Object.keys(headers)) {
+      const lower = name.toLowerCase();
+      if (lower === 'authorization' || lower === 'x-api-key' || lower === 'user-agent') delete headers[name];
+    }
+    headers['User-Agent'] = USER_AGENT;
     // Auth goes on last so no caller-supplied header can displace it.
     if (this.authHeader === 'bearer') headers.Authorization = `Bearer ${this.apiKey}`;
     else headers['x-api-key'] = this.apiKey;

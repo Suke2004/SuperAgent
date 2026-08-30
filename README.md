@@ -34,7 +34,7 @@ They diverge on message shape, system-prompt placement, image encoding, streamin
 | `src/db/` | SQLite. All DDL is plain SQL in `ddl.ts` with no `expo-sqlite` import, so tests build the real schema under `node:sqlite`. |
 | `src/transports/` | Anthropic and OpenAI adapters behind one streaming interface. `fetch` is injected, which is what lets the whole layer be tested in plain Node. |
 | `src/mcp/` | Hand-rolled JSON-RPC client, protocol parsing, OAuth hand-off. |
-| `src/lib/` | Token estimation, redaction, secure key access, logging. |
+| `src/lib/` | Token estimation, redaction, secure key access, the app lock, logging. |
 
 Gates, all four of which CI runs on every push:
 
@@ -50,6 +50,8 @@ Build a preview APK with:
 pnpm run build:apk
 ```
 
+`expo-speech` (read aloud) and `expo-local-authentication` (the app lock) are native modules, so a device running an APK built before they were added needs a rebuild before those two features exist.
+
 ## Adding a provider
 
 Settings → Providers → Custom URL. Pick the wire format, enter the provider origin, save the key, then run Test connection — it reports the base URL shape, model discovery, a one-token completion, and whether the gateway serves image generation, each as its own step with the gateway's own error text. Model discovery is runtime-driven; capability flags, context limits, and pricing can be corrected under Settings → Models, and hand edits are never overwritten by a later discovery.
@@ -58,11 +60,17 @@ Adding a *transport* rather than a profile means a new adapter in `src/transport
 
 ## Security posture
 
-- The key never reaches source, logs, AsyncStorage, git or any Zustand state — `expo-secure-store` plus an in-memory cache read at request time.
+- The key never reaches source, logs, AsyncStorage, git or any Zustand state — `expo-secure-store` plus an in-memory cache read at request time. Both that cache and the cached transports holding it are dropped when the app goes to the background, and the redactor is re-primed from the Keystore on the way back.
+- On web there is no Keystore, so keys live in memory for the session and nowhere else. `localStorage` is deliberately not used, which means re-pasting after a refresh.
+- `Authorization`, `x-api-key` and `User-Agent` are enforced at the one point every request passes through, not merely defaulted: a profile header that collides with any of them is dropped before the real one is set.
 - The debug log and both export formats are redacted; exports redact twice, and a test greps the finished artefact rather than asserting a call site.
 - Exports never carry attachment bytes. Backups never carry keys, tokens, conversations or memories.
 - Android auto-backup is off, so the transcript database is not eligible for Google Drive or `adb backup`.
+- OTA updates are disabled (`updates.enabled: false`). Nothing here publishes one, so an enabled channel would be trust with no use.
+- Settings → Privacy → **Require unlock to open** gates the app behind the device biometric or PIN. Off by default; it is a lock, not encryption — `expo-sqlite` has no SQLCipher option, so the database is plaintext to root, and `docs/flaws.md` §2.2 says so.
 - No telemetry, no analytics, no third-party crash reporting.
 - The User-Agent is honest and static (`AgentRouterMobile/1.0 (Android)`). Impersonating another client to get past a gateway's allowlist is a bannable offence and is not done here.
+
+`pnpm audit` currently reports three advisories, all in build tooling (Metro's `image-size`, `xcode`'s `uuid`) that never ships to the device. Details and the reasoning for not overriding them are in [docs/flaws.md](docs/flaws.md) §5.
 
 Known flaws and unverified areas are tracked in [docs/flaws.md](docs/flaws.md) and the "Known gaps" section of [progress.md](progress.md).

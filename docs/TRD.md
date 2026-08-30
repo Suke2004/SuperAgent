@@ -71,7 +71,7 @@ Use typed `GatewayError` kinds: network, auth, client rejection, rate limit, ser
 
 ## 7. Web Development Compatibility
 
-The Android target uses Keystore and native SQLite. Web development uses Expo SQLite's WASM asset through `metro.config.js`; SecureStore falls back to browser local storage only on web because no browser Keystore exists. The browser fallback is for development and must not be treated as Android security.
+The Android target uses Keystore and native SQLite. Web development uses Expo SQLite's WASM asset through `metro.config.js`; there is no browser Keystore, so on web a key lives in process memory for the session and nowhere else — deliberately not `localStorage`, which any injected script can read and which survives the tab closing. The cost is re-pasting the key after a refresh. Web is a development target and must not be treated as Android security.
 
 ## 8. Quality Gates
 

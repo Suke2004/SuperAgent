@@ -7,9 +7,9 @@
 npx tsc --noEmit && npx eslint . && npx jest
 ```
 
-→ tsc clean, eslint clean, **1131 tests / 48 suites** in ~8 s.
+→ tsc clean, eslint clean, **1163 tests / 53 suites** in ~17 s with coverage.
 
-Coverage is now a **gate, not a note**: `npx jest --coverage` measures lines 65.25%, statements 64.01%, branches 62.14%, functions 57.37%, and `jest.config.js` carries a `coverageThreshold` a point or two under each of those, so the runner fails rather than the number going stale in this file. The functions figure is low for a structural reason, not a negligent one — `app/` and `src/components/` are excluded from unit testing by design (see the note on `jest.config.js` below), and every uncovered function is a component or a store action that only exists to call one.
+Coverage is now a **gate, not a note**: `npx jest --coverage` measures statements 68.35%, branches 65.22%, functions 60.69%, lines 69.87%, and `jest.config.js` carries a `coverageThreshold` a point or two under each of those, so the runner fails rather than the number going stale in this file. The functions figure is low for a structural reason, not a negligent one — `app/` and `src/components/` are excluded from unit testing by design (see the note on `jest.config.js` below), and every uncovered function is a component or a store action that only exists to call one.
 
 The same three gates run in CI on every push and pull request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), which is the only thing that makes the paragraph above worth reading. `pnpm gates` runs them locally in one command. CI runs a **fourth** step the local command does not: `expo export --platform android`, a full Metro bundle whose output is discarded. It is there because the other three gates structurally cannot see a broken screen — `testMatch` is `.ts` only, so no component is ever imported by the suite, and `tsc` resolves types rather than resolving what Metro resolves.
 
@@ -252,7 +252,7 @@ The Eng Plan's Phase 4 is **Sprint 9 (context pressure and exclusions)** and **S
 
 **Sprint 9's "exact estimate visible on tap"** is the token readout, now a `Pressable` that toggles between `~4.2k / 200k` and exact digits with the reserved figure spelled out. Rounded is the right default — it is an estimate, and false precision invites trusting a character-ratio guess to the token — but when the gauge is amber the next question is always "by how much?", and that is exactly what 100-token rounding hides.
 
-**Not delivered, and not by oversight:** the ±15% estimator-accuracy corpus (Sprint 9) needs measured prompt counts from the live gateway, so it is blocked on a real API key alongside R-01/D-11. The device-only acceptance criteria are unchanged in "Known gaps".
+**Not delivered, and not by oversight:** the ±15% estimator-accuracy corpus (Sprint 9) needs measured prompt counts from the live gateway, so it is blocked on a real API key alongside R-01/D-11. What remains in "Known gaps" is gateway-blocked or a profiler measurement, not a device pass — the device pass is done.
 
 **Tests.** `src/chat/summary.test.ts` and `src/chat/usage.test.ts` are new, plus the `sendConfirmation` cases in `src/chat/budget.test.ts` — 996 tests / 34 suites, `tsc --noEmit` and `eslint .` clean.
 
@@ -351,10 +351,94 @@ Everything that was recorded as "left over" is now done or has a stated reason i
 - **On-device speech-to-text.** There is no first-party Expo module for it, and the keyboard's own microphone already dictates into the composer like any other `TextInput`. A third-party native module to duplicate a button the user already has is the wrong trade, and it would not survive Expo Go.
 - **Android share-target registration.** The intent filter itself is three lines of `app.json`. *Reading* the `ACTION_SEND` payload needs a native module (`expo-share-intent`), and registering a target that then silently drops what was shared into it is worse than not appearing in the share sheet at all. Both halves or neither; this is neither, on purpose.
 
+## Security hardening sprint — ✅ COMPLETE (2026-08-30, after physical-device verification)
+
+Every open finding in [docs/flaws.md](docs/flaws.md) is now either fixed or carries a
+written reason it is not. The file keeps its closed items with the fix recorded
+underneath, so the reasoning survives.
+
+**The web key path lost its `localStorage` fallback (§2.6).** Fixed by deletion: web
+keys live in a module-scoped `Map` for the session and nowhere else. It was labelled
+development-only and was one `npm run web` from being real, where any injected script
+could read it and it survived the tab closing. Re-pasting after a refresh is the whole
+cost, and Android is the supported target.
+
+**Credential and identity headers are enforced, not defaulted (§1c).**
+`HttpClient.buildHeaders` now deletes any header whose lower-cased name is
+`authorization`, `x-api-key` or `user-agent` *after* the merge and before setting the
+real ones. `safeHeaders` already screened what a user could save, but this is the one
+point every request passes through — including one built from a backup written by an
+older build. A lowercase `authorization` used to leave two conflicting entries for the
+native layer to choose between, and a `User-Agent` set in a profile was exactly the
+client impersonation this app refuses to do.
+`src/transports/__tests__/headers.test.ts` pins all three plus an ordinary header
+still passing through.
+
+**The key's life in the heap is now bounded (§2.8).** `AppState` `background` calls
+`clearCache()` and `invalidateTransports()`; `active` re-primes the redactor. The
+re-prime is not optional — `clearCache` unregisters the key from the redactor, so
+without a fresh Keystore read a later log line would lose its protection. Cost: one
+Keystore read per foregrounding.
+
+**OTA updates are off (§2.7).** `updates.enabled: false` and
+`checkAutomatically: "NEVER"`. Nothing in the repo publishes an update, so an enabled
+channel was the largest trust dependency in the app in exchange for nothing. The URL
+stays so re-enabling is a one-line change — and if that happens it should come with
+`expo-updates` code signing rather than trust in a project id.
+
+**An app lock, because database encryption is not available (§2.2).**
+`src/lib/appLock.ts` + `expo-local-authentication`, surfaced as Settings → Privacy →
+*Require unlock to open*: off by default, disabled with the reason when nothing is
+enrolled, and **enabling it requires passing the prompt first** so a broken sensor
+cannot lock a user out of their own conversations. Device credentials are an accepted
+fallback for the same reason. `expo-sqlite` exposes no SQLCipher option, so the
+database stays plaintext to root and both the UI and the docs say so rather than
+implying the lock is encryption. The gate is *derived* state (`appLockEnabled &&
+!unlocked`) rather than a `setState` in an effect — the React Compiler lint rule that
+forbids the latter was right, and the derived form has no cascading render.
+
+**The clipboard tells the truth (§2.9).** `expo-clipboard` has no sensitivity flag,
+and clearing the clipboard on a timer would destroy whatever the user copied next —
+data loss traded for marginal secrecy. So both export paths now add "The clipboard
+holds it until you copy something else."
+
+**Dependency audit.** `pnpm audit` and `pnpm audit --prod` report three advisories,
+all in build tooling that never ships: two in Metro's `image-size` (no patch exists)
+and one in `xcode`'s `uuid` (reachable only from an iOS prebuild this app does not
+have). No override was added — a forced resolution on a transitive build dependency is
+maintenance debt with no security gain. Re-run it on every Expo or React Native bump.
+`js-yaml@5.3.0` was verified by hand as the genuine `nodeca` package rather than a
+typosquat, because a 5.x line is newer than most tooling expects.
+
+**`.gitignore`** gained the build outputs and signing material that were missing:
+`*.apk`, `*.aab`, `*.aar`, `.eas/`, `*.keystore`, `credentials.json`, and `.env*`
+broadened from `.env` plus `.env*.local`.
+
+### Left undone, each with a reason
+
+- **Streaming still dies when the app is backgrounded.** It needs a foreground
+  service, which needs a native module and therefore the bare workflow. The
+  consequence is handled honestly instead: the partial reply is kept and marked
+  aborted, and the conversation is queued for retry.
+- **No request concurrency cap.** The UI shows one conversation at a time, so two
+  concurrent streams means starting one, navigating away and starting another. A
+  semaphore in `HttpClient` is real machinery — with its own deadlock and starvation
+  modes — against a bound the interface already imposes.
+- **No key rotation path.** Rotation belongs to the gateway console; the app cannot
+  revoke a token it can only send.
+- **`.expo/types/`** is generated by the dev server and `.expo/` is gitignored, so CI
+  structurally cannot have it. `expo export --platform android` in CI is what catches
+  an unresolvable route.
+
 ## What to do next, in order
 
-1. **Physical-device verification**, which nothing in Jest or the CI bundle substitutes for. The APK has never been built or installed. See "Known gaps". `expo-speech` is a native module, so the dev build or APK needs rebuilding once for Read aloud to work — Expo Go already carries it.
-2. The ±15% estimator-accuracy corpus, once a real key is available — it needs the gateway's own reported prompt counts to measure against. This is the only item on the original list that is blocked rather than done.
+1. **Rebuild the APK.** `expo-speech` (read aloud) and `expo-local-authentication`
+   (the app lock) are native modules, so neither exists on a device running a build
+   made before them. `pnpm run build:apk`.
+2. The ±15% estimator-accuracy corpus, once a real key is available — it needs the
+   gateway's own reported prompt counts to measure against. This is the only item on
+   the original list that is blocked rather than done.
+
 
 ---
 
@@ -426,19 +510,28 @@ Already covered: both transport adapters, the SSE parser (incl. split and malfor
 
 ## Known gaps
 
-- **Nothing has run on a physical device.** No Android device has been attached to this machine, so everything below is unit-tested and type-checked but visually unverified. This list belongs in the final "couldn't verify" deliverable:
-  - Token-by-token streaming. The SSE layer is tested at chunk sizes down to one byte, all line endings and multi-byte splits, and both adapters stream one byte per chunk in tests.
-  - `KeyboardAvoidingView behavior="padding"` under `edgeToEdgeEnabled: true`. `react-native-keyboard-controller` is **not** a dependency, so this is the stock option; edge-to-edge means the keyboard overlays content and the nav bar is drawn under, which is why the composer carries `useSafeAreaInsets().bottom`.
-  - The inline-`View`-inside-`Text` approach in the markdown renderer, and `MathView`'s geometry ratios — React Native gives no baseline-relative positioning and no pre-layout glyph measurement, so both are tuned by eye.
-  - FlashList v2's `maintainVisibleContentPosition` anchoring during a live stream.
+- **Physical-device verification: done.** An Android device has been attached and the
+  app exercised on it by the author. Retired from this list by that run: token-by-token
+  streaming, `KeyboardAvoidingView behavior="padding"` under `edgeToEdgeEnabled: true`
+  (fixed on device — see the keyboard-inset commit), the markdown renderer's
+  inline-`View`-inside-`Text` geometry and `MathView`'s ratios, FlashList v2's
+  `maintainVisibleContentPosition` anchoring mid-stream, the attachment pipeline
+  end to end, and the share sheet.
+
+  Two things a device run cannot retire, both in [docs/flaws.md](docs/flaws.md) §3: a
+  reply stops streaming if the app is backgrounded mid-turn (the partial text is kept
+  and marked aborted), and `expo-speech` plus `expo-local-authentication` are native
+  modules, so read aloud and the app lock do not exist on a device running a build
+  made before them.
+- **Still unverified, because it needs the live gateway rather than a device:**
   - **The two list performance criteria.** 55 fps while scrolling 500 conversations and first paint of a 1,000-message transcript under 2 s are properties of the native renderer. `src/chat/list-cost.test.ts` bounds the JavaScript that runs before layout; it does not and cannot measure either criterion.
   - **Long-term memory end to end.** The distillation pass has never run against the live gateway, so how often a real model returns `[]` versus inventing trivia is unmeasured. The parser, the secret screen and the budget are tested; the *quality* of what gets remembered is not, and it is the thing most likely to need the prompt in `DISTIL_INSTRUCTION` tuned after first contact.
-  - **The share sheet.** `Share.share({ message })` and the 256 kB fallback to the clipboard are reasoned from Android's Binder limit, not measured on a device — which target apps truncate a long `message`, and at what size, is unverified. The artefact itself is fully tested; only the handover is not.
+  - **The share sheet.** `Share.share({ message })` works, and the 256 kB fallback to the clipboard is reasoned from Android's Binder limit rather than measured — which target apps truncate a long `message`, and at what size, is still unverified because it depends on the receiving app, not on this one.
   - **Prompt caching has never been exercised against the live gateway.** The breakpoints, the block-form system prompt and the merge-aware marker placement are all unit-tested, but whether this gateway forwards `cache_control` to Anthropic at all — and whether it passes `cache_read_input_tokens` back — is unknown, and it is the one thing that decides whether the feature saves money or costs 25% on the marked prefix. `describeCacheOutcome` is written to report exactly this case ("we asked and got nothing"), and `ModelCapabilities.promptCache` is the per-model off switch if it turns out to be the answer. First real conversation will settle it in one turn: a non-zero `cacheWrite` on turn one and a non-zero `cacheRead` on turn two.
   - **The trim ladder's savings are estimates.** `TrimReport.before`/`after` come from the character-ratio estimator, so the figure in the transcript banner is approximate in the same way the composer's gauge is. What was *lost* is exact; what it saved is not.
-  - **The whole attachment pipeline is unverified on hardware, and it is the feature least substitutable by unit tests.** `attachments.ts` is tested exhaustively and `attach.ts` is not tested at all — it is four `expo-*` packages and a file system. Specifically unverified: that a 12 MP photo actually survives resize-then-encode inside the memory a mid-range phone allows (the criterion the resize-first ordering exists for); that `ImageManipulator`'s `height: null` derives the ratio as documented when the picker reported no dimensions; that every `saveAsync` temporary is really removed from the cache directory; that the permission copy in `app.json` reaches the system dialog; and that a thumbnail strip of eight base64 images does not stutter the composer. The token estimate of 2,500 per image is a provider figure applied flat, not measured — the first live turn's reported prompt count will say how far off it is, and the calibration factor deliberately does **not** correct it.
+  - **The image token estimate.** The attachment pipeline itself has now been exercised on hardware — a 12 MP photo survives resize-then-encode, temporaries are cleaned up, the permission copy reaches the system dialog and a thumbnail strip does not stutter the composer. What is still a guess is the cost: 2,500 tokens per image is a provider figure applied flat, and only the first live turn's reported prompt count will say how far off it is. The calibration factor deliberately does **not** correct it.
   - **The PDF path has never reached the live gateway.** Whether this gateway forwards Anthropic `document` blocks at all is unknown; `ModelCapabilities.documents` is the manual off switch if it does not. A refusal from the gateway here looks like a rejected request, not a crash, so the failure mode is at least legible.
-- **`.expo/types/` has not been generated**, so expo-router's typed routes are not actually being enforced — `router.push({ pathname: '/chat/[id]', params: { id } })` currently typechecks against `string`. Run the dev server once to generate them and re-run `tsc`; a typo in a route path is invisible until then.
+- **`.expo/types/` has not been generated**, so expo-router's typed routes are not actually being enforced — `router.push({ pathname: '/chat/[id]', params: { id } })` currently typechecks against `string`. It is generated by the dev server and `.expo/` is gitignored, so CI structurally cannot have it; `expo export --platform android` is what catches a route that does not resolve.
 - **Live gateway verification is blocked on a real API key.** Both domains are reachable and the unauthenticated 401 shape has been captured, but key-rejected vs client-rejected could not be distinguished without a token (an honest UA and an empty UA give the identical 401, and spoofing is off the table). If the key is provided, it should go in a gitignored file or an env var — never pasted into chat.
 - Rate-limit thresholds are undocumented; which optional parameters the gateway silently drops vs rejects is unknown.
 
@@ -446,9 +539,11 @@ Already covered: both transport adapters, the SSE parser (incl. split and malfor
 
 ## Dependencies
 
-Installed and in use: `expo ~57.0.15`, `react 19.2.3`, `react-native 0.86.2`, `typescript ~6.0.3`, `expo-router`, `expo-sqlite`, `expo-secure-store`, `expo-clipboard`, `expo-crypto`, `expo-linking`, `expo-image-picker ~57.0.14`, `expo-image-manipulator ~57.0.14`, `expo-document-picker ~57.0.1`, `expo-file-system ~57.0.6`, `zustand 5`, `@react-native-async-storage/async-storage`, `@shopify/flash-list 2.0.2`, `react-native-safe-area-context`, `react-native-screens`, `marked 18`, `refractor 5`, `expo-speech ~57.0.2` (read aloud), `js-yaml` (Phase 4 frontmatter), `fflate` (skill frontmatter archives — bulk skill import/export).
+Installed and in use: `expo ~57.0.15`, `react 19.2.3`, `react-native 0.86.2`, `typescript ~6.0.3`, `expo-router`, `expo-sqlite`, `expo-secure-store`, `expo-clipboard`, `expo-crypto`, `expo-linking`, `expo-image-picker ~57.0.14`, `expo-image-manipulator ~57.0.14`, `expo-document-picker ~57.0.1`, `expo-file-system ~57.0.6`, `zustand 5`, `@react-native-async-storage/async-storage`, `@shopify/flash-list 2.0.2`, `react-native-safe-area-context`, `react-native-screens`, `marked 18`, `refractor 5`, `expo-speech ~57.0.2` (read aloud), `expo-local-authentication 57.0.2` (the app lock), `js-yaml` (Phase 4 frontmatter), `fflate` (skill frontmatter archives — bulk skill import/export).
 
-Still to install: nothing. `expo-sharing` was pencilled in for a "save as a file" export and is not needed — `expo-file-system` is in the tree for attachments and the skills zip, so a folder-picked write is already available if a transcript ever wants one; the share sheet is the better handover for text. `expo-speech` was the only install in the cleanup sprint, and it is an official Expo SDK module carried by Expo Go.
+Still to install: nothing. `expo-sharing` was pencilled in for a "save as a file" export and is not needed — `expo-file-system` is in the tree for attachments and the skills zip, so a folder-picked write is already available if a transcript ever wants one; the share sheet is the better handover for text. `expo-speech` and `expo-local-authentication` are the only two installs since Phase 5, both official Expo SDK modules, and both **native** — a device running an APK built before them needs a rebuild before read aloud and the app lock exist.
+
+`pnpm audit` reports three advisories, all in build tooling that never reaches the device (Metro's `image-size` ×2, `xcode`'s `uuid`). No override was added; the reasoning is in [docs/flaws.md](docs/flaws.md) §5, which is worth re-running on every Expo or React Native bump.
 
 Nothing else. `expo-web-browser` / `expo-auth-session` were pencilled in for Phase 5's OAuth flow and turned out to be unnecessary: `expo-linking` was already in the tree for deep links and does both halves of the hand-off.
 
