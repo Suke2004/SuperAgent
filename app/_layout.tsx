@@ -22,7 +22,10 @@ import { useHydrated } from '@/lib/storage';
 import { debugLog } from '@/lib/log';
 import { primeRedactorWithStoredKeys } from '@/lib/secureKey';
 import { useMemory } from '@/stores/memory';
+import { useChat } from '@/stores/chat';
+import { startSendQueue } from '@/stores/queue';
 import { useSkills } from '@/stores/skills';
+import { useMcp } from '@/stores/mcp';
 import { useProviders } from '@/stores/providers';
 import { useSettings } from '@/stores/settings';
 import { ThemeProvider, useTheme } from '@/theme';
@@ -57,6 +60,10 @@ function Navigator() {
         <Stack.Screen name="settings/appearance" options={{ title: 'Appearance' }} />
         <Stack.Screen name="settings/memory" options={{ title: 'Memory' }} />
         <Stack.Screen name="settings/skills" options={{ title: 'Skills' }} />
+        <Stack.Screen name="settings/mcp" options={{ title: 'MCP servers' }} />
+        <Stack.Screen name="settings/prompts" options={{ title: 'Prompts' }} />
+        <Stack.Screen name="settings/usage" options={{ title: 'Usage' }} />
+        <Stack.Screen name="settings/backup" options={{ title: 'Backup' }} />
         <Stack.Screen name="settings/debug" options={{ title: 'Debug log' }} />
       </Stack>
     </>
@@ -114,6 +121,15 @@ export default function RootLayout() {
     if (!hydrated) return;
     void useMemory.getState().load();
     void useSkills.getState().load();
+    void useMcp.getState().load();
+  }, [hydrated]);
+
+  // The offline queue's two triggers live for as long as the app does: a request
+  // that proves the gateway is back, and a return to the foreground with something
+  // still waiting.
+  useEffect(() => {
+    if (!hydrated) return;
+    return startSendQueue((conversationId) => useChat.getState().retryTurn(conversationId));
   }, [hydrated]);
 
   // Held back until the keys are registered as well as the state loaded: a screen
