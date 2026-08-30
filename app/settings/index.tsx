@@ -13,6 +13,8 @@ import { useMemory } from '@/stores/memory';
 import { useProviders } from '@/stores/providers';
 import { useSettings } from '@/stores/settings';
 import { useSkills } from '@/stores/skills';
+import { useMcp } from '@/stores/mcp';
+import { usePrompts } from '@/stores/prompts';
 
 export default function SettingsHub() {
   const router = useRouter();
@@ -21,6 +23,8 @@ export default function SettingsHub() {
   const settings = useSettings();
   const memoryCount = useMemory((s) => s.memories.length);
   const skillCount = useSkills((s) => s.skills.length);
+  const serverCount = useMcp((s) => s.servers.length);
+  const promptCount = usePrompts((s) => s.prompts.length);
   const active = profiles.find((p) => p.id === activeId);
 
   return (
@@ -76,6 +80,34 @@ export default function SettingsHub() {
         />
       </Section>
 
+      <Section
+        title="MCP servers"
+        note="Tools lent to a conversation over the network. Streamable HTTP and SSE only; tokens live in the Keystore, never in the database."
+      >
+        <Row
+          first
+          chevron
+          label="MCP servers"
+          value={serverCount ? `${serverCount}` : 'None'}
+          subtitle="Add by URL, sign in, and choose which tools are offered"
+          onPress={() => router.push('/settings/mcp')}
+        />
+      </Section>
+
+      <Section
+        title="Prompts"
+        note="Templates with {{variables}} you insert into the composer. Inserted from a conversation's menu."
+      >
+        <Row
+          first
+          chevron
+          label="Prompt library"
+          value={promptCount ? `${promptCount}` : 'None'}
+          subtitle="Write, edit or delete reusable prompts"
+          onPress={() => router.push('/settings/prompts')}
+        />
+      </Section>
+
       <Section title="Appearance">
         <Row
           first
@@ -83,6 +115,25 @@ export default function SettingsHub() {
           label="Theme and rendering"
           value={settings.themeMode === 'system' ? 'System' : settings.themeMode === 'dark' ? 'Dark' : 'Light'}
           onPress={() => router.push('/settings/appearance')}
+        />
+      </Section>
+
+      <Section
+        title="Data"
+        note="What this device has recorded, and a copy of the configuration you would otherwise re-enter by hand."
+      >
+        <Row
+          first
+          chevron
+          label="Usage"
+          subtitle="Tokens and estimated cost, by day and by model"
+          onPress={() => router.push('/settings/usage')}
+        />
+        <Row
+          chevron
+          label="Backup and restore"
+          subtitle="Settings, providers, skills, prompts and servers — never keys or conversations"
+          onPress={() => router.push('/settings/backup')}
         />
       </Section>
 

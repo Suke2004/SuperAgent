@@ -25,7 +25,7 @@ import { FlashList } from '@shopify/flash-list';
 import * as Clipboard from 'expo-clipboard';
 import { Stack as NavStack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Modal, Pressable, View } from 'react-native';
+import { Alert, Modal, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { OfflineBadge, OfflineBanner } from '@/components/OfflineBanner';
@@ -73,6 +73,11 @@ import { capabilitiesFor, entryKey, pickableModelIds, useModels } from '@/stores
 import { useProviders } from '@/stores/providers';
 import { useSettings } from '@/stores/settings';
 import { useSkills } from '@/stores/skills';
+import { useMcp } from '@/stores/mcp';
+import { describeArguments } from '@/mcp/protocol';
+import { usePrompts } from '@/stores/prompts';
+import { fillPrompt, isComplete, variablesIn } from '@/chat/prompts';
+import type { Prompt as LibraryPrompt } from '@/chat/prompts';
 import { availableEfforts, controlSupport } from '@/transports/support';
 import type { ContentBlock } from '@/transports/types';
 import { useTheme } from '@/theme';
@@ -113,6 +118,9 @@ export default function ChatScreen() {
 
   const profiles = useProviders((s) => s.profiles);
   const installedSkills = useSkills((s) => s.skills);
+  const mcpServers = useMcp((s) => s.servers);
+  const pendingApproval = useMcp((s) => s.pending[0] ?? null);
+  const library = usePrompts((s) => s.prompts);
   const entries = useModels((s) => s.entries);
   const showThinkingByDefault = useSettings((s) => s.showThinkingByDefault);
   const memoryEnabled = useSettings((s) => s.memoryEnabled);
@@ -126,6 +134,11 @@ export default function ChatScreen() {
   const [modelMenu, setModelMenu] = useState(false);
   const [profileMenu, setProfileMenu] = useState(false);
   const [skillMenu, setSkillMenu] = useState(false);
+  const [serverMenu, setServerMenu] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  /** The template being filled in, and what has been typed for its variables. */
+  const [filling, setFilling] = useState<LibraryPrompt | null>(null);
+  const [values, setValues] = useState<Record<string, string>>({});
   const [configOpen, setConfigOpen] = useState(false);
   const [costFor, setCostFor] = useState<StoredMessage | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
@@ -496,6 +509,25 @@ export default function ChatScreen() {
   };
 
   /**
+   * Puts a template into the draft.
+   *
+   * Appended rather than replacing: a draft with half a thought in it is the usual
+   * reason to reach for a template, and losing that would be worse than a tidy
+   * composer. A template with variables goes through the fill-in form first —
+   * `fillPrompt` leaves an unfilled one visible, so nothing is silently blanked.
+   */
+  const insertPrompt = (prompt: LibraryPrompt, filled: Record<string, string>): void => {
+    const text = fillPrompt(prompt.body, filled);
+    setDraft(id, draft.trim() ? `${draft.trimEnd()}
+
+${text}` : text);
+    void usePrompts.getState().noteUsed(prompt.id);
+    setFilling(null);
+    setValues({});
+    setLibraryOpen(false);
+  };
+
+  /**
    * Quotes a message from another conversation into this draft.
    *
    * The hit only carries a snippet — a one-line window around the match — so the
@@ -746,6 +778,16 @@ export default function ChatScreen() {
             : 'None written yet — Settings → Skills',
       onPress: () => setSkillMenu(true),
     },
+    {
+      label: 'MCP servers',
+      subtitle:
+        (conversation.config.servers ?? []).length > 0
+          ? (conversation.config.servers ?? []).join(', ')
+          : mcpServers.length
+            ? 'None on for this conversation'
+            : 'None added yet — Settings → MCP servers',
+      onPress: () => setServerMenu(true),
+    },
     { label: 'Rename', subtitle: conversation.title, onPress: () => setPrompt({ kind: 'rename' }) },
     {
       label: 'Tags',
@@ -760,6 +802,14 @@ export default function ChatScreen() {
       label: 'Bring in a message…',
       subtitle: 'Quotes something from another chat into this draft.',
       onPress: () => setReference(true),
+    },
+    {
+      label: 'Prompt library…',
+      subtitle: library.length ? `${library.length} saved` : 'None yet — Settings → Prompts',
+      onPress: () => {
+        void usePrompts.getState().load();
+        setLibraryOpen(true);
+      },
     },
     {
       label: 'Export…',
@@ -801,6 +851,43 @@ export default function ChatScreen() {
         void useChat.getState().setConfig(id, {
           skills: on ? enabledSkills.filter((name) => name !== skill.name) : [...enabledSkills, skill.name],
         }),
+    };
+  });
+
+  // Same shape as the skills toggles: whole servers, not individual tools. Which
+  // tools a server offers is its own setting and applies everywhere, so putting it
+  // here as well would give two places to switch one thing off.
+  const enabledServers = conversation.config.servers ?? [];
+  const serverActions: SheetAction[] = mcpServers.map((server) => {
+    const on = enabledServers.includes(server.name);
+    const ready = server.enabled.length > 0;
+    return {
+      label: server.name,
+      subtitle: ready
+        ? `${on ? 'On' : 'Off'} · ${server.enabled.length} ${server.enabled.length === 1 ? 'tool' : 'tools'}`
+        : 'No tools yet — connect it in Settings → MCP servers',
+      ...(ready ? {} : { disabled: true, disabledReason: 'Nothing discovered yet.' }),
+      onPress: () =>
+        void useChat.getState().setConfig(id, {
+          servers: on ? enabledServers.filter((name) => name !== server.name) : [...enabledServers, server.name],
+        }),
+    };
+  });
+
+  const libraryActions: SheetAction[] = library.map((prompt) => {
+    const variables = variablesIn(prompt.body);
+    return {
+      label: prompt.title,
+      subtitle: variables.length ? `Fills in ${variables.join(', ')}` : prompt.body.replace(/\s+/g, ' ').slice(0, 60),
+      onPress: () => {
+        if (!variables.length) {
+          insertPrompt(prompt, {});
+          return;
+        }
+        setValues({});
+        setFilling(prompt);
+        setLibraryOpen(false);
+      },
     };
   });
 
@@ -963,7 +1050,7 @@ export default function ChatScreen() {
                 onDismiss={() => dismissError(id)}
                 {...(stream.error !== undefined
                   ? {
-                      onRetry: () => { dismissError(id); void useChat.getState().regenerate(id, messages[messages.length - 1]?.id ?? ''); },
+                      onRetry: () => void useChat.getState().retryTurn(id),
                       // A rejected parameter is fixable, and the fix is in a sheet the
                       // banner can open. Without this the user has to guess which of
                       // the ⋯ entries owns `temperature`.
@@ -1128,6 +1215,55 @@ export default function ChatScreen() {
         onClose={() => setSkillMenu(false)}
       />
 
+      <Sheet
+        visible={serverMenu}
+        title="MCP servers"
+        body={
+          mcpServers.length
+            ? 'Each server switched on here adds its enabled tools to this conversation’s requests. A call can stop and ask you first.'
+            : 'An MCP server lends its tools over the network. Add one in Settings → MCP servers, then switch it on here.'
+        }
+        actions={
+          mcpServers.length
+            ? serverActions
+            : [{ label: 'Open Settings → MCP servers', onPress: () => router.push('/settings/mcp') }]
+        }
+        onClose={() => setServerMenu(false)}
+      />
+
+      {/* The approval gate. The turn is blocked on this answer, so it is not
+          dismissible by tapping away: closing without deciding would leave the model
+          waiting on a question nothing will ever answer. The arguments are shown in
+          full, untruncated, because a shortened argument list is exactly where a
+          surprising path or recipient would hide. */}
+      <Sheet
+        visible={pendingApproval !== null}
+        title={pendingApproval ? `Run ${pendingApproval.tool}?` : ''}
+        {...(pendingApproval ? { subtitle: `${pendingApproval.serverName} wants to run this with:` } : {})}
+        {...(pendingApproval ? { body: describeArguments(pendingApproval.input) } : {})}
+        actions={
+          pendingApproval
+            ? [
+                { label: 'Allow once', onPress: () => useMcp.getState().resolve(pendingApproval.id, 'once') },
+                {
+                  label: 'Always allow this tool',
+                  subtitle: 'Remembered until you change it in Settings → MCP servers',
+                  onPress: () => useMcp.getState().resolve(pendingApproval.id, 'always'),
+                },
+                { label: 'Deny', destructive: true, onPress: () => useMcp.getState().resolve(pendingApproval.id, 'deny') },
+                {
+                  label: 'Never allow this tool',
+                  destructive: true,
+                  onPress: () => useMcp.getState().resolve(pendingApproval.id, 'never'),
+                },
+              ]
+            : []
+        }
+        onClose={() => {
+          if (pendingApproval) useMcp.getState().resolve(pendingApproval.id, 'deny');
+        }}
+      />
+
       {/* Where `~$0.0042` comes from, said once, on demand.
           The number is arithmetic on a price table this app cannot verify: the
           gateway does not publish rates, so the table is hand-entered and may be
@@ -1147,6 +1283,73 @@ export default function ChatScreen() {
         ]}
         onClose={() => setCostFor(null)}
       />
+
+      <Sheet
+        visible={libraryOpen}
+        title="Prompt library"
+        body={
+          library.length
+            ? 'Inserted at the end of the draft. A template with {{variables}} asks for them first.'
+            : 'Templates for the things you type often. Write one in Settings → Prompts.'
+        }
+        actions={
+          library.length
+            ? libraryActions
+            : [{ label: 'Open Settings → Prompts', onPress: () => router.push('/settings/prompts') }]
+        }
+        onClose={() => setLibraryOpen(false)}
+      />
+
+      {/* The fill-in form. One field per variable, in the order they appear in the
+          template, so the fields read in the order of the sentence they complete. */}
+      <Modal
+        visible={filling !== null}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setFilling(null)}
+      >
+        <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.45)' }}>
+          <View
+            accessibilityViewIsModal
+            style={{
+              maxHeight: '90%',
+              backgroundColor: t.colors.bg,
+              borderTopLeftRadius: t.radius.lg,
+              borderTopRightRadius: t.radius.lg,
+              padding: t.spacing.lg,
+            }}
+          >
+            {filling ? (
+              <Stack gap="md">
+                <Body size="lg" weight="700">
+                  {filling.title}
+                </Body>
+                <ScrollView keyboardShouldPersistTaps="handled">
+                  <Stack gap="md">
+                    {variablesIn(filling.body).map((name) => (
+                      <Field
+                        key={name}
+                        label={name}
+                        value={values[name] ?? ''}
+                        onChangeText={(text) => setValues((current) => ({ ...current, [name]: text }))}
+                        rows={2}
+                      />
+                    ))}
+                  </Stack>
+                </ScrollView>
+                <Inline gap="md">
+                  <Button
+                    label="Insert"
+                    disabled={!isComplete(filling.body, values)}
+                    onPress={() => insertPrompt(filling, values)}
+                  />
+                  <Button label="Cancel" variant="ghost" onPress={() => setFilling(null)} />
+                </Inline>
+              </Stack>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
 
       {/* Mounted only while open, so the draft is seeded from the stored value
           every time rather than surviving a cancel. */}

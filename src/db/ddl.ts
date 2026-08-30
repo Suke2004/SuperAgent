@@ -10,7 +10,7 @@
  */
 
 /** Bumped whenever {@link MIGRATIONS} grows. Stored in SQLite's `user_version`. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * The FTS index and the three triggers that keep it in step with `messages`.
@@ -208,5 +208,64 @@ export const MIGRATIONS: readonly string[] = [
     -- \`IF NOT EXISTS\` throughout, like the steps before it: an interrupted
     -- migration must be safe to re-run.
     CREATE UNIQUE INDEX IF NOT EXISTS skills_name ON skills (name);
+  `,
+  /* 4 → 5 */ `
+    -- MCP servers, and the prompt library, which arrive together because both are
+    -- small user-authored tables and a migration is a migration.
+    --
+    -- No token column, deliberately. A bearer token and an OAuth access token are
+    -- credentials, so they live in expo-secure-store under \`mcp.<id>\` beside the
+    -- API key — a database file is backed up, copied to a computer, and read by
+    -- anything with the file, and the app's own backup/restore would carry it.
+    -- What is stored here is the non-secret half: where the server is, what it
+    -- said it can do, and what the user decided about it.
+    CREATE TABLE IF NOT EXISTS mcp_servers (
+      id          TEXT    PRIMARY KEY NOT NULL,
+      created_at  INTEGER NOT NULL,
+      updated_at  INTEGER NOT NULL,
+      name        TEXT    NOT NULL,
+      url         TEXT    NOT NULL,
+      -- 'http' (Streamable HTTP) | 'sse' (the 2024-11-05 transport). Never stdio:
+      -- a phone has no child process to speak it to.
+      transport   TEXT    NOT NULL DEFAULT 'http',
+      -- 'none' | 'bearer' | 'oauth'. The token itself is in the Keystore.
+      auth_kind   TEXT    NOT NULL DEFAULT 'none',
+      -- JSON: user-configured static headers, e.g. an X-Api-Key. Never a bearer
+      -- token — that has a Keystore slot, and this column is in the backup.
+      headers     TEXT    NOT NULL DEFAULT '{}',
+      -- JSON: OAuth client id, endpoints and token expiry. No secrets.
+      oauth       TEXT,
+      -- JSON McpTool[] from the last discovery, so the app can build a request
+      -- without a round trip on the turn's hot path.
+      tools       TEXT    NOT NULL DEFAULT '[]',
+      -- JSON: resources and prompts the server advertises, for the settings screen.
+      catalogue   TEXT    NOT NULL DEFAULT '{}',
+      -- JSON string[]: which tool names are switched on at all. A server with
+      -- forty tools would otherwise put 8-15k tokens of schema in every request.
+      enabled     TEXT    NOT NULL DEFAULT '[]',
+      -- JSON Record<string, 'ask' | 'always' | 'deny'>: the standing decision per
+      -- tool, from the approval sheet.
+      approvals   TEXT    NOT NULL DEFAULT '{}',
+      -- What the last connection attempt said, so the row can be honest about it.
+      last_error  TEXT,
+      last_seen_at INTEGER
+    );
+
+    -- Names are what the conversation config stores, same reasoning as skills.
+    CREATE UNIQUE INDEX IF NOT EXISTS mcp_servers_name ON mcp_servers (name);
+
+    -- The prompt library: reusable message templates with {{variables}}.
+    CREATE TABLE IF NOT EXISTS prompts (
+      id         TEXT    PRIMARY KEY NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      title      TEXT    NOT NULL,
+      body       TEXT    NOT NULL,
+      -- Bumped on use, so the list can put what you actually use at the top.
+      uses       INTEGER NOT NULL DEFAULT 0,
+      last_used_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS prompts_rank ON prompts (uses DESC, updated_at DESC);
   `,
 ];
