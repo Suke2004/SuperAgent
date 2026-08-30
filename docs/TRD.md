@@ -80,7 +80,7 @@ npx tsc --noEmit
 npx eslint src app
 npx jest --runInBand
 npx expo export --platform web
-npm run build:apk
+pnpm run build:apk
 ```
 
 The APK gate requires EAS credentials and a successful preview build. Physical-device checks remain mandatory for streaming and Android layout behavior.
