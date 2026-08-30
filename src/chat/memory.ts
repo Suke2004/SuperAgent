@@ -142,6 +142,23 @@ export function shouldDistil(input: { enabled: boolean; assistantTurns: number }
   return input.assistantTurns % DISTIL_EVERY_TURNS === 0;
 }
 
+/**
+ * Whether memory applies to one conversation.
+ *
+ * The per-conversation flag is an **opt-out only**: it can silence memory for a
+ * thread, and it cannot switch it on when the global setting is off. That
+ * asymmetry is the point rather than an omission — the global off is documented as
+ * "the feature costs exactly nothing while it is off", and a conversation that
+ * could re-enable it would make that untrue and add a second place to look when
+ * someone has turned memory off and wants to know why a prompt still carries it.
+ *
+ * The case this exists for is the opposite direction anyway: one conversation about
+ * something private, in an app where memory is otherwise wanted.
+ */
+export function memoryAppliesTo(globalEnabled: boolean, conversationOverride: boolean | undefined): boolean {
+  return globalEnabled && conversationOverride !== false;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Parsing                                                                     */
 /* -------------------------------------------------------------------------- */

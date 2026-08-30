@@ -178,11 +178,17 @@ export class McpClient {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: accept,
-      'User-Agent': USER_AGENT,
       ...(this.options.headers ?? {}),
       ...(extra ?? {}),
     };
-    // Auth last, so no configured header can displace it.
+    // The app's own headers last, so no configured header can displace them. `flaws.md`
+    // §1c fixed exactly this in `transports/http.ts` and the same spread order was
+    // still here: a configured `User-Agent` used to win, which makes the "one honest,
+    // static User-Agent" claim a default rather than an enforcement.
+    for (const name of Object.keys(headers)) {
+      if (/^(?:user-agent|authorization)$/i.test(name)) delete headers[name];
+    }
+    headers['User-Agent'] = USER_AGENT;
     if (this.options.token) headers.Authorization = `Bearer ${this.options.token}`;
     return headers;
   }

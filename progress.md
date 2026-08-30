@@ -386,14 +386,14 @@ channel was the largest trust dependency in the app in exchange for nothing. The
 stays so re-enabling is a one-line change — and if that happens it should come with
 `expo-updates` code signing rather than trust in a project id.
 
-**An app lock, because database encryption is not available (§2.2).**
+**An app lock (§2.2).**
 `src/lib/appLock.ts` + `expo-local-authentication`, surfaced as Settings → Privacy →
 *Require unlock to open*: off by default, disabled with the reason when nothing is
 enrolled, and **enabling it requires passing the prompt first** so a broken sensor
 cannot lock a user out of their own conversations. Device credentials are an accepted
-fallback for the same reason. `expo-sqlite` exposes no SQLCipher option, so the
-database stays plaintext to root and both the UI and the docs say so rather than
-implying the lock is encryption. The gate is *derived* state (`appLockEnabled &&
+fallback for the same reason. It is a lock and not encryption, and the UI says so;
+encryption arrived separately in the third pass below. The gate is *derived* state
+(`appLockEnabled &&
 !unlocked`) rather than a `setState` in an effect — the React Compiler lint rule that
 forbids the latter was right, and the derived form has no cascading render.
 
@@ -430,11 +430,59 @@ broadened from `.env` plus `.env*.local`.
   structurally cannot have it. `expo export --platform android` in CI is what catches
   an unresolvable route.
 
+## Third-party audit pass — ✅ COMPLETE (2026-08-31, code not yet run on a device)
+
+An external audit ("AgentRouter Mobile — Full App Audit") was cross-checked finding
+by finding against this worktree. Most of its security section was already closed or
+rested on a false premise; the verdict per finding is in
+[docs/flaws.md](docs/flaws.md) §2.2 and §4. What changed here:
+
+**The database is encrypted (flaws §2.2 — and the old §2.2 was wrong).** The claim
+this file and `flaws.md` both carried — that `expo-sqlite` in the managed workflow
+exposes no SQLCipher key — is false for SDK 57. `expo-sqlite@57.0.1` vendors
+SQLCipher and its own config plugin takes `{ android: { useSQLCipher: true } }`,
+which `app.json` now sets; FTS5 is unaffected. `src/db/schema.ts` mints a 32-byte
+CSPRNG key into one SecureStore slot (`agentrouter.dbKey`) and issues
+`PRAGMA key = "x'<64 hex>'"` **before every other statement**, including
+`journal_mode` — on an encrypted database anything before the key fails. Raw hex
+rather than a passphrase skips 256k PBKDF2 rounds per open. An existing plaintext
+file is converted once via `sqlcipher_export` into a scratch name, then **two moves**
+rather than delete-then-move, so a kill mid-swap always leaves one intact copy;
+stale `-wal`/`-shm` siblings are deleted because they would otherwise be read as
+belonging to the file that took their base name. `src/db/cipher.ts` holds all of the
+string handling and imports nothing, so the SQL-interpolation guard has a real test
+(`src/db/cipher.test.ts`) without mocking a native module.
+
+Deliberately not done: no `requireAuthentication` on the key slot (it would deny the
+send queue database access while the device is locked) and no escrow (clearing app
+data destroys the key and the conversations with it — `allowBackup: false` means the
+file cannot arrive on a device whose Keystore never held its key).
+
+**This changes the native build and has not been compiled.** Nothing in this pass is
+verified beyond `tsc`, `jest` (54 suites / 1,182 tests) and `eslint`. `pnpm run
+build:apk` — or EAS — is required before the encryption is trusted, and the first
+launch on a device with an existing database is what exercises the conversion path.
+
+**Three features from the audit's list, the ones that were both missing and small:**
+a per-conversation memory opt-out (`ConversationConfig.memory`, opt-out only —
+`memoryAppliesTo` cannot switch memory on while the global setting is off, so global
+off still costs nothing), a default system prompt for new conversations (Settings →
+Prompts; copied in at creation, not prepended at send time, so editing it later
+leaves tuned conversations alone and the transcript matches what was sent), and a
+stop-sequence field in the model controls (newline-separated, since a comma is a
+legitimate stop sequence; nothing is trimmed, since trailing space is exactly what
+someone stops on). The rest of the audit's twenty were already shipped, half-shipped,
+or larger than this pass — batch export and LaTeX rendering, for instance, both
+already exist.
+
+---
+
 ## What to do next, in order
 
-1. **Rebuild the APK.** `expo-speech` (read aloud) and `expo-local-authentication`
-   (the app lock) are native modules, so neither exists on a device running a build
-   made before them. `pnpm run build:apk`.
+1. **Rebuild the APK.** `expo-speech` (read aloud), `expo-local-authentication` (the
+   app lock) and now **SQLCipher** are native, so none of them exists on a device
+   running a build made before them — and the encryption is entirely unverified
+   until one is made. `pnpm run build:apk`.
 2. The ±15% estimator-accuracy corpus, once a real key is available — it needs the
    gateway's own reported prompt counts to measure against. This is the only item on
    the original list that is blocked rather than done.

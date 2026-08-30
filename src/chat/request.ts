@@ -201,6 +201,36 @@ export function hasBlockingIssue(issues: readonly ConfigIssue[]): boolean {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Stop sequences                                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Stop sequences as one text field: one sequence per line.
+ *
+ * Newline-separated rather than comma-separated because a comma is a perfectly
+ * ordinary thing to want to stop on, and a separator the value can contain is a
+ * field that cannot express half its domain.
+ *
+ * Nothing is trimmed. `  ` and `Human: ` are both legitimate sequences and
+ * trailing space is exactly the sort of thing someone stops on, so only lines that
+ * are entirely empty are dropped. A stray `\r` from a paste is removed, because
+ * that is never what was meant.
+ */
+export function parseStopSequences(text: string): string[] {
+  const seen = new Set<string>();
+  for (const line of text.split('\n')) {
+    const sequence = line.replace(/\r$/, '');
+    if (sequence !== '') seen.add(sequence);
+  }
+  return [...seen];
+}
+
+/** The inverse, for seeding the field from what the conversation currently sends. */
+export function formatStopSequences(sequences: readonly string[] | undefined): string {
+  return (sequences ?? []).join('\n');
+}
+
+/* -------------------------------------------------------------------------- */
 /* Defaults and merging                                                        */
 /* -------------------------------------------------------------------------- */
 

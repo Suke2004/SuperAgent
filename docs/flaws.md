@@ -1,7 +1,8 @@
 # Flaws, gaps and security findings
 
-Audited at commit `f6db5a5`, 2026-08-30, and revised the same day after the second
-fix pass. Nothing here is a feature request — the outstanding feature work is in
+Audited at commit `f6db5a5`, 2026-08-30, revised the same day after the second fix
+pass, and again on 2026-08-31 after cross-checking a third-party audit against the
+code. Nothing here is a feature request — the outstanding feature work is in
 [06_Eng_Plan.md](06_Eng_Plan.md) and `progress.md`. This file is the list of things
 that are wrong, missing, or unverified in what already exists.
 
@@ -127,25 +128,53 @@ The API key itself survives correctly: Keystore material is not backed up, so a
 restored SecureStore blob is undecryptable. The transcript has no such protection.
 Highest-impact finding, smallest fix.
 
-### 2.2 The database is plaintext — ⚠️ half fixed: an app lock exists, encryption is still not possible
+### 2.2 The database was plaintext — ✅ fixed: SQLCipher, key in the Keystore
 
-`SQLite.openDatabaseAsync` with no SQLCipher, because `expo-sqlite` in the managed
-workflow exposes no key parameter and the alternative is shipping our own crypto
-over a file format we do not control. That part stands and is not going to change
-without leaving the managed workflow.
+**The earlier claim in this section was wrong.** It said `expo-sqlite` in the managed
+workflow exposes no key parameter and that encryption therefore needed the bare
+workflow. That is false for SDK 57: `expo-sqlite@57.0.1` vendors SQLCipher at
+`vendor/sqlcipher`, and its own config plugin accepts `{ android: { useSQLCipher:
+true } }`, which sets the gradle property that switches the sources and adds
+`-DSQLITE_HAS_CODEC=1`. FTS5 is unaffected. `app.json` now sets it.
 
-What was closed is the attack the platform leaves open. Settings → Privacy →
-**Require unlock to open** ([`src/lib/appLock.ts`](../src/lib/appLock.ts),
-`expo-local-authentication`) gates the app behind the device's biometric or PIN on
-cold start and on every return from the background. Off by default, disabled with a
-reason when nothing is enrolled, and enabling it **requires passing the prompt
-first**, so a sensor that does not work cannot lock a user out of their own
-conversations. Device credentials are an accepted fallback for the same reason.
+The whole file — conversations, messages, memories, MCP server rows — is AES-256 at
+rest under a 32-byte CSPRNG key held in one SecureStore slot (`agentrouter.dbKey`,
+Android Keystore) and nowhere else. [`src/db/schema.ts`](../src/db/schema.ts)
+mints the key before the first statement and issues `PRAGMA key` before any other
+pragma, because on an encrypted database every statement before the key fails. The
+raw-hex form (`PRAGMA key = "x'<64 hex>'"`) is used rather than a passphrase, which
+skips 256k PBKDF2 rounds on every open; the key is already full-entropy.
+[`src/db/cipher.ts`](../src/db/cipher.ts) is the whole of the string handling and
+imports nothing, so the interpolation guard is unit-tested
+([`cipher.test.ts`](../src/db/cipher.test.ts)) without a device.
 
-Still true, and stated rather than implied: this is not encryption. Root, a
-userdebug build, or a physical attacker with the PIN reads `agentrouter.db`
-directly and never sees the lock screen. While the device is locked, Android's own
-file-based encryption is what protects it.
+An existing plaintext database is converted once, on the next open, via
+`sqlcipher_export` into `agentrouter.converting.db` followed by **two** moves
+(original → `agentrouter.plaintext.db`, converted → the real name) rather than a
+delete-then-move, so a process killed mid-swap always leaves one intact copy; the
+recovery branch at the top of `convertIfPlaintext` picks it up. Stale `-wal`/`-shm`
+siblings are deleted, since they would otherwise be read as belonging to the
+encrypted file that took their base name.
+
+Two things this deliberately does not do, and one caveat:
+
+- **No `requireAuthentication` on the key.** It would deny database access whenever
+  the device is locked, which breaks the offline send queue and background
+  delivery. The app lock below is the user-facing gate; it is a separate concern.
+- **No key escrow.** Losing the Keystore entry — app data cleared, app uninstalled
+  — means the database is unrecoverable by design. Restoring app data onto a device
+  whose Keystore never held the key produces a clear error rather than a corruption
+  report, and `allowBackup: false` (§2.1) means that path should not arise.
+- **Unverified on-device.** The flag changes the native build, which cannot be
+  compiled in the authoring environment. An EAS or local APK run is required before
+  this is trusted.
+
+Settings → Privacy → **Require unlock to open**
+([`src/lib/appLock.ts`](../src/lib/appLock.ts), `expo-local-authentication`) stays,
+and is now complementary rather than a substitute: it gates the app behind the
+device's biometric or PIN on cold start and on every return from the background,
+off by default, disabled with a reason when nothing is enrolled, and enabling it
+requires passing the prompt first so a broken sensor cannot lock a user out.
 
 ### 2.3 `profile.headers` is persisted plaintext to AsyncStorage — ✅ fixed
 
@@ -309,7 +338,58 @@ The second pass, 2026-08-30:
 9. ✅ Key and transport caches dropped on background, redactor re-primed on
    foreground (§2.8).
 10. ✅ The clipboard's persistence stated in the export confirmation (§2.9).
-11. ✅ An optional app lock, since database encryption is not available (§2.2).
+11. ✅ An optional app lock (§2.2).
+
+The third pass, 2026-08-31 — prompted by a third-party audit ("AgentRouter Mobile —
+Full App Audit"), cross-checked finding by finding against the code:
+
+12. ✅ SQLCipher enabled, key in the Keystore, one-time conversion of an existing
+    plaintext file (§2.2). This retracts the "not possible in managed Expo" claim
+    that §2.2 and the audit both made.
+13. ✅ `proxy-authorization` refused alongside `authorization` in the MCP server form
+    ([`src/stores/mcp.ts`](../src/stores/mcp.ts)) — the one credential header that
+    genuinely slipped past, and since that path is also the only way in from a
+    settings restore, a hand-edited backup gets the same refusal the form does. The
+    audit's wider claim, that a restored row reaches the database unvalidated, is
+    wrong: restore goes through `useMcp.create` → `validate`.
+14. ✅ The MCP client enforces its own `User-Agent` and `Authorization` rather than
+    merely defaulting them ([`src/mcp/client.ts`](../src/mcp/client.ts)) — §1c fixed
+    this in `transports/http.ts` and the same spread order was still here, so a
+    configured `User-Agent` used to win.
+15. ✅ The OAuth `state` nonce is no longer truncated to 32 characters, and the
+    deep-link listener now requires it to match ([`src/mcp/oauth.ts`](../src/mcp/oauth.ts)).
+    A forged callback could never obtain a token — the existing `state` check refused
+    it — but settling the promise on one would abandon the real callback arriving a
+    moment later, so any app declaring the same scheme could have broken the flow
+    every time.
+16. ✅ The 3-second hydration fallback logs which stores it gave up on
+    ([`src/lib/storage.ts`](../src/lib/storage.ts)). It still renders defaults, which
+    is the right call, but "my provider profile is gone" is now diagnosable from
+    Settings → Debug instead of looking like data loss.
+17. ✅ The web build says out loud, once per session, that its in-memory key store is
+    a page variable any injected script can read
+    ([`src/lib/secureKey.ts`](../src/lib/secureKey.ts)). The comment was not on
+    screen when someone pasted a key.
+18. ✅ Per-conversation memory opt-out, a default system prompt for new
+    conversations, and a stop-sequence field in the model controls — the three
+    genuinely missing items from the audit's feature list that were small and
+    self-contained. Most of that list was already shipped.
+
+Audit findings rejected, with the reason, so they do not come back:
+
+- **Migration 5→6 back-approving memories.** The app is version 1.0.0 / versionCode
+  1 and has never been released, so no pre-migration-6 database exists anywhere.
+- **Certificate pinning.** Detecting a user-installed CA needs a native module. The
+  system-CA-only network security config (`plugins/with-system-ca-only.js`) already
+  refuses user-store CAs, which is what pinning was being asked to achieve, and it
+  costs nothing at rotation time.
+- **Unsanitised skill bodies.** Already handled at
+  [`app/settings/skills.tsx:269`](../app/settings/skills.tsx).
+- **Backup-restored MCP credentials.** Closed by §2.1 (`allowBackup: false`).
+- **A reversible FNV-1a key fingerprint.** The audit is right that FNV-1a is not a
+  cryptographic hash, but the fingerprint no longer carries last-4 or exact length
+  (§2.4) and its input is a full-entropy API key, so there is nothing to brute-force
+  back. It exists to tell two keys apart in the UI, not to protect the key.
 
 What is left is in §3, and each item there now says why it is left rather than
 implying it is next: backgrounded streaming needs the bare workflow, the concurrency

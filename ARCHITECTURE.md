@@ -48,7 +48,7 @@ The transport boundary converts one unified `ChatRequest` into Anthropic or Open
 
 ### Security: `src/lib/secureKey.ts`, `src/lib/redact.ts`, `src/lib/appLock.ts`
 
-Secure-key access is isolated from stores and UI. A module-scoped cache avoids repeated Keystore reads, and both it and the cached transports holding the key are dropped when the app is backgrounded, with the redactor re-primed on the way back. Every loaded secret is registered with the redactor, and logs are scrubbed at the write boundary. `appLock.ts` gates the app behind the device biometric or PIN when the user turns it on — a lock, not encryption: `expo-sqlite` in the managed workflow exposes no SQLCipher key, so the database is plaintext to root.
+Secure-key access is isolated from stores and UI. A module-scoped cache avoids repeated Keystore reads, and both it and the cached transports holding the key are dropped when the app is backgrounded, with the redactor re-primed on the way back. Every loaded secret is registered with the redactor, and logs are scrubbed at the write boundary. `appLock.ts` gates the app behind the device biometric or PIN when the user turns it on. The database itself is encrypted: `expo-sqlite` vendors SQLCipher and is switched to it from `app.json`, under a 32-byte key held only in the Android Keystore (`src/db/cipher.ts`, `src/db/schema.ts`), with an existing plaintext file converted once via `sqlcipher_export`. The lock and the encryption are separate controls — the key is not auth-gated, because that would deny the send queue database access while the device is locked.
 
 ## 3. Request Lifecycle
 

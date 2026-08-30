@@ -18,6 +18,7 @@ import { Body, Button, Empty, Field, Inline, Note, Row, Screen, Section, Spinner
 import { MAX_PROMPT_CHARS, variablesIn } from '@/chat/prompts';
 import type { Prompt, PromptDraft } from '@/chat/prompts';
 import { usePrompts } from '@/stores/prompts';
+import { useSettings } from '@/stores/settings';
 import { useTheme } from '@/theme';
 
 const BLANK: PromptDraft = { title: '', body: '' };
@@ -32,6 +33,13 @@ export default function PromptsScreen() {
   const [editing, setEditing] = useState<string | 'new' | null>(null);
   const [draft, setDraft] = useState<PromptDraft>(BLANK);
   const [problem, setProblem] = useState<string | null>(null);
+
+  // Held locally and committed on blur rather than on every keystroke: the settings
+  // store persists to AsyncStorage on change, and a multi-line prompt would be one
+  // write per character.
+  const defaultSystemPrompt = useSettings((s) => s.defaultSystemPrompt);
+  const setSetting = useSettings((s) => s.set);
+  const [systemDraft, setSystemDraft] = useState(defaultSystemPrompt);
 
   useFocusEffect(
     useCallback(() => {
@@ -110,6 +118,26 @@ export default function PromptsScreen() {
 
   return (
     <Screen>
+      <Section
+        title="Default system prompt"
+        note={
+          'Copied into every new conversation, where it stays editable. Changing it here leaves conversations ' +
+          'that already exist alone.'
+        }
+      >
+        <View style={{ padding: t.spacing.md }}>
+          <Field
+            label="Given to new conversations"
+            value={systemDraft}
+            onChangeText={setSystemDraft}
+            onBlur={() => setSetting('defaultSystemPrompt', systemDraft)}
+            rows={5}
+            placeholder="Leave empty for none."
+            hint="Saved when you tap away."
+          />
+        </View>
+      </Section>
+
       <Section
         title={`Prompts (${prompts.length})`}
         note={

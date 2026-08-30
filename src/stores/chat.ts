@@ -410,10 +410,14 @@ export const useChat = create<ChatState>()((set, get) => ({
   async start(init) {
     const profile = init?.profileId ? useProviders.getState().byId(init.profileId) : activeProfile();
     const resolved = profile ?? activeProfile();
+    // Copied in rather than applied at send time, so editing the default later does
+    // not rewrite the prompt of a conversation the user has since tuned.
+    const seedPrompt = getSetting('defaultSystemPrompt').trim();
     const conversation = await createConversation({
       profileId: resolved.id,
       model: init?.model ?? resolved.defaultModel,
       ...(init?.title ? { title: init.title } : {}),
+      ...(seedPrompt ? { systemPrompt: seedPrompt } : {}),
     });
     set((state) => ({
       conversations: [conversation, ...state.conversations],
@@ -954,7 +958,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     // prompt it estimated, and `promptBlock` returns nothing at all when the
     // memory switch is off. Read *before* the context strategy, because the memory
     // block is part of the prefix the history budget is computed against.
-    const memoryBlock = useMemory.getState().promptBlock();
+    const memoryBlock = useMemory.getState().promptBlock(conversation.config.memory);
     const calibrationFactor = useCalibration.getState().factorFor(`${profile.id}::${model}`);
 
     // The skills this conversation switched on, resolved against what is installed.
@@ -1172,6 +1176,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
         conversationId,
         profileId: profile.id,
         model,
+        ...(conversation.config.memory !== undefined ? { memory: conversation.config.memory } : {}),
         messages: get().messages[conversationId] ?? [],
       });
     }

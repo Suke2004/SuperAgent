@@ -30,6 +30,7 @@ import {
   authServerMetadataUrls,
   authorizeUrl,
   base64UrlFrom,
+  callbackCarriesState,
   parseCallbackUrl,
   protectedResourceUrls,
   verifierFrom,
@@ -214,7 +215,9 @@ export async function authorize(input: {
       encoding: Crypto.CryptoEncoding.BASE64,
     }),
   );
-  const state = verifierFrom(Crypto.getRandomBytes(48)).slice(0, 32);
+  // Not truncated. 48 random bytes base64url-encoded, in full: the slice that used
+  // to be here threw away half the entropy for no reason a spec asks for.
+  const state = verifierFrom(Crypto.getRandomBytes(48));
 
   const url = authorizeUrl({
     authorizationEndpoint: endpoints.authorizationEndpoint,
@@ -226,7 +229,7 @@ export async function authorize(input: {
     ...(endpoints.scope ? { scope: endpoints.scope } : {}),
   });
 
-  const callback = await openAndWait(url, redirect);
+  const callback = await openAndWait(url, redirect, state);
   const parsed = parseCallbackUrl(callback);
   if (!parsed.ok) throw new Error(parsed.error ?? 'Authorisation failed.');
   // A callback whose state does not match ours is not ours. Refuse it rather than
@@ -319,12 +322,22 @@ async function store(serverId: string, tokens: Tokens): Promise<void> {
  * `expo-web-browser` is not a dependency and is not worth adding for this: the
  * system browser is where a session cookie the user already has lives, which is the
  * difference between one tap and typing a password on a phone keyboard.
+ *
+ * A deep link is not a private channel: on Android any installed app can declare the
+ * same scheme and fire this URL, so matching on the redirect prefix alone means the
+ * first app to shout wins the promise. It cannot get a token — the `state` check in
+ * `authorize` refuses a code that is not ours — but settling on a forged link would
+ * abandon the real callback arriving a moment later, so the flow would fail every
+ * time such an app was installed. Hence the `state` match here as well: a link that
+ * does not carry our nonce is somebody else's and is ignored, and the real one is
+ * still waited for.
  */
-async function openAndWait(url: string, redirect: string): Promise<string> {
+async function openAndWait(url: string, redirect: string, state: string): Promise<string> {
+  const prefix = redirect.split('?')[0] ?? redirect;
   return new Promise<string>((resolve, reject) => {
     let settled = false;
     const subscription = Linking.addEventListener('url', (event) => {
-      if (settled || !event.url.startsWith(redirect.split('?')[0] ?? redirect)) return;
+      if (settled || !event.url.startsWith(prefix) || !callbackCarriesState(event.url, state)) return;
       settled = true;
       clearTimeout(timer);
       subscription.remove();

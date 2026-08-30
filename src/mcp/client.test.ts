@@ -13,6 +13,7 @@
 import { McpClient, McpError } from '@/mcp/client';
 import type { McpClientOptions } from '@/mcp/client';
 import type { FetchLike, RequestInitLike, ResponseLike } from '@/transports/fetchTypes';
+import { USER_AGENT } from '@/transports/http';
 
 interface Call {
   url: string;
@@ -144,13 +145,23 @@ describe('streamable HTTP', () => {
       'tools/call': (_params, id) => json({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: 'ok' }] } }),
     });
 
-    await client(fetchImpl, { token: 'tok-secret', headers: { Authorization: 'Bearer wrong', 'X-Trace': 'on' } }).callTool(
-      'search',
-      { q: 'pelicans' },
-    );
+    await client(fetchImpl, {
+      token: 'tok-secret',
+      headers: {
+        Authorization: 'Bearer wrong',
+        // Lower-cased, which used to slip past a merge keyed on the exact name and
+        // leave two conflicting entries for the native layer to choose between.
+        authorization: 'Bearer also-wrong',
+        'User-Agent': 'SomeOtherClient/1.0',
+        'X-Trace': 'on',
+      },
+    }).callTool('search', { q: 'pelicans' });
 
     const call = calls.find((entry) => entry.body.method === 'tools/call');
     expect(call?.init.headers.Authorization).toBe('Bearer tok-secret');
+    expect(call?.init.headers.authorization).toBeUndefined();
+    expect(call?.init.headers['User-Agent']).toBe(USER_AGENT);
+    // Everything else the user configured still goes out untouched.
     expect(call?.init.headers['X-Trace']).toBe('on');
     expect(call?.body.params).toEqual({ name: 'search', arguments: { q: 'pelicans' } });
   });

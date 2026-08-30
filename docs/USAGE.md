@@ -134,10 +134,12 @@ Off by default, and switching it on runs the prompt first — a sensor that does
 work cannot lock you out of your own conversations. The switch is disabled with the
 reason if nothing is enrolled on the device.
 
-It is a lock, not encryption. `expo-sqlite` offers no encrypted-database option, so
-the transcript is plaintext on disk and root reads it without ever seeing the lock
-screen. While the phone is locked, Android's own file encryption is what protects
-it. Auto-backup is off, so it never leaves for Google Drive either.
+It is a lock, not encryption — but the database is encrypted too, separately: the
+whole SQLite file is AES-256 under SQLCipher, keyed from the Android Keystore, so
+root reads ciphertext rather than your transcript. The lock is what stops someone
+holding your unlocked phone from opening the app. Auto-backup is off, so the file
+never leaves for Google Drive either. Clearing the app's data destroys the key, and
+with it the conversations — there is no escrow copy.
 
 The API key is separate and always was: it lives in the Android Keystore, is read
 per request, and the in-memory copy is dropped when the app goes to the background.

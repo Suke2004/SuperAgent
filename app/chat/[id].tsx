@@ -51,7 +51,7 @@ import {
   SwitchRow,
   useKeyboardHeight,
 } from '@/components/ui';
-import { hasBlockingIssue, mergeParams, validateConfig } from '@/chat/request';
+import { formatStopSequences, hasBlockingIssue, mergeParams, parseStopSequences, validateConfig } from '@/chat/request';
 import { replyReservation, sendConfirmation } from '@/chat/budget';
 import { appendQuote, quoteMessage } from '@/chat/reference';
 import { captureImage, openAppSettings, pickDocuments, pickImages } from '@/chat/attach';
@@ -157,9 +157,13 @@ export default function ChatScreen() {
     temperature: string;
     topP: string;
     topK: string;
+    /** One sequence per line; see `parseStopSequences`. */
+    stopSequences: string;
     reasoningEnabled: boolean;
     effort: 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     budgetTokens: number;
+    /** The conversation's memory opt-out, inverted for the switch. */
+    useMemory: boolean;
   } | null>(null);
 
   // Both, because they fill different halves of the screen and only one of them
@@ -204,8 +208,12 @@ export default function ChatScreen() {
   // Everything the next request carries besides the draft. The memory block is in
   // here because it is in the request: a gauge that ignores it reads low by
   // exactly the size of the notes, which on a well-used install is thousands of
-  // tokens and precisely when the warning matters.
-  const memoryChars = useMemory((s) => (memoryEnabled ? (s.promptBlock().text?.length ?? 0) : 0));
+  // tokens and precisely when the warning matters. The conversation's own opt-out
+  // counts too, or the gauge over-reads on the one chat that sends no memory.
+  const conversationMemory = conversation?.config.memory;
+  const memoryChars = useMemory((s) =>
+    memoryEnabled && conversationMemory !== false ? (s.promptBlock().text?.length ?? 0) : 0,
+  );
 
   const baseTokens = useMemo(() => {
     const history = estimateMessagesTokens(toUnifiedMessages(messages));
@@ -313,6 +321,7 @@ export default function ChatScreen() {
     const temperature = Number.parseFloat(configDraft.temperature);
     const topP = Number.parseFloat(configDraft.topP);
     const topK = Number.parseInt(configDraft.topK, 10);
+    const stopSequences = parseStopSequences(configDraft.stopSequences);
     return validateConfig({
       transport: profile.kind,
       capabilities,
@@ -321,6 +330,7 @@ export default function ChatScreen() {
         ...(Number.isFinite(temperature) ? { temperature } : {}),
         ...(Number.isFinite(topP) ? { topP } : {}),
         ...(Number.isFinite(topK) ? { topK } : {}),
+        ...(stopSequences.length ? { stopSequences } : {}),
       },
       reasoning: {
         enabled: configDraft.reasoningEnabled,
@@ -463,9 +473,11 @@ export default function ChatScreen() {
       temperature: params.temperature === undefined ? '' : String(params.temperature),
       topP: params.topP === undefined ? '' : String(params.topP),
       topK: params.topK === undefined ? '' : String(params.topK),
+      stopSequences: formatStopSequences(params.stopSequences),
       reasoningEnabled: reasoning?.enabled ?? false,
       effort: reasoning?.effort ?? 'medium',
       budgetTokens: reasoning?.budgetTokens ?? 16_384,
+      useMemory: conversation.config.memory !== false,
     });
     setConvMenu(false);
     setConfigOpen(true);
@@ -1435,6 +1447,18 @@ ${text}` : text);
                     hint="Anthropic only. Limits sampling to the K most likely tokens."
                   />
                 ) : null}
+                <Field
+                  label="Stop sequences"
+                  value={configDraft.stopSequences}
+                  onChangeText={(v) => setConfigDraft((d) => (d ? { ...d, stopSequences: v } : d))}
+                  rows={3}
+                  mono
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder={'One per line\nHuman:'}
+                  hint="One per line. The reply stops before the sequence, and it is not included."
+                  {...(issueFor('stopSequences') ? { error: issueFor('stopSequences') } : {})}
+                />
                 <SwitchRow label="Reasoning / thinking" value={configDraft.reasoningEnabled} onChange={(v) => setConfigDraft((d) => d ? { ...d, reasoningEnabled: v } : d)} />
                 {configDraft.reasoningEnabled ? (
                   <>
@@ -1448,6 +1472,22 @@ ${text}` : text);
                     {profile?.kind === 'anthropic' ? <Stepper label="Thinking budget" value={configDraft.budgetTokens} onChange={(v) => setConfigDraft((d) => d ? { ...d, budgetTokens: v } : d)} step={1024} min={1024} max={127999} format={(v) => v.toLocaleString()} /> : null}
                     {issueFor('thinkingBudget') ? <Note tone="danger" live>{issueFor('thinkingBudget')}</Note> : null}
                   </>
+                ) : null}
+                {/* An opt-out, which is why it is disabled rather than hidden when
+                    memory is off app-wide: a switch that cannot grant what the
+                    global setting withholds should say so, not vanish. */}
+                <SwitchRow
+                  label="Use long-term memory here"
+                  value={memoryEnabled && configDraft.useMemory}
+                  disabled={!memoryEnabled}
+                  disabledReason="Memory is off for the whole app. Settings → Memory."
+                  onChange={(v) => setConfigDraft((d) => (d ? { ...d, useMemory: v } : d))}
+                />
+                {memoryEnabled && !configDraft.useMemory ? (
+                  <Note>
+                    This conversation sends no memory block and contributes nothing back. What is already
+                    remembered is kept.
+                  </Note>
                 ) : null}
                 {/* Warnings that belong to no single field, so they cannot be shown
                     under one. Errors are already under their control. */}
@@ -1474,13 +1514,20 @@ ${text}` : text);
                     const temperature = Number.parseFloat(d.temperature);
                     const topP = Number.parseFloat(d.topP);
                     const topK = Number.parseInt(d.topK, 10);
+                    const stopSequences = parseStopSequences(d.stopSequences);
                     void useChat.getState().setConfig(id, {
                       params: {
                         maxTokens: Number.isFinite(maxTokens) ? maxTokens : undefined,
                         ...(Number.isFinite(temperature) ? { temperature } : {}),
                         ...(Number.isFinite(topP) ? { topP } : {}),
                         ...(Number.isFinite(topK) ? { topK } : {}),
+                        // Written unconditionally: an emptied field has to clear the
+                        // stored list, not leave the old one in place.
+                        stopSequences,
                       },
+                      // `undefined` rather than `true` for the ordinary case, so the
+                      // stored config stays free of a key that means "the default".
+                      memory: d.useMemory ? undefined : false,
                       reasoning: { enabled: d.reasoningEnabled, effort: d.effort, ...(profile?.kind === 'anthropic' ? { budgetTokens: d.budgetTokens } : {}) },
                     });
                     setConfigOpen(false);

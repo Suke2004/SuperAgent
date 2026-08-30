@@ -527,14 +527,8 @@ export interface Callback {
  * is a failure rather than a silently accepted code.
  */
 export function parseCallbackUrl(value: string): Callback {
-  let params: URLSearchParams;
-  try {
-    const url = new URL(value);
-    // Some providers put the query on the fragment. Both are read.
-    params = new URLSearchParams(url.search || url.hash.replace(/^#/, ''));
-  } catch {
-    return { ok: false, error: 'The browser returned a URL this app could not read.' };
-  }
+  const params = callbackParams(value);
+  if (!params) return { ok: false, error: 'The browser returned a URL this app could not read.' };
   const error = params.get('error');
   if (error) {
     const description = params.get('error_description');
@@ -544,6 +538,31 @@ export function parseCallbackUrl(value: string): Callback {
   const state = params.get('state');
   if (!code || !state) return { ok: false, error: 'The browser came back without an authorisation code.' };
   return { ok: true, code, state };
+}
+
+function callbackParams(value: string): URLSearchParams | null {
+  try {
+    const url = new URL(value);
+    // Some providers put the query on the fragment. Both are read.
+    return new URLSearchParams(url.search || url.hash.replace(/^#/, ''));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether a deep link carries the `state` this attempt sent.
+ *
+ * Separate from {@link parseCallbackUrl} because it answers a different question:
+ * that one asks whether a callback succeeded, this one asks whether the callback is
+ * *ours at all*. Any app on the device can fire the redirect URI, and the listener
+ * that resolves on the first matching link has to be able to ignore a forged one and
+ * keep waiting rather than settle on it. An `error=` response is still ours if the
+ * nonce matches, so this deliberately does not look at anything else.
+ */
+export function callbackCarriesState(value: string, expected: string): boolean {
+  if (!expected) return false;
+  return callbackParams(value)?.get('state') === expected;
 }
 
 /* -------------------------------------------------------------------------- */
