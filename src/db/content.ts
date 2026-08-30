@@ -54,6 +54,21 @@ export function flattenContent(blocks: readonly ContentBlock[]): string {
   return parts.join('\n\n').trim();
 }
 
+/**
+ * True for the synthetic `user` message that carries nothing but tool results.
+ *
+ * A skill body comes back as a `tool_result`, and {@link flattenContent} projects a
+ * result's content into `messages.text` — correct for search, wrong for the
+ * conversation list, where it would replace the preview with the first line of an
+ * instruction file the user never wrote. Three places need the same answer: the
+ * insert (which passes `''` to skip the preview update), the store's optimistic
+ * patch, and the transcript, which renders these turns as tool output rather than
+ * as something the user said. One predicate, so they cannot drift.
+ */
+export function isToolTurn(blocks: readonly ContentBlock[]): boolean {
+  return blocks.length > 0 && blocks.every((block) => block.type === 'tool_result');
+}
+
 /** Longest preview a list row can show before the ellipsis is cheaper. */
 const PREVIEW_CHARS = 160;
 
