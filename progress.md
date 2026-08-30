@@ -7,9 +7,9 @@
 npx tsc --noEmit && npx eslint . && npx jest
 ```
 
-→ tsc clean, eslint clean, **817 tests / 26 suites** in ~5 s. 27,772 lines across `src` and `app`.
+→ tsc clean, eslint clean, **996 tests / 34 suites** in ~5 s.
 
-Coverage is now a **gate, not a note**: `npx jest --coverage` measures lines 62.66%, statements 61.33%, branches 60.78%, functions 47.68%, and `jest.config.js` carries a `coverageThreshold` a point or two under each of those, so the runner fails rather than the number going stale in this file. The functions figure is low for a structural reason, not a negligent one — `app/` and `src/components/` are excluded from unit testing by design (see the note on `jest.config.js` below), and every uncovered function is a component or a store action that only exists to call one.
+Coverage is now a **gate, not a note**: `npx jest --coverage` measures lines 64.05%, statements 63.10%, branches 62.40%, functions 51.34%, and `jest.config.js` carries a `coverageThreshold` a point or two under each of those, so the runner fails rather than the number going stale in this file. The functions figure is low for a structural reason, not a negligent one — `app/` and `src/components/` are excluded from unit testing by design (see the note on `jest.config.js` below), and every uncovered function is a component or a store action that only exists to call one.
 
 The same three gates run in CI on every push and pull request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), which is the only thing that makes the paragraph above worth reading. `pnpm gates` runs them locally in one command.
 
@@ -232,6 +232,32 @@ Most of the wire and storage layer was already in place before this sprint: `Ima
 
 ---
 
+### Phase 4 (Eng Plan Sprints 9–10) — ✅ COMPLETE for context pressure, exclusions and the rolling summary
+
+The Eng Plan's Phase 4 is **Sprint 9 (context pressure and exclusions)** and **Sprint 10 (rolling summary)**, not the PRD table's "skills" row. Most of Sprint 9 had already shipped inside the harness sprint — pressure measured against *usable* space, orphan removal in `selectMessagesWithinBudget`, `setExclusions` persistence — so this sprint was the gaps in both, and every one of them was a defect rather than a missing feature.
+
+**The summary could grow without bound.** It is charged as input on *every remaining turn*, so a summary that gains a paragraph per extension eventually costs more than the turns it replaced. `src/chat/summary.ts` (new, pure) makes termination a property of our code rather than of the model's cooperation: `SUMMARY_CHAR_BUDGET = 2_000`, `boundSummary()` enforced on whatever comes back, and `summaryRequestBody()` switching from "merge these" to "rewrite these shorter, dropping the least useful details" once the stored notes pass 75% of the budget. `boundSummary` is **idempotent** — that is what makes a summary of summaries terminate, and it is the test to keep. It cuts from the **end**, unlike `boundExtractedText`, which elides the middle: a summary's tail is its oldest material, already compressed once and furthest from the current turn. The cut is marked explicitly, because a model handed a sentence that stops mid-clause will try to finish it.
+
+**Summarisation spend was invisible.** The summary request is its own turn against the gateway and now records its own `usage_event`, tagged with the conversation that caused it, so the dashboard's total is the money actually spent rather than the money spent on replies.
+
+**The `summary` write clobbered concurrent config edits.** It composed the new config from the row read at the *start* of the turn. `summariseDropped` now re-reads the row immediately before writing — merge, not replace, which is the rule the rest of the store already follows.
+
+**`src/chat/usage.ts` (new, pure)** holds the "never persist an estimate" invariant in one testable place. `reportedUsage()` copies field by field rather than spreading, so an estimate a caller happened to attach cannot ride along, and an unreported field stays **absent** rather than becoming `0` — "this gateway does not report prompt usage" must not read as "this turn was free" in a cost column.
+
+**Three failure paths were silent, and are not now.** `contextNotes` in the chat store (not persisted; it describes one request) carries what the last turn did to the history, shown above the composer with a dismiss control and announced to a screen reader: what was trimmed or summarised, that summarisation failed and the reply was sent without notes about older turns (`SUMMARY_FAILED_NOTE` — the turn still sends, because losing the summary beats losing the message), and that a `pause_turn` continuation hit its cap.
+
+**`pause_turn` continues the turn instead of presenting it as an answer.** `MAX_PAUSE_CONTINUATIONS = 3`, and the resumption fires *after* the `try/finally` so the resumed turn registers its own abort controller cleanly rather than inheriting a controller that is about to be discarded. The cap trip is a warning in the log and a note on screen, never a truncated answer that looks complete.
+
+**`sendConfirmation()`** in `src/chat/budget.ts` is the one dialog an over-window send owes the user, and only for the `warn` strategy at `over` — `warn` is the strategy that neither trims nor blocks, so a send from there goes out whole and the gateway either rejects it or cuts the reply short. `critical` deliberately gets a sentence instead: a modal on every send at 85% is a modal people learn to dismiss without reading. The send is never hard-blocked — the estimator is ±12% and the window figure is a hand-edited registry entry, so a hard stop would refuse requests that would have worked. The screen passes the composer's own pressure reading into the confirmation rather than recomputing it, so the dialog cannot quote a different number than the gauge.
+
+**Sprint 9's "exact estimate visible on tap"** is the token readout, now a `Pressable` that toggles between `~4.2k / 200k` and exact digits with the reserved figure spelled out. Rounded is the right default — it is an estimate, and false precision invites trusting a character-ratio guess to the token — but when the gauge is amber the next question is always "by how much?", and that is exactly what 100-token rounding hides.
+
+**Not delivered, and not by oversight:** the ±15% estimator-accuracy corpus (Sprint 9) needs measured prompt counts from the live gateway, so it is blocked on a real API key alongside R-01/D-11. The device-only acceptance criteria are unchanged in "Known gaps".
+
+**Tests.** `src/chat/summary.test.ts` and `src/chat/usage.test.ts` are new, plus the `sendConfirmation` cases in `src/chat/budget.test.ts` — 996 tests / 34 suites, `tsc --noEmit` and `eslint .` clean.
+
+---
+
 ### Phases 2–6 — original PRD grouping (superseded by the Eng Plan; see the note at the top)
 
 | Phase | Scope |
@@ -246,12 +272,13 @@ Most of the wire and storage layer was already in place before this sprint: `Ima
 
 ## What to do next, in order
 
-Phase 2 (Eng Plan Sprints 5–6) is finished, as is the harness token-optimization sprint that followed it, and so is Phase 3 (Sprints 7–8). Next:
+Phase 2 (Eng Plan Sprints 5–6) is finished, as is the harness token-optimization sprint that followed it, Phase 3 (Sprints 7–8), and Phase 4 (Sprints 9–10). Next:
 
-1. **Phase 4 — skills**, as scoped in the Eng Plan. `js-yaml` and `fflate` are already dependencies for the frontmatter parser and the import/export zip.
+1. **Skills**, which the PRD table calls Phase 4 but the Eng Plan schedules after the context work. `js-yaml` and `fflate` are already dependencies for the frontmatter parser and the import/export zip.
 2. Then Phases 5–6 as scoped in the Eng Plan. Note that Phase 6's export item is **already delivered** in Sprint 6 — what remains of Phase 6 is the prompt library, settings backup/restore, and the offline send queue.
 3. The PRD's Phase 3 leftovers, if they are wanted at all: on-device speech-to-text, system TTS, `/v1/images/generations` feature detection, and Android share-target registration. The Eng Plan does not schedule any of them and none is delivered. `expo-speech` is still uninstalled.
-4. Physical-device verification, which nothing in Jest substitutes for. See "Known gaps".
+4. The ±15% estimator-accuracy corpus, once a real key is available — it needs the gateway's own reported prompt counts to measure against.
+5. Physical-device verification, which nothing in Jest substitutes for. See "Known gaps".
 
 ---
 
@@ -294,6 +321,9 @@ Already covered: both transport adapters, the SSE parser (incl. split and malfor
 - **Every migration statement is idempotent** (`IF NOT EXISTS`, `DROP … IF EXISTS`). The `PRAGMA user_version` bump happens *outside* the transaction — `expo-sqlite`'s async transaction wrapper cannot carry it — so a process killed at the wrong moment re-runs a migration that already applied. Idempotency is the recovery story; keep it, and keep asserting it.
 - **A memory that fails the redaction screen is dropped, never stored redacted.** `isSafeToRemember` is `redactString(text) === text`. Storing `"their key is [REDACTED]"` would be worthless in the prompt and would look like a bug on the memory screen.
 - **Memory is subordinate to the user's own prompt, and says so in the prompt itself.** `composeSystem` puts the user's system prompt first, then memory, then any rolling summary. A remembered "prefers terse answers" must not quietly outrank a prompt asking for detail today.
+- **`boundSummary` is idempotent, and that is the termination guarantee** for summaries of summaries. The model is asked for a budget and the budget is then enforced on what comes back; don't replace the enforcement with trust in the instruction. It cuts from the end, not the middle — the opposite of `boundExtractedText`, for the opposite reason.
+- **Only gateway-reported numbers reach `messages.usage` and `usage_events`,** via `reportedUsage`. An unreported field stays absent; it never becomes `0`. Field-by-field copying rather than a spread is what keeps an estimate from riding along.
+- **An over-window send is never blocked, and only `warn` at `over` gets a dialog.** `sendConfirmation` returns `null` for everything else on purpose: the trimming strategies fix it themselves, and a modal at 85% on every send is one people learn to dismiss unread.
 - **`memoryEnabled` off means nothing is collected *and* nothing is sent** — both halves, so the feature costs zero tokens while off — but stored memories are kept. Deleting them is a separate, explicit action.
 - **An export never carries attachment bytes, and redaction runs twice.** Both are load-bearing rather than belt-and-braces theatre: the second `redactString` pass exists to catch a field somebody adds to the exporter later without the first one, and `src/chat/export.test.ts` greps the finished artefact so that omission fails a test instead of shipping. Do not "optimise away" either pass, and do not start embedding base64 in exports — a transcript that silently contains every photo the user ever attached is a different artefact from the one they asked for.
 - **A bulk delete is one transaction or nothing**, and `usage_events` are deliberately not foreign-keyed to `conversations` so spend history survives it. Both are asserted in `src/db/__tests__/bulk.test.ts` against real SQLite with `PRAGMA foreign_keys = ON`.

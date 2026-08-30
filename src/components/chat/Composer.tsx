@@ -26,13 +26,13 @@
  * is guessable from a dimmed button.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { attachmentTokens, describeAttachments } from '@/chat/attachments';
 import { Body, Button, Note, targetSlop, useFocusRing } from '@/components/ui';
 import { contextPressure, estimateTextTokens, formatTokens } from '@/lib/tokens';
-import type { PressureLevel } from '@/lib/tokens';
+import type { ContextPressure, PressureLevel } from '@/lib/tokens';
 import { useSettings } from '@/stores/settings';
 import { useTheme } from '@/theme';
 import type { Palette } from '@/theme';
@@ -313,10 +313,17 @@ export function Composer({
   onRemoveAttachment,
   attachDisabledReason,
   attachmentCaveat,
+  contextNote,
+  onDismissContextNote,
 }: {
   value: string;
   onChangeText: (text: string) => void;
-  onSend: () => void;
+  /**
+   * Send. Handed the pressure reading this bar is showing, so the screen can ask
+   * for a confirmation without recomputing it — two computations of the same
+   * number are two chances for the dialog and the gauge to disagree.
+   */
+  onSend: (pressure: ContextPressure) => void;
   onStop: () => void;
   streaming: boolean;
   aborting?: boolean;
@@ -345,12 +352,25 @@ export function Composer({
   attachDisabledReason?: string;
   /** Something lossy about how a staged attachment will be sent. */
   attachmentCaveat?: string;
+  /** What the last turn's context handling did, if anything. Dismissable. */
+  contextNote?: string;
+  onDismissContextNote?: () => void;
 }) {
   const t = useTheme();
   const liveCount = useSettings((s) => s.liveTokenCount);
   const warnAt = useSettings((s) => s.contextWarnAt);
   const strategy = useSettings((s) => s.contextStrategy);
   const sendOnEnter = useSettings((s) => s.sendOnEnter);
+
+  /**
+   * Whether the readout is showing exact figures.
+   *
+   * `~4.2k / 200k` is the right default — it is an estimate, and false precision
+   * invites the user to trust a character-ratio guess to the token. But when the
+   * gauge is amber the next question is always "by how much?", and rounding to
+   * 100-token steps is exactly where that answer disappears.
+   */
+  const [exact, setExact] = useState(false);
 
   const factor = calibration?.factor ?? 1;
   const staged = attachments ?? EMPTY_ATTACHMENTS;
@@ -401,6 +421,32 @@ export function Composer({
       }}
     >
       {liveCount ? <Gauge ratio={pressure.ratio} level={pressure.level} /> : null}
+
+      {/* What the last turn did to the history, above the input rather than in the
+          transcript: it is a fact about the request, not something anybody said. It
+          announces itself (`live`) because "older turns were summarised" changes what
+          the next reply can be expected to remember, and it is dismissable because it
+          describes something already done — there is no action left to take. */}
+      {contextNote !== undefined && contextNote.length > 0 ? (
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: t.spacing.sm }}>
+          <View style={{ flex: 1 }}>
+            <Note tone="info" live>
+              {contextNote}
+            </Note>
+          </View>
+          {onDismissContextNote ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss context note"
+              onPress={onDismissContextNote}
+              hitSlop={12}
+              style={{ paddingTop: t.spacing.sm, paddingHorizontal: 4 }}
+            >
+              <Text style={{ color: t.colors.textFaint, fontSize: t.fontSize.md }}>×</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
 
       {/* Full width rather than under the button: the reason is a sentence, and a
           sentence wrapped into a 90pt column beside the input is unreadable. */}
@@ -458,7 +504,7 @@ export function Composer({
           // `submit` makes Enter send; `newline` keeps it as a line break. Without
           // an explicit value a multiline input on Android does neither reliably.
           submitBehavior={sendOnEnter ? 'submit' : 'newline'}
-          onSubmitEditing={sendOnEnter && !empty && !streaming && !blocked ? onSend : undefined}
+          onSubmitEditing={sendOnEnter && !empty && !streaming && !blocked ? () => onSend(pressure) : undefined}
           returnKeyType={sendOnEnter ? 'send' : 'default'}
           accessibilityLabel="Message"
           style={{
@@ -493,22 +539,27 @@ export function Composer({
           {model !== undefined ? <ModelChip model={model} {...(onPressModel ? { onPress: onPressModel } : {})} /> : null}
 
           {liveCount ? (
-            <Body
-              size="xs"
-              tone="faint"
-              mono
-              // The `~` is doing real work: this is an estimate, and the gauge above is
-              // only as good as it. Once the model's own reported counts have corrected
-              // it, say so — an uncalibrated 70% and a calibrated 70% deserve different
-              // amounts of trust, and the user is the one who has to decide how much.
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setExact((on) => !on)}
+              hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
               accessibilityLabel={
                 calibration && calibration.samples > 0
                   ? `About ${formatTokens(pressure.used)} of ${formatTokens(pressure.window)} usable context, calibrated against ${calibration.samples} reported ${calibration.samples === 1 ? 'turn' : 'turns'}`
                   : `About ${formatTokens(pressure.used)} of ${formatTokens(pressure.window)} usable context, estimated`
               }
+              accessibilityHint={exact ? 'Show rounded token counts' : 'Show exact token counts'}
             >
-              {`~${formatTokens(pressure.used)} / ${formatTokens(pressure.window)}`}
-            </Body>
+              {/* The `~` is doing real work: this is an estimate, and the gauge above is
+                  only as good as it. Once the model's own reported counts have corrected
+                  it, say so — an uncalibrated 70% and a calibrated 70% deserve different
+                  amounts of trust, and the user is the one who has to decide how much. */}
+              <Body size="xs" tone="faint" mono>
+                {exact
+                  ? `~${pressure.used.toLocaleString()} / ${(pressure.window - pressure.reserved).toLocaleString()} usable · ${pressure.reserved.toLocaleString()} reserved`
+                  : `~${formatTokens(pressure.used)} / ${formatTokens(pressure.window)}`}
+              </Body>
+            </Pressable>
           ) : null}
           {liveCount && calibration && calibration.samples > 0 ? (
             <Body size="xs" tone="faint">
@@ -534,7 +585,7 @@ export function Composer({
             />
           ) : (
             <SendButton
-              onPress={onSend}
+              onPress={() => onSend(pressure)}
               disabled={empty || blocked}
               {...(blocked ? { reason: disabledReason } : empty ? { reason: 'Write a message first.' } : {})}
             />
