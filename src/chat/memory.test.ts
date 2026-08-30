@@ -14,6 +14,7 @@ import {
   MEMORY_BUDGET_CHARS,
   approvedOnly,
   isSafeToRemember,
+  memoryAppliesTo,
   mergeMemories,
   normaliseMemoryText,
   parseMemory,
@@ -281,5 +282,22 @@ describe('the review gate on model-authored memories', () => {
     const all = [memory({ text: 'a' }), memory({ text: 'b' }), memory({ text: 'c' })];
     expect(approvedOnly(all)).toEqual(all);
     expect(approvedOnly([])).toEqual([]);
+  });
+});
+
+describe('the per-conversation opt-out', () => {
+  it('defers to the global setting when the conversation says nothing', () => {
+    expect(memoryAppliesTo(true, undefined)).toBe(true);
+    expect(memoryAppliesTo(false, undefined)).toBe(false);
+  });
+
+  it('lets one conversation opt out while the feature is on', () => {
+    expect(memoryAppliesTo(true, false)).toBe(false);
+  });
+
+  it('cannot opt back in while the feature is off — the asymmetry is the point', () => {
+    // Global off has to mean no memory block and no distillation request anywhere,
+    // so the feature costs nothing while it is off.
+    expect(memoryAppliesTo(false, true)).toBe(false);
   });
 });

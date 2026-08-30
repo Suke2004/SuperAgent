@@ -34,7 +34,14 @@
     },
     "plugins": [
       "expo-router",
-      "expo-sqlite",
+      [
+        "expo-sqlite",
+        {
+          "android": {
+            "useSQLCipher": true
+          }
+        }
+      ],
       "expo-secure-store",
       [
         "expo-image-picker",
@@ -43,7 +50,8 @@
           "cameraPermission": "Jarvis needs the camera to attach a photo to a message. The photo stays on this device until you press send."
         }
       ],
-      "./plugins/with-no-backup.js"
+      "./plugins/with-no-backup.js",
+      "./plugins/with-system-ca-only.js"
     ],
     "experiments": {
       "typedRoutes": true

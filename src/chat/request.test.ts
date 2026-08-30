@@ -4,9 +4,11 @@ import {
   composeSystem,
   defaultParams,
   EFFORT_BUDGETS,
+  formatStopSequences,
   hasBlockingIssue,
   mergeParams,
   MIN_THINKING_BUDGET,
+  parseStopSequences,
   resolveReasoning,
   validateConfig,
 } from '@/chat/request';
@@ -287,6 +289,42 @@ describe('validateConfig — sampling', () => {
         params: { maxTokens: 8_192, temperature: 1 },
       }),
     ).toEqual([]);
+  });
+});
+
+describe('parseStopSequences', () => {
+  it('splits on newlines and drops blank lines', () => {
+    expect(parseStopSequences('Human:\n\nAssistant:\n')).toEqual(['Human:', 'Assistant:']);
+  });
+
+  it('keeps a comma, which is why the field is not comma-separated', () => {
+    expect(parseStopSequences('a, b')).toEqual(['a, b']);
+  });
+
+  it('strips a stray carriage return from a paste', () => {
+    expect(parseStopSequences('Human:\r\nAssistant:')).toEqual(['Human:', 'Assistant:']);
+  });
+
+  it('preserves surrounding spaces, which are legitimate stop sequences', () => {
+    expect(parseStopSequences('  END  ')).toEqual(['  END  ']);
+  });
+
+  it('drops duplicates', () => {
+    expect(parseStopSequences('END\nEND')).toEqual(['END']);
+  });
+
+  it('returns nothing for an empty or whitespace-only field', () => {
+    expect(parseStopSequences('')).toEqual([]);
+    expect(parseStopSequences('\n\n')).toEqual([]);
+  });
+
+  it('round-trips through formatStopSequences', () => {
+    const sequences = ['Human:', ' END ', 'a, b'];
+    expect(parseStopSequences(formatStopSequences(sequences))).toEqual(sequences);
+  });
+
+  it('formats an absent list as an empty field', () => {
+    expect(formatStopSequences(undefined)).toBe('');
   });
 });
 

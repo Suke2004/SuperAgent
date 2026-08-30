@@ -18,15 +18,35 @@
  *    array of blocks, which FTS cannot index and a list preview cannot cheaply
  *    read. The flattened text is written alongside it by the same statement, so
  *    the two can't drift.
+ *
+ * 3. **The file is encrypted.** `expo-sqlite` vendors SQLCipher and switches to it
+ *    when `expo.sqlite.useSQLCipher` is set, which `app.json` now does, so the whole
+ *    database — conversations, memories, MCP server rows — is AES-256 at rest under
+ *    a key that lives in the Android Keystore and nowhere else. See {@link unlock}
+ *    for what that does and does not buy.
  */
 
+import * as Crypto from 'expo-crypto';
+import { File } from 'expo-file-system';
+import * as SecureStore from 'expo-secure-store';
 import * as SQLite from 'expo-sqlite';
+import { Platform } from 'react-native';
 
 import { log } from '@/lib/log';
 
+import { attachKeyClause, isKeyHex, KEY_BYTES, keyHexFrom, keyPragma } from './cipher';
 import { FTS_DDL, MIGRATIONS, SCHEMA_VERSION } from './ddl';
 
 const DATABASE_NAME = 'agentrouter.db';
+
+/** Where the encrypted copy is built during the one-time conversion. */
+const CONVERTING_NAME = 'agentrouter.converting.db';
+
+/** Where the plaintext original is parked between the two moves that swap them. */
+const SUPERSEDED_NAME = 'agentrouter.plaintext.db';
+
+/** The Keystore slot holding the raw key. Losing it means losing the database. */
+const KEY_SLOT = 'agentrouter.dbKey';
 
 export { FTS_DDL, MIGRATIONS, SCHEMA_VERSION };
 
@@ -58,11 +78,18 @@ export function database(): Promise<DatabaseHandle> {
 }
 
 async function open(): Promise<DatabaseHandle> {
+  const key = await databaseKey();
+  if (key) await convertIfPlaintext(key);
+
   const db = await SQLite.openDatabaseAsync(DATABASE_NAME);
+  if (key) await unlock(db, key);
 
   // WAL lets a read run while a write is in flight, which matters because the
   // conversation list re-queries while a stream is appending deltas.
   // `foreign_keys` is off by default in SQLite and the cascades below rely on it.
+  //
+  // After `PRAGMA key`, never before: on an encrypted database every statement
+  // before the key is set fails, including this one.
   await db.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 
   const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
@@ -91,6 +118,141 @@ async function open(): Promise<DatabaseHandle> {
 
   const ftsAvailable = await ensureFts(db);
   return { db, ftsAvailable };
+}
+
+/** The absolute path `expo-sqlite` would use for a database of this name. */
+function databasePath(name: string): string {
+  return `${String(SQLite.defaultDatabaseDirectory).replace(/\/+$/, '')}/${name}`;
+}
+
+function databaseFile(name: string): File {
+  return new File(`file://${databasePath(name)}`);
+}
+
+/**
+ * The raw key for the database, minted on first launch and kept in the Keystore.
+ *
+ * `null` on web, where there is no Keystore to hold a key and no SQLCipher in the
+ * wasm build to use one — the same split as `lib/secureKey`, and for the same
+ * reason: Android is the supported target.
+ *
+ * A key that cannot be read back is not recoverable. That is the deliberate cost of
+ * encrypting at all, and it is bounded: `android.allowBackup` is false and
+ * `plugins/with-no-backup.js` excludes the database from both cloud backup and
+ * device transfer, so there is no path by which the database file arrives on a
+ * device whose Keystore never held its key. Uninstalling clears both together.
+ */
+async function databaseKey(): Promise<string | null> {
+  if (Platform.OS === 'web') return null;
+
+  const existing = await SecureStore.getItemAsync(KEY_SLOT);
+  if (existing && isKeyHex(existing)) return existing;
+  if (existing) log.warn('db', 'The stored database key was malformed; minting a new one');
+
+  const minted = keyHexFrom(Crypto.getRandomBytes(KEY_BYTES));
+  await SecureStore.setItemAsync(KEY_SLOT, minted, {
+    keychainAccessible: SecureStore.WHEN_UNLOCKED,
+  });
+  return minted;
+}
+
+/**
+ * Applies the key and proves it worked.
+ *
+ * What this buys: the file is useless off the device. `adb backup`, a recovery-mode
+ * pull, a stolen phone image, or anything that reaches the app's data directory
+ * without also reaching its Keystore entry gets AES-256 ciphertext.
+ *
+ * What it does not buy: protection from root, or from a compromised copy of this
+ * app. The key is deliberately *not* behind `requireAuthentication` — that would be
+ * stronger, and it would also mean no database access while the device is locked,
+ * which breaks the offline send queue and any background work. The app lock covers
+ * the borrowed-phone case at the UI layer instead.
+ */
+async function unlock(db: SQLite.SQLiteDatabase, key: string): Promise<void> {
+  await db.execAsync(keyPragma(key));
+  try {
+    // The first read is what actually verifies the key: `PRAGMA key` never fails.
+    await db.getFirstAsync('SELECT count(*) FROM sqlite_master');
+  } catch (error) {
+    throw new Error(
+      'The database could not be decrypted. Its key is missing or does not match, which happens ' +
+        'if the app data was moved from another device. Clearing app storage will start a new, empty ' +
+        `database. (${error instanceof Error ? error.message : String(error)})`,
+    );
+  }
+}
+
+/**
+ * Converts a pre-encryption database in place, once.
+ *
+ * The path is: read the plaintext file, `sqlcipher_export` it into a fresh encrypted
+ * one, then swap the two files. SQLCipher cannot re-key a plaintext database — the
+ * page format differs — so a copy is the only route.
+ *
+ * The swap is two moves rather than a delete-then-move so that no window exists in
+ * which the data is only in a file that is about to be replaced. If the process dies
+ * between them the next launch finds the parked original and the missing main file,
+ * and puts it back.
+ */
+async function convertIfPlaintext(key: string): Promise<void> {
+  const main = databaseFile(DATABASE_NAME);
+  const superseded = databaseFile(SUPERSEDED_NAME);
+
+  if (superseded.exists && !main.exists) {
+    // A conversion that died mid-swap. The parked file is the only copy.
+    await superseded.move(main);
+    log.warn('db', 'Recovered the database from an interrupted encryption pass');
+  }
+  if (!main.exists) return; // Nothing to convert; a new file is born encrypted.
+  if (await opens(key)) return; // Already ours.
+  if (!(await opens(null))) return; // Neither keyed nor plaintext — let `unlock` report it.
+
+  log.info('db', 'Encrypting the existing database; this happens once');
+
+  const converting = databaseFile(CONVERTING_NAME);
+  if (converting.exists) converting.delete(); // Leftover from an attempt that failed earlier.
+
+  const plain = await SQLite.openDatabaseAsync(DATABASE_NAME);
+  try {
+    const row = await plain.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+    // Not parameterisable: `ATTACH` takes no bindings. The path is built from a
+    // module constant and the key clause is validated in `./cipher`.
+    await plain.execAsync(`ATTACH DATABASE '${databasePath(CONVERTING_NAME)}' AS enc ${attachKeyClause(key)}`);
+    // `sqlcipher_export` is a function, so it has to be selected rather than exec'd.
+    await plain.getFirstAsync("SELECT sqlcipher_export('enc')");
+    // Copied page by page, so the schema version is not among the copied data.
+    await plain.execAsync(`PRAGMA enc.user_version = ${row?.user_version ?? 0}`);
+    await plain.execAsync('DETACH DATABASE enc');
+  } finally {
+    await plain.closeAsync().catch(() => undefined);
+  }
+
+  await main.move(superseded);
+  await databaseFile(CONVERTING_NAME).move(databaseFile(DATABASE_NAME));
+
+  // The plaintext journal siblings would otherwise be read as belonging to the
+  // encrypted file that just took its name, which is a corrupt-database report.
+  for (const suffix of ['-wal', '-shm']) {
+    const stale = databaseFile(`${DATABASE_NAME}${suffix}`);
+    if (stale.exists) stale.delete();
+  }
+  databaseFile(SUPERSEDED_NAME).delete();
+  log.info('db', 'The database is now encrypted');
+}
+
+/** Whether the database on disk can be read with this key, or without one. */
+async function opens(key: string | null): Promise<boolean> {
+  const db = await SQLite.openDatabaseAsync(DATABASE_NAME);
+  try {
+    if (key) await db.execAsync(keyPragma(key));
+    await db.getFirstAsync('SELECT count(*) FROM sqlite_master');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await db.closeAsync().catch(() => undefined);
+  }
 }
 
 /**

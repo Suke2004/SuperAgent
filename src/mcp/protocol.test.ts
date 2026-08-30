@@ -12,6 +12,7 @@ import {
   authorizeUrl,
   base64UrlFrom,
   bridgeTools,
+  callbackCarriesState,
   decideApproval,
   describeArguments,
   failedCall,
@@ -286,5 +287,18 @@ describe('OAuth 2.1 with PKCE', () => {
     });
     expect(parseCallbackUrl('agentrouter://mcp-oauth?state=xyz').ok).toBe(false);
     expect(parseCallbackUrl('not a url').ok).toBe(false);
+  });
+
+  it('recognises its own callback by state, so another app cannot answer for it', () => {
+    expect(callbackCarriesState('agentrouter://mcp-oauth?code=abc&state=xyz', 'xyz')).toBe(true);
+    expect(callbackCarriesState('agentrouter://mcp-oauth#code=abc&state=xyz', 'xyz')).toBe(true);
+    // A refusal is still ours, and has to settle the wait rather than be ignored.
+    expect(callbackCarriesState('agentrouter://mcp-oauth?error=access_denied&state=xyz', 'xyz')).toBe(true);
+    // The forged ones: another app's code, no state at all, an unreadable URL.
+    expect(callbackCarriesState('agentrouter://mcp-oauth?code=abc&state=other', 'xyz')).toBe(false);
+    expect(callbackCarriesState('agentrouter://mcp-oauth?code=abc', 'xyz')).toBe(false);
+    expect(callbackCarriesState('not a url', 'xyz')).toBe(false);
+    // No expectation is not a wildcard.
+    expect(callbackCarriesState('agentrouter://mcp-oauth?code=abc', '')).toBe(false);
   });
 });

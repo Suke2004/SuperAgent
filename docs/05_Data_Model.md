@@ -64,7 +64,7 @@ Diagram notation used throughout:
 ┌───────▼─────────────┐   ┌────────────▼──────────┐  ┌────────▼───────┐
 │  SQLite (WAL)       │   │  AsyncStorage         │  │  SecureStore   │
 │  expo-sqlite        │   │  plaintext on disk    │  │  Android       │
-│                     │   │                       │  │  Keystore      │
+│  + SQLCipher        │   │                       │  │  Keystore      │
 │  conversations      │   │  agentrouter.providers│  │                │
 │  messages           │   │  agentrouter.models   │  │  apiKey:<pid>  │
 │  messages_fts       │   │  agentrouter.settings │  │                │
@@ -340,7 +340,7 @@ Exact-match uniqueness is only half of deduplication. It cannot see that "prefer
 
 **`last_used_at` is written after a send, not during ranking.** It is provenance for the settings screen — "last used 12 August" is how a user judges whether a memory is still earning its place in every request — and it deliberately does not feed the ranking, which would make the ordering self-reinforcing.
 
-**No column here may hold a secret.** The distillation prompt sees the conversation, so a user who pasted a token into a message could have it reflected back as a "fact worth remembering" and then written to plaintext SQLite and replayed into every subsequent request. Candidates are screened with `isSafeToRemember()`, which is `redactString(text) === text` — the same redaction the debug log uses. A candidate that changes under redaction is **dropped, not stored redacted**: a memory reading "the user's key is [REDACTED]" is worth nothing and looks like a bug.
+**No column here may hold a secret.** The distillation prompt sees the conversation, so a user who pasted a token into a message could have it reflected back as a "fact worth remembering" and then written to the database and replayed into every subsequent request. Candidates are screened with `isSafeToRemember()`, which is `redactString(text) === text` — the same redaction the debug log uses. A candidate that changes under redaction is **dropped, not stored redacted**: a memory reading "the user's key is [REDACTED]" is worth nothing and looks like a bug.
 
 **The user can see, edit, and destroy all of it.** `app/settings/memory.tsx` lists every row verbatim with its provenance, allows per-row edit/pin/delete, and has a one-confirmation "Forget everything". `settings.memoryEnabled` is a separate control that stops both halves of the feature — no block is sent and no distillation request is made — while keeping what is already stored, because "stop learning" and "forget everything" are different intentions.
 
@@ -365,7 +365,7 @@ PRAGMA foreign_keys = ON;     -- MUST be set per connection, not per database
 | `text` equals `flattenContent(content)` | *convention only* — written together in one statement | search finds text the message does not contain |
 | FTS row per message | FTS5 triggers | silent search misses |
 | One row per remembered statement | `UNIQUE (kind, text)` + UPSERT | the same sentence twice in every prompt, forever |
-| No memory contains a secret | `isSafeToRemember()` at the write boundary; no DB constraint | a pasted token written to plaintext SQLite and replayed into every request |
+| No memory contains a secret | `isSafeToRemember()` at the write boundary; no DB constraint | a pasted token written to the database and replayed into every request |
 | `role` in {user, assistant, system} | TypeScript at the boundary; no CHECK constraint | render fallback, replay rejected by the gateway |
 
 The three "convention only" rows are honest gaps. `seq` has no `UNIQUE (conversation_id, seq)` index because forking deliberately reuses source `seq` values in a *different* conversation (which the composite index would allow) and because a unique constraint would turn a benign collision into a lost message. The `text`/`content` pairing is enforced by there being exactly one insert path — `insertMessage()` — and by tests, not by the database. If a second write path ever appears, add a generated column or a trigger; do not rely on two call sites remembering.

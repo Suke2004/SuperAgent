@@ -81,7 +81,21 @@ export function useHydrated(): boolean {
     // AsyncStorage can hang on a corrupt store. Rendering defaults after a beat is
     // better than an app that never paints, so long as nothing writes until the
     // user acts — which is why stores only persist on explicit changes.
-    const timer = setTimeout(() => setReady(true), 3_000);
+    //
+    // Logged rather than silent: the screens that come up are showing defaults, not
+    // the user's settings, and "my provider profile is gone" needs to be diagnosable
+    // from Settings → Debug rather than looking like data loss.
+    const timer = setTimeout(() => {
+      const missing = [...expected].filter((name) => !hydrated.has(name));
+      if (missing.length) {
+        log.error(
+          'storage',
+          `Gave up waiting for stored settings after 3s (${missing.join(', ')}). ` +
+            'The app is showing defaults; anything you change now will overwrite what was saved.',
+        );
+      }
+      setReady(true);
+    }, 3_000);
     return () => {
       listeners = listeners.filter((l) => l !== listener);
       clearTimeout(timer);

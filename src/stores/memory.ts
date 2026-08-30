@@ -19,6 +19,7 @@ import { create } from 'zustand';
 import {
   DISTIL_INSTRUCTION,
   approvedOnly,
+  memoryAppliesTo,
   mergeMemories,
   parseMemory,
   renderMemoryBlock,
@@ -56,8 +57,13 @@ export interface MemoryState {
   distilling: boolean;
 
   load(): Promise<void>;
-  /** The block to prepend to a system prompt, and the ids it used. */
-  promptBlock(): MemoryBlock;
+  /**
+   * The block to prepend to a system prompt, and the ids it used.
+   *
+   * `memory` is the conversation's own override, which can only silence memory —
+   * see {@link memoryAppliesTo}. Omitted means "whatever the global setting says".
+   */
+  promptBlock(memory?: boolean): MemoryBlock;
   add(text: string, kind?: Memory['kind']): Promise<void>;
   edit(id: string, text: string): Promise<void>;
   /** The user agreeing a distilled memory may be sent. Until then it is stored and unused. */
@@ -74,7 +80,7 @@ export interface MemoryState {
    * Resolves to the number of new memories. Never throws: a failed distillation is
    * a missed opportunity, and the turn it follows has already succeeded.
    */
-  distil(input: { conversationId: string; profileId: string; model: string; messages: readonly StoredMessage[] }): Promise<number>;
+  distil(input: { conversationId: string; profileId: string; model: string; messages: readonly StoredMessage[]; memory?: boolean }): Promise<number>;
 }
 
 export const useMemory = create<MemoryState>()((set, get) => ({
@@ -94,8 +100,8 @@ export const useMemory = create<MemoryState>()((set, get) => ({
     }
   },
 
-  promptBlock() {
-    if (!getSetting('memoryEnabled')) return { included: [], dropped: 0, chars: 0 };
+  promptBlock(memory) {
+    if (!memoryAppliesTo(getSetting('memoryEnabled'), memory)) return { included: [], dropped: 0, chars: 0 };
     // The review gate: a memory the user has not agreed to is never sent, however
     // highly it ranks. Filtered here rather than in `listMemories`, because the
     // settings screen has to be able to see the pending ones to act on them.
@@ -153,7 +159,8 @@ export const useMemory = create<MemoryState>()((set, get) => ({
 
   async distil(input) {
     const assistantTurns = input.messages.filter((m) => m.role === 'assistant' && !m.error).length;
-    if (!shouldDistil({ enabled: getSetting('memoryEnabled'), assistantTurns })) return 0;
+    const enabled = memoryAppliesTo(getSetting('memoryEnabled'), input.memory);
+    if (!shouldDistil({ enabled, assistantTurns })) return 0;
     if (get().distilling) return 0;
 
     set({ distilling: true });

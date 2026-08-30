@@ -365,9 +365,17 @@ function validate(draft: McpServerDraft, servers: readonly McpServer[], id: stri
   }
   for (const [header, value] of Object.entries(draft.headers)) {
     if (!header.trim() || !value.trim()) return 'A header needs both a name and a value.';
-    if (/^authorization$/i.test(header)) {
-      // Not pedantry: the client sets this from the Keystore, so a header here would
-      // either be overwritten or would put a credential in the database.
+    // Both Authorization forms, not just the plain one. The client sets `Authorization`
+    // from the Keystore after merging these, so a header by that name is either
+    // overwritten or — for the proxy variant, which nothing overwrites — a credential
+    // written to `mcp_servers.headers`, which is a plaintext column. This is also the
+    // only screen on the way in from settings restore, so a hand-edited backup gets
+    // the same refusal the form does.
+    //
+    // `X-Api-Key` and friends stay allowed on purpose: some servers take their
+    // credential that way and there is no other field that can carry it. What that
+    // costs is documented at `mcp_servers.headers` in `db/ddl.ts`.
+    if (/^(?:proxy-)?authorization$/i.test(header.trim())) {
       return 'Use the bearer-token field for Authorization — a header here would be stored in the database.';
     }
   }

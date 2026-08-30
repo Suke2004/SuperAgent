@@ -78,6 +78,20 @@ export interface SettingsState {
    * own earlier reasoning is absent.
    */
   progressiveTrim: boolean;
+  /**
+   * System prompt given to every conversation started from the New button.
+   *
+   * A seed, not a policy: it is copied into the conversation's own
+   * `system_prompt` at creation and is editable there afterwards, so changing it
+   * later leaves existing conversations alone. The alternative — prepending it to
+   * every request at send time — would silently rewrite the prompt of a
+   * conversation someone had tuned, and would make the transcript disagree with
+   * what was actually sent.
+   *
+   * Empty means no prompt, which is the default: an app-wide instruction the user
+   * has forgotten about is a bad thing to have between them and the model.
+   */
+  defaultSystemPrompt: string;
 
   set<K extends keyof SettingsState>(key: K, value: SettingsState[K]): void;
   reset(): void;
@@ -101,6 +115,7 @@ const DEFAULTS = {
   memoryEnabled: true,
   promptCaching: true,
   progressiveTrim: true,
+  defaultSystemPrompt: '',
 };
 
 const STORE_NAME = 'settings';

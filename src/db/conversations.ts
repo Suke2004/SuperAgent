@@ -72,6 +72,13 @@ export interface ConversationConfig {
   summary?: { throughSeq: number; text: string };
   /** Remembered expand/collapse choice for the reasoning pane. */
   showThinking?: boolean;
+  /**
+   * Opt this conversation out of long-term memory.
+   *
+   * Only `false` does anything: absent and `true` both defer to the global setting.
+   * See `memoryAppliesTo` in `@/chat/memory` for why it cannot switch memory on.
+   */
+  memory?: boolean;
 }
 
 export interface Conversation {

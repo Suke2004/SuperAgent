@@ -3,6 +3,9 @@
 An offline-first Expo Android chat client for AgentRouter and other compatible gateways. Conversations, model flags, usage data, and diagnostics stay on the device; API keys are stored only in Android Keystore via `expo-secure-store`.
 
 Day-to-day operation is a separate document: [docs/USAGE.md](docs/USAGE.md).
+Before changing anything here, read [docs/GUIDELINES.md](docs/GUIDELINES.md) — the
+contributing rules, the storage and secret boundaries, and what must not be silently
+undone.
 
 ## Setup
 
@@ -67,7 +70,8 @@ Adding a *transport* rather than a profile means a new adapter in `src/transport
 - Exports never carry attachment bytes. Backups never carry keys, tokens, conversations or memories.
 - Android auto-backup is off, so the transcript database is not eligible for Google Drive or `adb backup`.
 - OTA updates are disabled (`updates.enabled: false`). Nothing here publishes one, so an enabled channel would be trust with no use.
-- Settings → Privacy → **Require unlock to open** gates the app behind the device biometric or PIN. Off by default; it is a lock, not encryption — `expo-sqlite` has no SQLCipher option, so the database is plaintext to root, and `docs/flaws.md` §2.2 says so.
+- The whole SQLite database is encrypted — SQLCipher via `expo-sqlite`, AES-256, under a 32-byte key held only in the Android Keystore. An existing plaintext file is converted once on first launch. Clearing app data destroys the key and the conversations with it; there is no escrow.
+- Settings → Privacy → **Require unlock to open** gates the app behind the device biometric or PIN. Off by default, and a separate control from the encryption above: the database key is not auth-gated, because that would deny the offline send queue access while the device is locked.
 - No telemetry, no analytics, no third-party crash reporting.
 - The User-Agent is honest and static (`AgentRouterMobile/1.0 (Android)`). Impersonating another client to get past a gateway's allowlist is a bannable offence and is not done here.
 

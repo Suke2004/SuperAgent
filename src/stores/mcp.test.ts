@@ -85,6 +85,40 @@ beforeEach(() => {
   seed();
 });
 
+/**
+ * The one write path that is a security boundary rather than a `set`.
+ *
+ * `create` is also what settings restore calls, so a hand-edited backup gets the
+ * same refusal the form does — which is the only reason this is worth a test.
+ */
+describe('adding a server', () => {
+  it('refuses a credential header, in either Authorization spelling', async () => {
+    const draft = {
+      name: 'other',
+      url: 'https://mcp.example.com/mcp',
+      transport: 'http' as const,
+      authKind: 'none' as const,
+      headers: {} as Record<string, string>,
+    };
+    for (const name of ['Authorization', 'authorization', 'Proxy-Authorization']) {
+      const result = await useMcp.getState().create({ ...draft, headers: { [name]: 'Bearer tok-12345678' } });
+      expect(result).toEqual({ ok: false, reason: expect.stringContaining('bearer-token field') });
+    }
+  });
+
+  it('still allows the header form some servers actually need', async () => {
+    const result = await useMcp.getState().create({
+      name: 'other',
+      url: 'https://mcp.example.com/mcp',
+      transport: 'http',
+      authKind: 'none',
+      headers: { 'X-Api-Key': 'abc123' },
+    });
+    // Accepted — see the note at `mcp_servers.headers` for what that costs.
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe('invoking a bridged tool', () => {
   it('offers only the enabled tools of the servers a conversation named', () => {
     seed({ enabled: [] });

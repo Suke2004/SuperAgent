@@ -15,6 +15,7 @@ import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
 import { keyFingerprint, registerSecret, unregisterSecret } from './redact';
+import { log } from './log';
 
 /** One entry per provider profile, so switching profiles switches keys. */
 const PREFIX = 'agentrouter.apiKey.';
@@ -49,13 +50,25 @@ export interface KeyStatus {
   fingerprint: string;
 }
 
-export async function isSecureStoreAvailable(): Promise<boolean> {
-  if (Platform.OS === 'web') return false;
-  try {
-    return await SecureStore.isAvailableAsync();
-  } catch {
-    return false;
-  }
+/**
+ * Said once per session, the first time a key is written on web.
+ *
+ * The `Map` above is a strictly better story than `localStorage`, but it is still a
+ * JavaScript variable in a page: any injected script that can reach this module can
+ * read it, and there is no Keystore to move it into. Android is the supported target;
+ * a web session is for looking at the UI, not for a real key. Said out loud rather
+ * than left to the comment, because the comment is not on screen when someone pastes.
+ */
+let warnedAboutWeb = false;
+
+function warnOnWeb(): void {
+  if (Platform.OS !== 'web' || warnedAboutWeb) return;
+  warnedAboutWeb = true;
+  log.warn(
+    'secureKey',
+    'This is the web build, which has no Keystore: the key is held in a page variable for this session only ' +
+      'and any script on the page can read it. Use a throwaway key here, or run the Android build.',
+  );
 }
 
 export async function saveApiKey(profileId: string, key: string): Promise<KeyStatus> {
@@ -69,6 +82,7 @@ export async function saveApiKey(profileId: string, key: string): Promise<KeySta
   if (previous && previous !== trimmed) unregisterSecret(previous);
 
   if (Platform.OS === 'web') {
+    warnOnWeb();
     webMemory.set(storageKey(profileId), trimmed);
   } else {
     await SecureStore.setItemAsync(storageKey(profileId), trimmed, {
