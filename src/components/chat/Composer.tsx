@@ -1,7 +1,7 @@
 /**
  * The composer.
  *
- * Three things share this bar, and the second is the one that earns its place:
+ * Four things share this bar, and the second is the one that earns its place:
  *
  * 1. The input, which grows with its content up to a clamp and then scrolls.
  * 2. The context-pressure gauge. It is measured against *usable* space —
@@ -11,6 +11,11 @@
  *    window would read 60% at the exact moment replies start getting truncated.
  * 3. Send, which becomes Stop while a turn is running. One button, because there is
  *    never a moment when both actions are available, and two would mean aiming.
+ * 4. The attachment strip, above the input, showing what will go with the message.
+ *    Every staged item is removable in one tap and the strip states the whole set's
+ *    size and token cost, because an image is the one thing a user attaches without
+ *    any sense of what it costs — and it is ~2,500 tokens each, every turn from here
+ *    on, not just this one.
  *
  * The input and its controls live inside one rounded box: the readout, the model chip
  * and the send disc sit on a row beneath the text, so the whole thing reads as a sheet
@@ -22,14 +27,16 @@
  */
 
 import { useMemo } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { attachmentTokens, describeAttachments } from '@/chat/attachments';
 import { Body, Button, Note, targetSlop, useFocusRing } from '@/components/ui';
 import { contextPressure, estimateTextTokens, formatTokens } from '@/lib/tokens';
 import type { PressureLevel } from '@/lib/tokens';
 import { useSettings } from '@/stores/settings';
 import { useTheme } from '@/theme';
 import type { Palette } from '@/theme';
+import type { ContentBlock } from '@/transports/types';
 
 /** Roughly six lines at body size; past that the transcript disappears. */
 const MAX_INPUT_HEIGHT = 140;
@@ -126,6 +133,133 @@ function SendButton({ onPress, disabled, reason }: { onPress: () => void; disabl
   );
 }
 
+/** Square thumbnail size for a staged attachment. */
+const THUMB_SIZE = 64;
+
+/**
+ * One shared empty array for the un-attached case.
+ *
+ * A fresh `[]` per render would be a new dependency identity every time, which
+ * re-runs the token memo below on every keystroke — the one memo in this file that
+ * has to stay cheap.
+ */
+const EMPTY_ATTACHMENTS: readonly ContentBlock[] = [];
+
+/** What a staged block should be called in a label, without reading its bytes. */
+function describeBlock(block: ContentBlock, index: number): string {
+  if (block.type === 'image') return `image ${index + 1}`;
+  if (block.type === 'document') return block.name ?? `document ${index + 1}`;
+  return `attachment ${index + 1}`;
+}
+
+/**
+ * One staged attachment, with its own remove control.
+ *
+ * The remove target is the badge, not the whole tile: tapping the tile itself does
+ * nothing on purpose, because the two plausible meanings of that tap — "look at
+ * this" and "get rid of this" — are not both undoable, and a photo removed by a
+ * mis-aimed thumb has to be picked, resized and re-encoded again.
+ */
+function AttachmentChip({
+  block,
+  onRemove,
+  label,
+}: {
+  block: ContentBlock;
+  onRemove: () => void;
+  label: string;
+}) {
+  const t = useTheme();
+  const tile = {
+    width: THUMB_SIZE,
+    height: THUMB_SIZE,
+    borderRadius: t.radius.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: t.colors.border,
+    backgroundColor: t.colors.surfaceAlt,
+    overflow: 'hidden' as const,
+  };
+
+  return (
+    <View style={{ width: THUMB_SIZE }}>
+      <View style={tile}>
+        {block.type === 'image' ? (
+          <Image
+            source={{ uri: `data:${block.mediaType};base64,${block.data}` }}
+            accessibilityIgnoresInvertColors
+            accessibilityLabel={label}
+            resizeMode="cover"
+            style={{ width: '100%', height: '100%' }}
+          />
+        ) : (
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 4 }}>
+            <Body size="xs" tone="dim" numberOfLines={3} style={{ textAlign: 'center' }}>
+              {block.type === 'document' ? (block.name ?? 'Document') : 'Attachment'}
+            </Body>
+          </View>
+        )}
+      </View>
+
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Remove ${label}`}
+        onPress={onRemove}
+        hitSlop={12}
+        style={({ pressed }) => ({
+          position: 'absolute',
+          top: -6,
+          right: -6,
+          width: 22,
+          height: 22,
+          borderRadius: 11,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: pressed ? t.colors.danger : t.colors.surfaceActive,
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: t.colors.borderStrong,
+        })}
+      >
+        <Text style={{ color: t.colors.text, fontSize: t.fontSize.xs, fontWeight: '700' }}>×</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+/** The paperclip. Its own disc so the reason it is unavailable has somewhere to go. */
+function AttachButton({ onPress, disabled, reason }: { onPress: () => void; disabled: boolean; reason?: string }) {
+  const t = useTheme();
+  const { ring, handlers } = useFocusRing();
+  const slop = targetSlop(SEND_SIZE, SEND_SIZE);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Attach"
+      accessibilityState={{ disabled }}
+      {...(disabled && reason !== undefined ? { accessibilityHint: reason } : {})}
+      disabled={disabled}
+      onPress={onPress}
+      {...handlers}
+      {...(slop ? { hitSlop: slop } : {})}
+      style={({ pressed }) => [
+        {
+          width: SEND_SIZE,
+          height: SEND_SIZE,
+          borderRadius: SEND_SIZE / 2,
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: t.colors.border,
+          backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
+          opacity: disabled ? 0.45 : 1,
+        },
+        ring,
+      ]}
+    >
+      <Text style={{ color: t.colors.textDim, fontSize: t.fontSize.md }}>+</Text>
+    </Pressable>
+  );
+}
+
 /** The model in play, as a chip on the composer's bottom row. */
 function ModelChip({ model, onPress }: { model: string; onPress?: () => void }) {
   const t = useTheme();
@@ -174,6 +308,11 @@ export function Composer({
   calibration,
   model,
   onPressModel,
+  attachments,
+  onAttach,
+  onRemoveAttachment,
+  attachDisabledReason,
+  attachmentCaveat,
 }: {
   value: string;
   onChangeText: (text: string) => void;
@@ -197,6 +336,15 @@ export function Composer({
   model?: string;
   /** Present ⇒ the model chip opens the picker. */
   onPressModel?: () => void;
+  /** Staged attachments. Their cost is in the gauge before they are sent. */
+  attachments?: readonly ContentBlock[];
+  /** Present ⇒ the attach button is shown. */
+  onAttach?: () => void;
+  onRemoveAttachment?: (index: number) => void;
+  /** Why attaching is impossible — a model without vision, usually. */
+  attachDisabledReason?: string;
+  /** Something lossy about how a staged attachment will be sent. */
+  attachmentCaveat?: string;
 }) {
   const t = useTheme();
   const liveCount = useSettings((s) => s.liveTokenCount);
@@ -205,20 +353,40 @@ export function Composer({
   const sendOnEnter = useSettings((s) => s.sendOnEnter);
 
   const factor = calibration?.factor ?? 1;
+  const staged = attachments ?? EMPTY_ATTACHMENTS;
 
   const draftTokens = useMemo(
     () => (liveCount && value ? Math.round(estimateTextTokens(value) * factor) : 0),
     [liveCount, value, factor],
   );
 
+  /**
+   * Attachments are *not* multiplied by the calibration factor.
+   *
+   * The factor corrects a character-ratio estimate of prose against what the model
+   * reported for prose. An image's cost is a different quantity entirely — a flat
+   * per-image figure from the provider's own pixel rule — and scaling it by a
+   * correction derived from text would make the gauge worse, not better.
+   */
+  const attachedTokens = useMemo(() => (liveCount ? attachmentTokens(staged) : 0), [liveCount, staged]);
+
   const pressure = useMemo(
-    () => contextPressure(Math.round(baseTokens * factor) + draftTokens, contextWindow, reserved, warnAt),
-    [baseTokens, factor, draftTokens, contextWindow, reserved, warnAt],
+    () =>
+      contextPressure(
+        Math.round(baseTokens * factor) + draftTokens + attachedTokens,
+        contextWindow,
+        reserved,
+        warnAt,
+      ),
+    [baseTokens, factor, draftTokens, attachedTokens, contextWindow, reserved, warnAt],
   );
 
-  const empty = value.trim().length === 0;
+  // An attachment on its own is a message: "what is this?" is a reasonable thing to
+  // send with a photo and no words.
+  const empty = value.trim().length === 0 && staged.length === 0;
   const blocked = disabledReason !== undefined;
   const note = pressureNote(pressure.level, pressure.remaining, strategy);
+  const stagedSummary = staged.length ? describeAttachments(staged) : '';
 
   return (
     <View
@@ -237,6 +405,36 @@ export function Composer({
       {/* Full width rather than under the button: the reason is a sentence, and a
           sentence wrapped into a 90pt column beside the input is unreadable. */}
       {blocked ? <Note tone="danger">{disabledReason}</Note> : null}
+
+      {/* The strip sits above the input, not below it: what is about to be sent
+          belongs on the same side of the box as the transcript it is joining. */}
+      {staged.length > 0 ? (
+        <View style={{ gap: t.spacing.xs }}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ gap: t.spacing.sm, paddingVertical: 6, paddingHorizontal: 6 }}
+          >
+            {staged.map((block, index) => (
+              <AttachmentChip
+                key={index}
+                block={block}
+                label={describeBlock(block, index)}
+                onRemove={() => onRemoveAttachment?.(index)}
+              />
+            ))}
+          </ScrollView>
+
+          {/* The set's size and token cost, because an image is the one thing a
+              user attaches with no sense of what it will cost every turn. */}
+          <Body size="xs" tone="faint">
+            {stagedSummary}
+          </Body>
+
+          {attachmentCaveat !== undefined ? <Note tone="warning">{attachmentCaveat}</Note> : null}
+        </View>
+      ) : null}
 
       {/* One rounded box holds the input and its controls, so the composer reads as a
           single object the user is writing inside rather than a toolbar. */}
@@ -284,6 +482,14 @@ export function Composer({
             minHeight: SEND_SIZE,
           }}
         >
+          {onAttach ? (
+            <AttachButton
+              onPress={onAttach}
+              disabled={attachDisabledReason !== undefined}
+              {...(attachDisabledReason !== undefined ? { reason: attachDisabledReason } : {})}
+            />
+          ) : null}
+
           {model !== undefined ? <ModelChip model={model} {...(onPressModel ? { onPress: onPressModel } : {})} /> : null}
 
           {liveCount ? (

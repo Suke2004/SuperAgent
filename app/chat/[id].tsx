@@ -50,6 +50,8 @@ import {
 } from '@/components/ui';
 import { hasBlockingIssue, mergeParams, validateConfig } from '@/chat/request';
 import { replyReservation } from '@/chat/budget';
+import { captureImage, openAppSettings, pickDocuments, pickImages } from '@/chat/attach';
+import { documentCaveat, documentSupport, imageSupport, MAX_ATTACHMENTS_PER_MESSAGE } from '@/chat/attachments';
 import { useMemory } from '@/stores/memory';
 import type { ConfigIssue } from '@/chat/request';
 import { parseTags } from '@/chat/list';
@@ -60,12 +62,13 @@ import { plural } from '@/chat/selection';
 import { toUnifiedMessages } from '@/db/conversations';
 import type { StoredMessage } from '@/db/conversations';
 import { estimateMessagesTokens, estimateTextTokens, formatCost, formatTokens, estimateCost } from '@/lib/tokens';
-import { useChat, useConversation, useDraft, useMessages, useStream } from '@/stores/chat';
+import { useChat, useAttachments, useConversation, useDraft, useMessages, useStream } from '@/stores/chat';
 import { useCalibration } from '@/stores/calibration';
 import { capabilitiesFor, entryKey, pickableModelIds, useModels } from '@/stores/models';
 import { useProviders } from '@/stores/providers';
 import { useSettings } from '@/stores/settings';
 import { availableEfforts, controlSupport } from '@/transports/support';
+import type { ContentBlock } from '@/transports/types';
 import { useTheme } from '@/theme';
 
 /** Which one-line prompt is open, and what it is editing. */
@@ -86,6 +89,7 @@ export default function ChatScreen() {
   const messages = useMessages(id);
   const stream = useStream(id);
   const draft = useDraft(id);
+  const attachments = useAttachments(id);
 
   const open = useChat((s) => s.open);
   const loadList = useChat((s) => s.loadList);
@@ -93,6 +97,8 @@ export default function ChatScreen() {
   const send = useChat((s) => s.send);
   const abort = useChat((s) => s.abort);
   const dismissError = useChat((s) => s.dismissError);
+  const addAttachments = useChat((s) => s.addAttachments);
+  const removeAttachment = useChat((s) => s.removeAttachment);
 
   const profiles = useProviders((s) => s.profiles);
   const entries = useModels((s) => s.entries);
@@ -110,6 +116,10 @@ export default function ChatScreen() {
   const [costFor, setCostFor] = useState<StoredMessage | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
+  const [attachMenu, setAttachMenu] = useState(false);
+  /** What the last pick refused, and whether Settings is the only way to fix it. */
+  const [attachNotes, setAttachNotes] = useState<{ notes: string[]; needsSettings: boolean } | null>(null);
+  const [attachBusy, setAttachBusy] = useState(false);
   const [configDraft, setConfigDraft] = useState<{
     maxTokens: string;
     temperature: string;
@@ -185,6 +195,70 @@ export default function ChatScreen() {
   }, [capabilities, conversation]);
 
   const onAction = useCallback((message: StoredMessage) => setMenuFor(message), []);
+
+  /* ----------------------------------------------------------------------- */
+  /* Attachments                                                              */
+  /* ----------------------------------------------------------------------- */
+
+  const transport = profile?.kind ?? 'openai';
+
+  // Read out above the memos: the same React Compiler rule that governs
+  // `systemPrompt` applies here, and `capabilities` is nullable rather than
+  // optional so it has to be widened before it crosses into a pure module.
+  const caps = capabilities ?? undefined;
+
+  const images = useMemo(() => imageSupport(caps), [caps]);
+  const pdfs = useMemo(() => documentSupport(transport, caps, 'application/pdf'), [transport, caps]);
+
+  /**
+   * Why the paperclip is unavailable, or `undefined`.
+   *
+   * Not capability-based: a vision-less model can still take a text file, and a
+   * plain text file is prose appended to the message rather than a block anything
+   * has to support, so the button is essentially always live. What does disable it
+   * is a pick already running — see `runPick` for why a second one is not safe.
+   */
+  const attachDisabledReason = attachBusy ? 'Reading the last file.' : undefined;
+
+  /** The first lossy thing about what is staged, if anything is. */
+  const attachmentCaveat = useMemo(() => {
+    for (const block of attachments) {
+      if (block.type !== 'document') continue;
+      const caveat = documentCaveat(transport, caps, block);
+      if (caveat) return caveat;
+    }
+    return undefined;
+  }, [attachments, transport, caps]);
+
+  /**
+   * Runs one picker and stages what it returned.
+   *
+   * `attachBusy` is not cosmetic: encoding four photos is seconds of work off the
+   * JS thread's critical path but the picker can be reopened during it, and a
+   * second concurrent run would check its budget against a staged set that the
+   * first run has not finished adding to.
+   */
+  const runPick = useCallback(
+    async (pick: () => Promise<{ blocks: ContentBlock[]; notes: string[]; needsSettings?: boolean }>) => {
+      setAttachMenu(false);
+      setAttachBusy(true);
+      try {
+        const result = await pick();
+        if (result.blocks.length) addAttachments(id, result.blocks);
+        if (result.notes.length) {
+          setAttachNotes({ notes: result.notes, needsSettings: result.needsSettings ?? false });
+        }
+      } catch (error) {
+        setAttachNotes({
+          notes: [error instanceof Error ? error.message : 'The picker could not be opened.'],
+          needsSettings: false,
+        });
+      } finally {
+        setAttachBusy(false);
+      }
+    },
+    [id, addAttachments],
+  );
 
   // What this model's own reported prompt counts say about the estimator. Subscribed
   // to rather than read once, so the gauge tightens as soon as a turn lands.
@@ -486,6 +560,39 @@ export default function ChatScreen() {
 
   const hasThinking = messages.some((message) => message.content.some((block) => block.type === 'thinking'));
 
+  /**
+   * The attach sheet.
+   *
+   * The two image entries are shown even when the model has no vision flag, with
+   * the reason on the row: hiding them makes a hand-edited flag look like a missing
+   * feature, and the fix — Settings → Models — is only discoverable if the refusal
+   * names it. `documentSupport` is asked about PDFs specifically because that is the
+   * only document kind a capability can refuse; a text file always goes.
+   */
+  const attachActions: SheetAction[] = [
+    {
+      label: 'Take a photo',
+      subtitle: 'Resized to fit before it leaves the device. Nothing is sent until you press send.',
+      disabled: !images.supported,
+      ...(images.supported ? {} : { disabledReason: images.reason }),
+      onPress: () => void runPick(() => captureImage(attachments)),
+    },
+    {
+      label: 'Choose images',
+      subtitle: `Up to ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message.`,
+      disabled: !images.supported,
+      ...(images.supported ? {} : { disabledReason: images.reason }),
+      onPress: () => void runPick(() => pickImages(attachments)),
+    },
+    {
+      label: 'Attach a document',
+      subtitle: pdfs.supported
+        ? 'PDFs go as documents; text files are read on device.'
+        : 'Text files are read on device. PDFs are not available here.',
+      onPress: () => void runPick(() => pickDocuments(attachments, transport, caps)),
+    },
+  ];
+
   const exportActions: SheetAction[] = [
     {
       label: 'Share as Markdown',
@@ -742,7 +849,7 @@ export default function ChatScreen() {
         <Composer
           value={draft}
           onChangeText={(text) => setDraft(id, text)}
-          onSend={() => void send(id, { text: draft })}
+          onSend={() => void send(id, { text: draft, ...(attachments.length ? { attachments: [...attachments] } : {}) })}
           onStop={() => abort(id)}
           streaming={streaming}
           aborting={stream?.aborting ?? false}
@@ -751,6 +858,11 @@ export default function ChatScreen() {
           reserved={reserved}
           model={conversation.model}
           onPressModel={() => setModelMenu(true)}
+          attachments={attachments}
+          onAttach={() => setAttachMenu(true)}
+          onRemoveAttachment={(index) => removeAttachment(id, index)}
+          {...(attachDisabledReason !== undefined ? { attachDisabledReason } : {})}
+          {...(attachmentCaveat !== undefined ? { attachmentCaveat } : {})}
           {...(calibration ? { calibration } : {})}
           {...(blocked ? { disabledReason: blocked } : {})}
         />
@@ -778,6 +890,42 @@ export default function ChatScreen() {
         subtitle={`${plural(messages.length, 'message')}. Attachment contents are left out and API keys never appear.`}
         actions={exportActions}
         onClose={() => setExportOpen(false)}
+      />
+
+      <Sheet
+        visible={attachMenu}
+        title="Attach"
+        subtitle={
+          attachments.length
+            ? `${attachments.length} already staged. Everything goes with the next message.`
+            : 'Nothing is uploaded until you press send.'
+        }
+        actions={attachActions}
+        onClose={() => setAttachMenu(false)}
+      />
+
+      {/* What a pick refused, as prose. A partial success lands here too — four
+          photos added and the fifth over budget is not a failure, and the sheet says
+          which one did not make it rather than leaving the count to be recounted. */}
+      <Sheet
+        visible={attachNotes !== null}
+        title={attachNotes && attachNotes.notes.length > 1 ? 'Some files were not attached' : 'Not attached'}
+        {...(attachNotes ? { body: attachNotes.notes.join('\n\n') } : {})}
+        actions={
+          attachNotes?.needsSettings
+            ? [
+                {
+                  label: 'Open Settings',
+                  subtitle: 'The permission can only be turned back on there.',
+                  onPress: () => {
+                    setAttachNotes(null);
+                    void openAppSettings();
+                  },
+                },
+              ]
+            : []
+        }
+        onClose={() => setAttachNotes(null)}
       />
 
       <Sheet
