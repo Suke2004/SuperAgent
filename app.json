@@ -34,7 +34,14 @@
     "plugins": [
       "expo-router",
       "expo-sqlite",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Jarvis needs your photo library to attach an image to a message. Attachments stay on this device until you press send.",
+          "cameraPermission": "Jarvis needs the camera to attach a photo to a message. The photo stays on this device until you press send."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
