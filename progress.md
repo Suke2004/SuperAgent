@@ -194,6 +194,44 @@ Four pure modules under `src/chat/`, plus the transport plumbing to express what
 
 ---
 
+### Phase 3 (Eng Plan Sprints 7–8) — ✅ COMPLETE for images and documents; the PRD's other Phase 3 items are **not** delivered (see below)
+
+The Eng Plan's Phase 3 is Sprint 7 (images, 29 pts) and Sprint 8 (documents, 24 pts). Both are done. The PRD's Phase 3 row also lists speech-to-text, system TTS, `/v1/images/generations` feature detection and Android share-target registration; the Eng Plan does not schedule those and they are **out of the delivered scope** — recorded here rather than left to be discovered.
+
+Most of the wire and storage layer was already in place before this sprint: `ImageBlock`/`DocumentBlock` in the `ContentBlock` union, both adapter encodings with round-trip tests (`{source:{type:'base64',…}}` vs an `image_url` data URL; native `document` blocks on the Anthropic path only), `IMAGE_TOKENS = 2_500` in the estimator, `ModelCapabilities.vision`/`.documents`, the block renderers, and `SendOptions.attachments`. What was missing was everything between the user and those primitives.
+
+**`src/chat/attachments.ts` (pure) / `src/chat/attach.ts` (impure)** — the same split as `export.ts` / `deliver.ts`, and for the same reason: every judgement worth testing lives on the pure side, so the module that talks to four `expo-*` packages has no arithmetic in it to get wrong.
+
+**The hard part is memory, not the picker.** Base64 of a 12 MP photo is a ~9 MB JavaScript string and the bridge copies it, so:
+
+- The image is rendered at `MAX_IMAGE_EDGE = 1568` **before any base64 exists**, then re-encoded down `QUALITY_LADDER = [0.8, 0.6, 0.45, 0.3]` until it fits `MAX_IMAGE_BASE64_CHARS` (1.5 M chars ≈ 1.1 MB). Encoding first and checking the size after is the version of this module that runs out of memory on a mid-range phone.
+- `ingestAssets` is **sequential, not `Promise.all`**. Four 12 MP bitmaps decoded at once is four bitmaps in memory at once; and the per-message budget has to be checked against the *accumulated* set, which a parallel version cannot do.
+- **Every temporary file is deleted.** The manipulator writes a new file per `saveAsync`, so one photo down four rungs leaves four multi-megabyte files in the cache directory that nothing else would ever clean up. `discard()` is best-effort and silent — a content URI the app cannot delete is not something the user can act on.
+- `planResize` handles `width: 0, height: 0`, which `ImagePickerAsset` documents as a real possibility. It returns `{ width: maxEdge, height: null, blind: true }` — `null` is the *correct* instruction, not a fallback: the native side has the real bitmap and can derive the ratio, and guessing a square would distort the photo.
+- Pickers pass `quality: 1` deliberately. The picker's own compression happens *before* the downscale, so lowering it throws away pixels that are about to be resampled anyway and leaves visible artefacts. `exif: false`, because an attachment is not a place to leak where a photo was taken.
+
+**A refusal is returned, not thrown.** `AttachResult` is `{ blocks, notes, needsSettings? }`, and both fields can be non-empty at once — picking five photos where the fourth is over budget must add four and say why the fifth did not. Every refusal names **both numbers involved**: "annual.pdf is 60 MB; the limit is 8.0 MB for a PDF. Nothing has been read yet — split it or export the pages you need." "Attachment too large" is the wording this module exists to avoid. `admitDocument` runs against the **picker-reported file size**, before a byte is read, and then again after reading because `size` is optional in the API and base64 is a third larger.
+
+**Three limits, each binding separately:** `MAX_IMAGE_BASE64_CHARS` per image, `MAX_MESSAGE_ATTACHMENT_CHARS` (4.5 M chars ≈ 3.4 MB) per message, `MAX_ATTACHMENTS_PER_MESSAGE = 8` by count — with `MAX_PDF_BYTES = 8 MB` and `MAX_TEXT_FILE_BYTES = 1 MB` on the document side. The count limit is also passed to the system picker as `selectionLimit`, so the OS enforces it before the user picks something we would refuse.
+
+**A denied permission is not a dead button.** `canAskAgain === false` sets `needsSettings`, and the sheet that reports the refusal grows an "Open Settings" action wired to `Linking.openSettings()`. `app.json` carries the `expo-image-picker` plugin with camera and photo permission copy that says the attachment stays on the device until send.
+
+**Documents have three outcomes, not two.** `documentSupport(transport, capabilities, mediaType)` returns `{ supported, reason, native }`: a PDF on Anthropic with the `documents` flag is native; a PDF on an OpenAI-compatible profile is **refused with the reason**, because there is no document block and nothing on device can extract a PDF's text; a text file goes on either path, as extracted text. `documentCaveat` produces the sentence for the silently-lossy case, and the composer shows it **before sending** — afterwards the only evidence is an answer that ignored the tables. Text is read as text even where a native block exists, so the app can show it, search it and export it.
+
+**`boundExtractedText` elides the middle**, not the end. A report's conclusion is at the end, and a document silently cut at 120k characters loses exactly the part being asked about.
+
+**UI.** The composer gained a fourth job: a horizontal strip above the input, one removable tile per staged attachment, with `describeAttachments()` beneath it stating the set's size *and* token cost — two different reasons to drop one (what the upload costs on a phone connection, what it costs in the window for every remaining turn). The remove target is the badge, not the tile: the two plausible meanings of a tap on the tile are not both undoable, and a photo removed by a mis-aimed thumb has to be picked, resized and re-encoded again. Attachment tokens are folded into the pressure gauge but **not** multiplied by the calibration factor — that factor corrects a character-ratio estimate of prose against reported prose, and an image's cost is a flat provider figure from a pixel rule, so scaling it by a text-derived correction would make the gauge worse. Send is enabled with attachments and no text, because "what is this?" is a reasonable thing to send with a photo and no words. In the transcript, a thumbnail is now pressable and opens a full-screen `Modal` viewer with `onRequestClose` so Android's back gesture closes the viewer rather than leaving the conversation.
+
+**`src/stores/chat.ts`** holds staged attachments per conversation (`attachments: Record<string, ContentBlock[]>`) with `addAttachments` / `removeAttachment` / `clearAttachments`. They survive navigation for the same reason drafts do, and more so — a resized photo is expensive to reproduce. `send()` clears them after the row is stored; `remove()`/`removeMany()` clear them alongside drafts and streams.
+
+**`src/db/content.ts` (new).** `flattenContent`, `previewOf` and `DEFAULT_TITLE` moved out of `conversations.ts`, which imports `expo-sqlite` and is therefore unreachable from Jest. Re-exported from the old module, so no call site changed. This is the §8.3 projection contract, read by four things that never see each other — the FTS index, the list preview, the derived title, the memory extractor — and it is now tested: a PDF is indexed by its filename (the only handle a user has on bytes the app cannot read), an image contributes `[image]` and never its base64.
+
+**Tests.** 72 new across `src/chat/attachments.test.ts` and `src/db/content.test.ts`, weighted towards refusals and their wording rather than the happy path — every acceptance criterion a user hits on a real phone is a refusal. Suite is **976 tests / 32 suites**; `jest.config.js` ratcheted to lines 64 / statements 63 / branches 62 / functions 51. `tsc --noEmit` and `eslint .` both clean.
+
+**`excluded` interacts correctly with attachments through existing code**, not new code: `toUnifiedMessages()` already filters `!message.excluded`, so excluding a message with an image removes its 2,500 tokens from the request and the gauge together.
+
+---
+
 ### Phases 2–6 — original PRD grouping (superseded by the Eng Plan; see the note at the top)
 
 | Phase | Scope |
@@ -208,11 +246,12 @@ Four pure modules under `src/chat/`, plus the transport plumbing to express what
 
 ## What to do next, in order
 
-Phase 2 (Eng Plan Sprints 5–6) is finished, as is the harness token-optimization sprint that followed it. Next:
+Phase 2 (Eng Plan Sprints 5–6) is finished, as is the harness token-optimization sprint that followed it, and so is Phase 3 (Sprints 7–8). Next:
 
-1. **Phase 3 — multimodal**, as scoped in the Eng Plan. It needs `expo-image-picker`, `expo-image-manipulator`, `expo-document-picker` and `expo-file-system` installed first; `app/settings/model/[key].tsx` already exposes the `documents` capability flag, so the gate for document attachments exists.
-2. Then Phases 4–6 as scoped in the Eng Plan. Note that Phase 6's export item is **already delivered** in Sprint 6 — what remains of Phase 6 is the prompt library, settings backup/restore, and the offline send queue.
-3. Physical-device verification, which nothing in Jest substitutes for. See "Known gaps".
+1. **Phase 4 — skills**, as scoped in the Eng Plan. `js-yaml` and `fflate` are already dependencies for the frontmatter parser and the import/export zip.
+2. Then Phases 5–6 as scoped in the Eng Plan. Note that Phase 6's export item is **already delivered** in Sprint 6 — what remains of Phase 6 is the prompt library, settings backup/restore, and the offline send queue.
+3. The PRD's Phase 3 leftovers, if they are wanted at all: on-device speech-to-text, system TTS, `/v1/images/generations` feature detection, and Android share-target registration. The Eng Plan does not schedule any of them and none is delivered. `expo-speech` is still uninstalled.
+4. Physical-device verification, which nothing in Jest substitutes for. See "Known gaps".
 
 ---
 
@@ -268,6 +307,12 @@ Already covered: both transport adapters, the SSE parser (incl. split and malfor
 - **`slimSchema` may drop decoration and never anything semantic.** `type`, `enum`, `required`, `properties`, `items`, `anyOf`, formats and numeric bounds are the difference between a tool the model calls correctly and one it guesses at. If a key's absence could change a valid call, it does not belong in `DECORATIVE_SCHEMA_KEYS`.
 - **A withheld tool is named to the model, not merely omitted.** A model that silently cannot see a tool invents a workaround and reports success. `describeWithheldTools` returns `''` when nothing was withheld, so the common path's prefix stays byte-identical — see the cache rules above.
 - **Thinking is not dropped from an assistant message containing a `tool_use`.** The API requires the thinking block that preceded a tool call to come back with its signature intact; dropping it is a 400, not a smaller request. `thinkingIsLoadBearing()` in `src/chat/trim.ts` is the guard, and a test in `trim.test.ts` fails if it goes.
+- **An image is resized before it is base64'd, and attachments are ingested one at a time.** Both look like premature optimisation and neither is: base64 of a 12 MP photo is a ~9 MB JavaScript string that the bridge copies, and `Promise.all` over four picked photos is four decoded bitmaps resident at once. The sequential loop is also what lets the per-message budget be checked against the accumulated set. Do not turn `ingestAssets` into a parallel map, and do not move the size check after the encode.
+- **Every manipulator and picker temporary is deleted.** One photo down four rungs of the quality ladder writes four multi-megabyte cache files and nothing else in the app would ever remove them. `discard()` stays best-effort and silent — a content URI we cannot delete is not actionable by the user.
+- **Attachment tokens are never multiplied by the calibration factor.** The factor corrects a character-ratio estimate of *prose* against reported prose. An image's 2,500 is a flat provider figure from a pixel rule; scaling it by a text-derived correction makes the gauge worse, not better.
+- **A refused attachment is a returned sentence, not a thrown error, and the sentence carries both numbers.** Four photos added and a fifth over budget is a partial success, not a failure, and the caller must not have to distinguish them — hence `AttachResult.notes`. "Attachment too large" tells the user to try again with something unspecified; `admitDocument` and `admitImage` name the file's size and the limit it missed, and `admitDocument` does it against the *picker-reported* size so a 60 MB PDF costs one sentence rather than an out-of-memory crash.
+- **A document going to a transport with no native block is warned about in the composer, before sending.** `documentSupport` returns three outcomes rather than two for this reason. Afterwards the only evidence that layout and tables were dropped is an answer that ignored them, which reads as the model being stupid rather than the app being lossy.
+- **`flattenContent` lives in `src/db/content.ts`, not `conversations.ts`.** `conversations.ts` imports `expo-sqlite`, so nothing declared in it is reachable from Jest — and this is the §8.3 projection contract, read by the FTS index, the list preview, the derived title and the memory extractor. A document must keep contributing its **name** even when no text could be read: that filename is the only handle a user has on a PDF whose contents are base64 the app cannot read.
 
 ---
 
@@ -283,6 +328,8 @@ Already covered: both transport adapters, the SSE parser (incl. split and malfor
   - **The share sheet.** `Share.share({ message })` and the 256 kB fallback to the clipboard are reasoned from Android's Binder limit, not measured on a device — which target apps truncate a long `message`, and at what size, is unverified. The artefact itself is fully tested; only the handover is not.
   - **Prompt caching has never been exercised against the live gateway.** The breakpoints, the block-form system prompt and the merge-aware marker placement are all unit-tested, but whether this gateway forwards `cache_control` to Anthropic at all — and whether it passes `cache_read_input_tokens` back — is unknown, and it is the one thing that decides whether the feature saves money or costs 25% on the marked prefix. `describeCacheOutcome` is written to report exactly this case ("we asked and got nothing"), and `ModelCapabilities.promptCache` is the per-model off switch if it turns out to be the answer. First real conversation will settle it in one turn: a non-zero `cacheWrite` on turn one and a non-zero `cacheRead` on turn two.
   - **The trim ladder's savings are estimates.** `TrimReport.before`/`after` come from the character-ratio estimator, so the figure in the transcript banner is approximate in the same way the composer's gauge is. What was *lost* is exact; what it saved is not.
+  - **The whole attachment pipeline is unverified on hardware, and it is the feature least substitutable by unit tests.** `attachments.ts` is tested exhaustively and `attach.ts` is not tested at all — it is four `expo-*` packages and a file system. Specifically unverified: that a 12 MP photo actually survives resize-then-encode inside the memory a mid-range phone allows (the criterion the resize-first ordering exists for); that `ImageManipulator`'s `height: null` derives the ratio as documented when the picker reported no dimensions; that every `saveAsync` temporary is really removed from the cache directory; that the permission copy in `app.json` reaches the system dialog; and that a thumbnail strip of eight base64 images does not stutter the composer. The token estimate of 2,500 per image is a provider figure applied flat, not measured — the first live turn's reported prompt count will say how far off it is, and the calibration factor deliberately does **not** correct it.
+  - **The PDF path has never reached the live gateway.** Whether this gateway forwards Anthropic `document` blocks at all is unknown; `ModelCapabilities.documents` is the manual off switch if it does not. A refusal from the gateway here looks like a rejected request, not a crash, so the failure mode is at least legible.
 - **`.expo/types/` has not been generated**, so expo-router's typed routes are not actually being enforced — `router.push({ pathname: '/chat/[id]', params: { id } })` currently typechecks against `string`. Run the dev server once to generate them and re-run `tsc`; a typo in a route path is invisible until then.
 - **Live gateway verification is blocked on a real API key.** Both domains are reachable and the unauthenticated 401 shape has been captured, but key-rejected vs client-rejected could not be distinguished without a token (an honest UA and an empty UA give the identical 401, and spoofing is off the table). If the key is provided, it should go in a gitignored file or an env var — never pasted into chat.
 - Rate-limit thresholds are undocumented; which optional parameters the gateway silently drops vs rejects is unknown.
@@ -291,12 +338,10 @@ Already covered: both transport adapters, the SSE parser (incl. split and malfor
 
 ## Dependencies
 
-Installed and in use: `expo ~57.0.15`, `react 19.2.3`, `react-native 0.86.2`, `typescript ~6.0.3`, `expo-router`, `expo-sqlite`, `expo-secure-store`, `expo-clipboard`, `expo-crypto`, `expo-linking`, `zustand 5`, `@react-native-async-storage/async-storage`, `@shopify/flash-list 2.0.2`, `react-native-safe-area-context`, `react-native-screens`, `marked 18`, `refractor 5`, `js-yaml` (Phase 4 frontmatter), `fflate` (Phase 4 zip).
+Installed and in use: `expo ~57.0.15`, `react 19.2.3`, `react-native 0.86.2`, `typescript ~6.0.3`, `expo-router`, `expo-sqlite`, `expo-secure-store`, `expo-clipboard`, `expo-crypto`, `expo-linking`, `expo-image-picker ~57.0.14`, `expo-image-manipulator ~57.0.14`, `expo-document-picker ~57.0.1`, `expo-file-system ~57.0.6`, `zustand 5`, `@react-native-async-storage/async-storage`, `@shopify/flash-list 2.0.2`, `react-native-safe-area-context`, `react-native-screens`, `marked 18`, `refractor 5`, `js-yaml` (Phase 4 frontmatter), `fflate` (Phase 4 zip).
 
 Still to install:
-- Phase 3 — `expo-image-picker`, `expo-image-manipulator`, `expo-document-picker`, `expo-file-system`, `expo-speech`, `expo-sharing`
-
-`expo-file-system` and `expo-sharing` are listed under Phase 3 rather than Sprint 6 on purpose: export ships through `expo-clipboard` and React Native's `Share`, which needed no native additions. When Phase 3 pulls them in, export can gain a "save as a file" action for free — it is not a gap in the export module.
+- `expo-speech` and `expo-sharing` — for the PRD's Phase 3 leftovers (system TTS) and a "save as a file" export action. Neither is scheduled; export currently ships through `expo-clipboard` and React Native's `Share`, which needed no native additions. Now that `expo-file-system` is in the tree for attachments, a save-to-file export action is cheap whenever it is wanted — it was never a gap in the export module.
 - Phase 5 — `expo-web-browser` / `expo-auth-session` for the MCP OAuth 2.1 + PKCE flow
 
 `.npmrc` sets `legacy-peer-deps` (an ERESOLVE peer conflict in the Expo 57 tree). `package.json` has an `allowScripts` entry for `unrs-resolver`, whose skipped postinstall was what made Jest fail to resolve `babel-jest` by bare name — hence the `require.resolve('babel-jest')` in `jest.config.js`.

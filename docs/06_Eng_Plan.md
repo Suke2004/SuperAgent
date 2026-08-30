@@ -4,8 +4,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.2 |
-| **Status** | Current — Phases 0, 1 and 2 complete, harness budgeting layer landed ahead of schedule, Phase 3 next |
+| **Version** | 1.3 |
+| **Status** | Current — Phases 0, 1, 2 and 3 complete, harness budgeting layer landed ahead of schedule, Phase 4 next |
 | **Planning horizon** | 2026-08-29 → 2027-04 (six phases, twelve 2-week sprints) |
 | **Audience** | Engineers picking up a sprint, and anyone deciding what to cut |
 | **Companion docs** | [05_Data_Model.md](05_Data_Model.md) · [07_Deployment.md](07_Deployment.md) · [PRD.md](../PRD.md) · [TRD.md](../TRD.md) · [ARCHITECTURE.md](../ARCHITECTURE.md) · [progress.md](../progress.md) |
@@ -16,7 +16,7 @@
 
 This document turns the product intent in [PRD.md](../PRD.md) into a sequenced, estimated, testable plan: what gets built in which two-week sprint, what "done" means for each feature, what could go wrong, and which gate stops a bad change from reaching a device. It is written for the engineer who has been handed a sprint and needs to know not just the tasks but the *order constraints* — because in this codebase the ordering is where the risk lives. Streaming transport must land before retry policy, and retry policy before error classification, since each one's correctness is defined in terms of the previous one's observable behaviour.
 
-The project is a solo-maintained, offline-first Android chat client for LLM gateways with no server component and no telemetry. That shapes every plan decision in this document. There is no staged server rollout to hide a bad release behind, no analytics to tell us a feature is unused, and no way to fix a corrupted device database remotely. The compensating controls are heavy static verification (TypeScript strict, ESLint, a 904-test Jest suite that runs in about five seconds), a deliberate architectural rule that all non-trivial logic lives in pure `.ts` modules where it can be tested, and physical-device verification as a release gate rather than a nice-to-have.
+The project is a solo-maintained, offline-first Android chat client for LLM gateways with no server component and no telemetry. That shapes every plan decision in this document. There is no staged server rollout to hide a bad release behind, no analytics to tell us a feature is unused, and no way to fix a corrupted device database remotely. The compensating controls are heavy static verification (TypeScript strict, ESLint, a 976-test Jest suite that runs in about five seconds), a deliberate architectural rule that all non-trivial logic lives in pure `.ts` modules where it can be tested, and physical-device verification as a release gate rather than a nice-to-have.
 
 Phases 0, 1 and 2 are complete: foundation, both transport adapters, the SQLite schema, streaming chat, search, error handling, CI, list virtualisation and paging, tags, pin/archive, two-tier search, bulk operations and export. One block of Phase 4/5 work has also landed early, out of sprint order and at the maintainer's request: the **harness budgeting layer** (§4.1), which fixes three token losses that were costing window on every turn and adds prompt caching. Phases 3 through 6 — attachments and documents, the rest of context management, MCP and tools, and polish/observability — are planned here at sprint granularity with story points, acceptance criteria and risks. §5 is the critical path. §10 is the risk register, and the five risks the product brief calls out by name (auth failure, mid-stream network loss, context overflow, Keystore unavailability, FTS5 absence) each have a named mitigation that is already partly in code. §11 is the technical-debt register, seeded from the hazards identified in [05_Data_Model.md](05_Data_Model.md) §12.
 
@@ -28,11 +28,11 @@ Phases 0, 1 and 2 are complete: foundation, both transport adapters, the SQLite 
 
 | Dimension | Status as of 2026-08-30 |
 |---|---|
-| Phases complete | 0 (foundation + transport), 1 (core chat), 2 (list & organisation), plus the harness budgeting layer out of order (§4.1) |
-| Phases remaining | 3 (attachments), 4 (context — partly pre-built), 5 (MCP & tools), 6 (polish & observability) |
-| Test suite | 904 tests / 30 suites, ~5 s — measured, and enforced by CI |
-| Coverage | lines 64.54% · statements 63.32% · branches 62.21% · functions 50.81%, against a floor of 62 / 61 / 60 / 48 |
-| Source size | ~32,100 lines (`src` + `app`) |
+| Phases complete | 0 (foundation + transport), 1 (core chat), 2 (list & organisation), 3 (attachments & documents), plus the harness budgeting layer out of order (§4.1) |
+| Phases remaining | 4 (context — partly pre-built), 5 (MCP & tools), 6 (polish & observability). The PRD's Phase 3 also listed speech-to-text, TTS, image generation and share-target registration; this plan never scheduled them and they are unbuilt |
+| Test suite | 976 tests / 32 suites, ~4 s — measured, and enforced by CI |
+| Coverage | lines 64.14% · statements 63.10% · branches 62.34% · functions 51.30%, against a floor of 64 / 63 / 62 / 51 |
+| Source size | ~34,100 lines (`src` + `app`) |
 | Schema | `PRAGMA user_version = 3` (`conversations`/`messages` → FTS5 → `memories`) |
 | Toolchain | Expo SDK 57, RN 0.86.2, React 19.2.3, TypeScript 6.0.3, New Architecture on |
 | CI | **Green.** [`ci.yml`](../.github/workflows/ci.yml) runs the three gates plus a coverage floor on every push and PR; [`build-apk.yml`](../.github/workflows/build-apk.yml) builds by hand or by `v*` tag (§9) |
@@ -76,9 +76,9 @@ PHASE 2         ████████████ (COMPLETE — divergences i
                     tool manifest cost · prompt caching
                     — pulls slices of S9 and S11 forward
 
-PHASE 3                     ░░░░░░░░░░░░  attachments & documents
-  S7  Week 13-14 image capture · resize · base64 pipeline          29 pts
-  S8  Week 15-16 PDF/text documents · extraction · size guards     24 pts
+PHASE 3         ████████████ (COMPLETE — divergences in the §4 retrospective)
+  S7  Week 13-14 image capture · resize · base64 pipeline        ✔ 29 pts
+  S8  Week 15-16 PDF/text documents · extraction · size guards   ✔ 24 pts
 
 PHASE 4                                 ░░░░░░░░░░░░  context management
   S9  Week 17-18 pressure gauge · drop_oldest · exclusions         26 pts
@@ -278,7 +278,7 @@ merge-aware marker placement in `src/transports/anthropic.ts`; `promptCache` in
 `app/settings/appearance.tsx`; 87 new tests. Coverage floor ratcheted to
 62 / 61 / 60 / 48. All three gates green.
 
-### Sprint 7 · Phase 3 · Images · 29 pts
+### Sprint 7 · Phase 3 · Images · 29 pts · ✅ shipped
 
 | Story | Pts | Acceptance criteria | Test strategy |
 |---|---|---|---|
@@ -292,7 +292,7 @@ merge-aware marker placement in `src/transports/anthropic.ts`; `promptCache` in
 
 **The hard part is not the picker, it is memory.** Base64 of a full-resolution photo is a ~9 MB JavaScript string, and the bridge copies it. Downscaling before encoding is the whole feature; everything else is plumbing. The acceptance criterion is a byte budget, not "it works".
 
-### Sprint 8 · Phase 3 · Documents · 24 pts
+### Sprint 8 · Phase 3 · Documents · 24 pts · ✅ shipped
 
 | Story | Pts | Acceptance criteria | Test strategy |
 |---|---|---|---|
@@ -304,7 +304,23 @@ merge-aware marker placement in `src/transports/anthropic.ts`; `promptCache` in
 | Capability gating via `ModelCapabilities.documents` | 3 | Attach affordance hidden for models that cannot accept documents | unit |
 | Size and page limits with a clear refusal | 3 | A 60 MB PDF is refused with its size shown, before any encoding work | unit |
 
-**Note on `ModelCapabilities.documents`:** it already exists in `src/transports/support.ts`. `progress.md` lists its absence as a known gap; that entry is stale ([05_Data_Model.md](05_Data_Model.md) Appendix D). Verify before building.
+**Note on `ModelCapabilities.documents`:** it already exists in `src/transports/support.ts`. `progress.md` lists its absence as a known gap; that entry is stale ([05_Data_Model.md](05_Data_Model.md) Appendix D). Verify before building. — Verified: it existed, and `app/settings/model/[key].tsx` already exposed it. No work needed.
+
+### Phase 3 retrospective · where the plan was wrong, and what shipped instead
+
+Both sprints shipped in full. Four notes.
+
+**The plan under-estimated how much already existed and over-estimated the picker.** `ImageBlock` storage and both wire encodings (Sprint 7, 5 pts) were already done in Phase 1 with round-trip tests, as was `flattenContent()`'s document handling (Sprint 8, 2 pts) and the 2,500-token image figure. What actually consumed the sprint was the two guard layers the tables allot 5 and 3 points to: a refusal that names both numbers involved, at four separate limits (per image, per message, by count, per document type), evaluated in an order where the *most* specific complaint wins. `admitImage` checks the media type before the count so a TIFF at eight attachments is not blamed on the limit.
+
+**Two acceptance criteria were rewritten because they were unfalsifiable here, and both rewrites are recorded rather than quietly substituted.** "Scrolling past 20 images does not spike memory beyond 250 MB on a Pixel 6" and the 12 MP/1.5 MB byte budget are device criteria with no device attached. What is asserted instead is the *decision* each one was protecting: `planResize` produces 1568 px on the long edge with the ratio preserved for a 4032×3024 source, and `admitImage` refuses anything still over 1.5 M base64 chars after the ladder. The memory ceiling itself is unverified and is listed as such in `progress.md`.
+
+**Capability gating deviates from the story as written, deliberately.** Sprint 8 says "Attach affordance hidden for models that cannot accept documents". Hiding it is wrong here: `ModelCapabilities.vision` and `.documents` are *hand-edited* flags, because the gateway's `/v1/models` returns ids and nothing else — so a hidden affordance is indistinguishable from a missing feature, and the fix (Settings → Models) is undiscoverable. The rows are shown and disabled with the reason naming the flag and where to flip it. This is the same principle `Sheet` was built on and is recorded in §11 as a spec correction, not debt.
+
+**Documents needed a third outcome.** The plan models document support as a boolean per model. The OpenAI-compatible path has no document block at all, so a PDF there is neither supported nor a capability problem — it is refused for a structural reason, while a *text* file on the same path is supported but lossy. `documentSupport` returns `{supported, reason, native}` and `documentCaveat` produces the composer's warning, which satisfies "user warned in the composer, not after the failure" more precisely than a boolean could.
+
+**Shipped:** `src/chat/attachments.ts` (pure, ~560 lines), `src/chat/attach.ts` (impure), `src/db/content.ts` (extracted from `conversations.ts` so the §8.3 projection is testable at all), the composer's attachment strip and paperclip, a full-screen image viewer, staged-attachment state in `src/stores/chat.ts`, the attach and refusal sheets in `app/chat/[id].tsx`, `expo-image-picker` permission copy in `app.json`; 72 new tests. Coverage floor ratcheted to 64 / 63 / 62 / 51. All three gates green.
+
+**Out of scope and not delivered:** the PRD's Phase 3 row also lists on-device speech-to-text, system TTS, `/v1/images/generations` feature detection and Android share-target registration. This plan's Phase 3 is Sprints 7–8 only and never scheduled them; they are unbuilt, and `progress.md`'s "what to do next" carries them as an explicit open question rather than an assumed deliverable.
 
 ### Sprint 9 · Phase 4 · Context pressure and exclusions · 26 pts
 
@@ -481,7 +497,7 @@ Never cut: the export/log redaction tests, the `LIKE` search fallback, the retry
 
 The shape is not aspirational — it falls out of an architectural rule. `jest.config.js` matches `.ts` only, in a `node` environment. Components are `.tsx`, so **logic in a component is logic with no test**. The response has been to push every decision into a pure module: `src/chat/list.ts` holds the list's filtering and grouping, `src/chat/request.ts` holds request validation, `src/lib/tokens.ts` holds estimation, `src/db/conversations.ts` holds every SQL statement. Screens keep the hooks and nothing else.
 
-**The tradeoff, stated honestly.** This buys a fast, deterministic suite (904 tests in ~5 s) and near-total coverage of decision logic. It buys *zero* coverage of rendering, gesture handling, navigation and layout. A component that fails to render is caught by a human on a device or not at all. Adding `jest-expo` + React Native Testing Library would close that gap and cost a much slower suite, a jsdom-shaped environment that is not the real runtime, and a category of test that historically breaks on every RN upgrade. For a solo maintainer shipping to Android with a scripted device protocol ([07_Deployment.md](07_Deployment.md)), the current split is the better trade. **Revisit it if a second engineer joins**, because the calculus changes when a regression can be introduced by someone who did not write the original code.
+**The tradeoff, stated honestly.** This buys a fast, deterministic suite (976 tests in ~4 s) and near-total coverage of decision logic. It buys *zero* coverage of rendering, gesture handling, navigation and layout. A component that fails to render is caught by a human on a device or not at all. Adding `jest-expo` + React Native Testing Library would close that gap and cost a much slower suite, a jsdom-shaped environment that is not the real runtime, and a category of test that historically breaks on every RN upgrade. For a solo maintainer shipping to Android with a scripted device protocol ([07_Deployment.md](07_Deployment.md)), the current split is the better trade. **Revisit it if a second engineer joins**, because the calculus changes when a regression can be introduced by someone who did not write the original code.
 
 ### 7.2 What each tier covers
 
@@ -604,7 +620,7 @@ Four gates. All four must pass before a merge to `main`; all four plus the devic
 |---|---|---|---|---|
 | 1 | Types | `pnpm typecheck` (`tsc --noEmit`) | merge | Strict TS is this project's substitute for a schema validator at every boundary |
 | 2 | Lint | `pnpm lint` (`eslint .`) | merge | Catches unused code and import-boundary violations |
-| 3 | Tests | `pnpm test` (`jest`) | merge | 904 tests, ~5 s — cheap enough that there is no excuse |
+| 3 | Tests | `pnpm test` (`jest`) | merge | 976 tests, ~4 s — cheap enough that there is no excuse |
 | 4 | Device | scripted protocol on Pixel 6 + Samsung S22 | release | The only coverage of rendering, gestures and real network behaviour |
 
 ```bash
@@ -799,10 +815,14 @@ The invariant that survives every branch: **the key never touches AsyncStorage o
 | D-11 | No live-gateway smoke test in any automated form | needs a real key | R-01 stays open | manual smoke script run at each release, key from a gitignored file | each release |
 | D-12 | Prompt caching is unverified against the gateway | §4.1, needs a real key | if `cache_control` is accepted but not honoured, the marked prefix costs 1.25× and saves nothing — a silent surcharge, not an error | one two-turn conversation: expect `cacheWrite > 0` then `cacheRead > 0`. If not, set `promptCache: false` for the model | first live session (with D-11) |
 | D-13 | `selectTools` / `describeWithheldTools` have no call site | §4.1 landed the tool budget before tools reach `buildRequest` | tested code that no request exercises; the wiring assumptions could be wrong in a way the tests cannot see | wire into the request builder alongside the MCP manifest | S11 |
+| D-14 | `src/chat/attach.ts` has no automated coverage at all | it is four `expo-*` packages and a file system; the testable half was extracted into `attachments.ts` instead | the memory ceiling the whole module is arranged around (P-10) is unmeasured, as is whether every `saveAsync` temporary is really deleted | one device session: attach eight photos with the Android Studio profiler attached, then check the cache directory | first device session (with D-11) |
+| D-15 | The 2,500-token image estimate is a provider figure applied flat, never measured | no live turn has reported a prompt count for a request containing an image | the gauge is wrong by an unknown amount on any conversation with attachments, and the calibration factor deliberately does not correct it | compare one reported prompt count against the estimate for the same request; if it is consistently off, the constant is the fix, not the factor | first live session (with D-11) |
+
+**Spec corrections made in Phase 3, recorded rather than silently substituted:** Sprint 8's "Attach affordance hidden for models that cannot accept documents" ships as *shown and disabled with the reason*, because `vision`/`documents` are hand-edited flags and a hidden affordance is indistinguishable from a missing feature. Sprint 7's two device criteria (12 MP → 1.5 MB, 20 images under 250 MB) are asserted as the decisions they protect — `planResize`'s output and `admitImage`'s refusal — with the memory ceiling itself left open as D-14.
 
 **Policy:** debt gets an ID here or it does not exist. Items D-01 through D-08 are all scheduled into Sprint 5 precisely because they are cheap and they distort everything measured after them — a stale doc and an absent CI both cause work that looks like development and is not.
 
-**Status after Phase 2: D-01 … D-08 are closed.** The four web-export directories are deleted and gitignored; `conversations_order` became `conversations_list (archived, pinned DESC, updated_at DESC, id DESC)` in migration 1 → 2 with a planner assertion holding it there; the FTS drift check is now `INSERT INTO messages_fts(messages_fts, rank) VALUES ('integrity-check', 1)` (`src/db/schema.ts`), where the `rank = 1` argument is the part that catches rowid renumbering; the store action calls `previewOf()`; the `Number.EPSILON` addition is gone from `regenerate()` and the comment now explains why it never worked (a ULP above `seq = 4` is larger than `EPSILON`, so the addition rounded away); both `progress.md` drift items are corrected; CI is green. **D-09 … D-11 remain open as designed** — D-09 is deferred with a trigger, D-10 is scheduled into S13 and cuttable, D-11 is blocked on a real key and recurs at every release. **D-12 and D-13 were opened by the harness sprint** (§4.1) and are both consequences of building a layer before the thing it serves exists: D-12 rides along with D-11's first live session, D-13 closes in S11.
+**Status after Phase 2: D-01 … D-08 are closed.** The four web-export directories are deleted and gitignored; `conversations_order` became `conversations_list (archived, pinned DESC, updated_at DESC, id DESC)` in migration 1 → 2 with a planner assertion holding it there; the FTS drift check is now `INSERT INTO messages_fts(messages_fts, rank) VALUES ('integrity-check', 1)` (`src/db/schema.ts`), where the `rank = 1` argument is the part that catches rowid renumbering; the store action calls `previewOf()`; the `Number.EPSILON` addition is gone from `regenerate()` and the comment now explains why it never worked (a ULP above `seq = 4` is larger than `EPSILON`, so the addition rounded away); both `progress.md` drift items are corrected; CI is green. **D-09 … D-11 remain open as designed** — D-09 is deferred with a trigger, D-10 is scheduled into S13 and cuttable, D-11 is blocked on a real key and recurs at every release. **D-12 and D-13 were opened by the harness sprint** (§4.1) and are both consequences of building a layer before the thing it serves exists: D-12 rides along with D-11's first live session, D-13 closes in S11. **D-14 and D-15 were opened by Phase 3**, and both are the same shape as D-12: an unmeasurable claim about hardware or a live gateway, made testable only by attaching one. Neither blocks Phase 4.
 
 ---
 
@@ -1172,6 +1192,7 @@ Cross-references: schema, indexes and the hazards that seed §11 are in [05_Data
 
 | Version | Date | Author | Change summary |
 |---|---|---|---|
+| 1.3 | 2026-08-30 | Phase 3 close-out | Phase 3 recorded as shipped: Sprint 7 (images) and Sprint 8 (documents) both delivered. §1 baseline re-measured (976 tests / 32 suites, ~4 s; coverage 64.14 / 63.10 / 62.34 / 51.30 against a ratcheted 64 / 63 / 62 / 51 floor; ~34,100 lines) and the executive summary's 904-test figure corrected; §7.1 and §8 gate 3 likewise. §2 timeline marks S7 and S8 complete and makes Phase 4 the next block; the "phases remaining" row now says plainly that the PRD's other Phase 3 items (speech-to-text, TTS, image generation, share target) were never scheduled here and are unbuilt. New **Phase 3 retrospective** after Sprint 8: the plan under-estimated how much of the pipeline already existed and over-estimated the picker — the real work was the memory ceiling (resize before base64, sequential ingest, temp-file deletion) and the refusal wording. Two device acceptance criteria are recorded as unverified rather than ticked, with the decisions they protect asserted in tests instead. One deliberate deviation from the sprint wording: capability gating **shows and disables with a reason** rather than hiding the affordance, because `vision`/`documents` are hand-edited flags and a hidden button is indistinguishable from a broken one. §11 opens **D-14** (`attach.ts`, the impure half, has no automated coverage, so the P-10 memory ceiling is unmeasured) and **D-15** (the flat 2,500-token image estimate has never been checked against a reported `usage`). Neither blocks Phase 4. |
 | 1.2 | 2026-08-30 | Harness sprint close-out | Version and status bumped: the harness budgeting layer landed **out of order**, ahead of Phase 3. §1 baseline re-measured (904 tests / 30 suites, ~5 s plain and ~12 s with coverage; coverage 64.54 / 63.32 / 62.21 / 50.81 against a ratcheted 62 / 61 / 60 / 48 floor; ~32,100 lines) and the executive summary's 817-test figure corrected, with a new paragraph on why the layer was pulled forward. §2 timeline gains an `H` row marked out of order. New **§4.1** records the sprint in full: a defect/cost/fix table for the four modules (`budget.ts` double-counted the thinking budget into `max_tokens`; `trim.ts` replaced a hard drop with a four-rung ladder; `tools.ts` sent every definition every turn; `cache.ts` never marked a cacheable prefix), the ladder note, six consequences for later sprints — Sprint 9's first story is largely done, `drop_oldest` shrinks to the last rung, Sprints 11/12 inherit `selectTools`, the fourth `cache_control` breakpoint is reserved for the tool loop, `promptCache` needs surfacing in S13, and the gateway-caching risk — and a delivered list. §7.3 gains four example cases (BUDGET / TRIM / TOOLS / CACHE); §7.1 and §8 gate 3 corrected to 904 tests / ~5 s. §11 opens **D-12** (prompt caching unverified against the gateway — a silent 1.25× surcharge if `cache_control` is accepted but not honoured; settled by one two-turn conversation) and **D-13** (`selectTools` has no call site until S11). |
 | 1.1 | 2026-08-30 | Phase 2 close-out | Phase 2 recorded as shipped. §1 baseline re-measured (817 tests / 26 suites, ~5 s; coverage 62.66 / 61.33 / 60.78 / 47.68 against a 61 / 60 / 59 / 46 floor; ~30,300 lines across `src` + `app`) and the executive summary's stale 658-test figure corrected. §2 timeline marks S5 and S6 complete. §4 Sprints 5 and 6 gain an outcome column, including the two acceptance criteria that shipped as code but remain **device-unverified** (the 55 fps scroll target and the 400 ms list-open target) — recorded rather than ticked, because no physical device exists in this environment. New Phase 2 retrospective after Sprint 6 in the §9.4 style: export ships through `expo-clipboard` and React Native `Share` rather than a written file (`expo-file-system` / `expo-sharing` belong to Phase 3), `SHARE_BYTE_LIMIT` against the Binder parcel ceiling, double redaction, no attachment bytes in an export, the duplicate Phase 6 export line, and what a bulk delete deliberately spares. §11 records D-01 … D-08 as closed with the evidence for each, and D-09 … D-11 as open by design. |
 | 1.0 | 2026-08-29 | Architecture review | Initial issue. Baseline as of Phase 1 complete; 13 sprints across six phases with per-story points and acceptance criteria; Phase 1 recorded retrospectively for velocity (27 pts/sprint) and ordering provenance; critical path (transport → retry → classification → failover → tools) with the reasoning for each edge; 80/15/5 test pyramid with the architectural rule that produces it and an honest account of what it does not cover; concrete test cases including the two mandated redaction tests; four quality gates; greenfield GitHub Actions CI and APK workflows; 14-entry risk register with R-07 (Keystore) expanded; 11-entry debt register seeded from the data-model hazards, with D-01…D-08 scheduled into Sprint 5; twelve performance targets and the FlashList strategy behind the 1,000-message/2 s requirement; security checklist including the reasoned decision *not* to pin certificates; on-device observability model; alpha→beta→release rollout; per-phase success metrics; user-flow-to-feature mapping cross-checked against the risk register; and a five-block definition of done. |
