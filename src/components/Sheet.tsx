@@ -16,7 +16,7 @@ import { useState } from 'react';
 import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
 
 import { useDialogKeys } from '@/components/dialog';
-import { Body, Button, Divider, Field, Inline } from '@/components/ui';
+import { Body, Button, Divider, Field, Inline, useKeyboardHeight } from '@/components/ui';
 import { useTheme } from '@/theme';
 
 export interface SheetAction {
@@ -206,6 +206,10 @@ function PromptBody({
   const t = useTheme();
   const [text, setText] = useState(initial);
   const trap = useDialogKeys(true, onCancel);
+  // The field autofocuses, so the keyboard is always up while this sheet is open —
+  // and an edge-to-edge Android window does not resize for it, so the sheet has to
+  // lift itself or it opens underneath the keys. See `useKeyboardHeight`.
+  const keyboardHeight = useKeyboardHeight();
 
   const blocked = !allowEmpty && text.trim().length === 0;
 
@@ -225,6 +229,7 @@ function PromptBody({
           borderTopRightRadius: t.radius.lg,
           padding: t.spacing.md,
           paddingBottom: t.spacing.xl,
+          marginBottom: keyboardHeight,
           gap: t.spacing.md,
         }}
       >

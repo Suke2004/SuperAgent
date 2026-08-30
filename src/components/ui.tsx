@@ -19,10 +19,11 @@
  *   difference is made up with `hitSlop` rather than by inflating the design.
  */
 
-import { forwardRef, useCallback, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ActivityIndicator,
+  Keyboard,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -44,6 +45,33 @@ import { Glyph } from './Glyph';
 
 /** Android's minimum touch target, in dp. */
 export const MIN_TARGET = 48;
+
+/**
+ * How much of the screen the software keyboard is covering, in dp. `0` when closed.
+ *
+ * This has to exist because **an edge-to-edge Android window does not resize for
+ * the keyboard.** `android.softwareKeyboardLayoutMode: 'resize'` sets
+ * `adjustResize`, which only ever worked by shrinking the area inside the system
+ * bars — and edge-to-edge (mandatory from Android 15, and on here since the first
+ * build) is precisely the mode where the app draws *behind* those bars, so there
+ * is nothing left for `adjustResize` to shrink. The keyboard opens over the
+ * composer and the composer stays where it was.
+ *
+ * `keyboardDidShow` rather than `keyboardWillShow`: Android never emits the
+ * `Will` events, so anything built on them is an iOS-only fix.
+ */
+export function useKeyboardHeight(): number {
+  const [height, setHeight] = useState(0);
+  useEffect(() => {
+    const shown = Keyboard.addListener('keyboardDidShow', (event) => setHeight(event.endCoordinates.height));
+    const hidden = Keyboard.addListener('keyboardDidHide', () => setHeight(0));
+    return () => {
+      shown.remove();
+      hidden.remove();
+    };
+  }, []);
+  return height;
+}
 
 /**
  * The style a control wears while it holds focus.

@@ -25,7 +25,7 @@ import { FlashList } from '@shopify/flash-list';
 import * as Clipboard from 'expo-clipboard';
 import { Stack as NavStack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Modal, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { OfflineBadge, OfflineBanner } from '@/components/OfflineBanner';
@@ -47,6 +47,7 @@ import {
   Stack,
   Stepper,
   SwitchRow,
+  useKeyboardHeight,
 } from '@/components/ui';
 import { hasBlockingIssue, mergeParams, validateConfig } from '@/chat/request';
 import { replyReservation, sendConfirmation } from '@/chat/budget';
@@ -84,6 +85,9 @@ export default function ChatScreen() {
   const t = useTheme();
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  // The keyboard's own height already clears the navigation bar, so keeping the
+  // safe-area padding while it is open leaves a gap under the composer.
+  const keyboardHeight = useKeyboardHeight();
   const { id } = useLocalSearchParams<{ id: string }>();
 
   const conversation = useConversation(id);
@@ -772,15 +776,13 @@ export default function ChatScreen() {
   /* ---------------------------------------------------------------------- */
 
   return (
-    // One keyboard mechanism, not two. Android resizes the window itself
-    // (`softwareKeyboardLayoutMode: 'resize'` in app.json), so adding padding on top
-    // of that moves the composer twice — once by the OS and once by React — and
-    // leaves a gap the height of the keyboard. iOS does not resize, so there it is
-    // this view's job.
-    <KeyboardAvoidingView
-      {...(Platform.OS === 'ios' ? { behavior: 'padding' as const } : {})}
-      style={{ flex: 1 }}
-    >
+    // `behavior="padding"` on **both** platforms. The previous version applied it on
+    // iOS only, on the theory that Android resizes its own window for the keyboard
+    // (`softwareKeyboardLayoutMode: 'resize'`). It does not: this app is edge-to-edge,
+    // and `adjustResize` shrinks the area inside the system bars, which an
+    // edge-to-edge window draws behind. So nothing moved and the keyboard opened on
+    // top of the composer. See `useKeyboardHeight`.
+    <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
       <NavStack.Screen
         options={{
           title: conversation.title,
@@ -866,7 +868,7 @@ export default function ChatScreen() {
         }
       />
 
-      <View style={{ paddingBottom: insets.bottom, gap: t.spacing.sm }}>
+      <View style={{ paddingBottom: keyboardHeight > 0 ? 0 : insets.bottom, gap: t.spacing.sm }}>
         {/* Above the composer rather than at the top of the screen: it is a
             statement about what will happen when you press send. */}
         <View style={{ paddingHorizontal: t.spacing.md }}>
