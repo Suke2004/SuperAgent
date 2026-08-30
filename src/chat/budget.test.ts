@@ -8,6 +8,7 @@
  */
 
 import type { ToolDefinition } from '@/transports/types';
+import { contextPressure } from '@/lib/tokens';
 import {
   BUDGET_MARGIN,
   MIN_HISTORY_BUDGET,
@@ -15,6 +16,7 @@ import {
   planTurn,
   prefixCost,
   replyReservation,
+  sendConfirmation,
 } from './budget';
 
 const TOOL: ToolDefinition = {
@@ -155,5 +157,34 @@ describe('describeTightBudget', () => {
     expect(describeTightBudget(planTurn({ transport: 'anthropic', contextWindow: 8_000, params: { maxTokens: 7_000 } }))).toContain(
       'max output tokens',
     );
+  });
+});
+
+describe('sendConfirmation', () => {
+  const pressure = (used: number) => contextPressure(used, 100_000, 8_000, 0.7);
+
+  it('asks nothing while there is room, whatever the strategy', () => {
+    for (const strategy of ['warn', 'drop_oldest', 'summarise'] as const) {
+      expect(sendConfirmation(pressure(10_000), strategy)).toBeNull();
+      expect(sendConfirmation(pressure(80_000), strategy)).toBeNull();
+    }
+  });
+
+  it('asks nothing for the strategies that trim, because they fix it themselves', () => {
+    expect(sendConfirmation(pressure(150_000), 'drop_oldest')).toBeNull();
+    expect(sendConfirmation(pressure(150_000), 'summarise')).toBeNull();
+  });
+
+  it('asks once when `warn` is over the usable window', () => {
+    const ask = sendConfirmation(pressure(100_000), 'warn');
+    expect(ask).not.toBeNull();
+    // 100,000 used against 92,000 usable.
+    expect(ask?.body).toContain('8.0k');
+    expect(ask?.body).toContain('held back for the reply');
+  });
+
+  it('never claims the overflow is zero at the exact boundary', () => {
+    const ask = sendConfirmation(pressure(92_000), 'warn');
+    expect(ask?.body).toContain('1 tokens');
   });
 });
