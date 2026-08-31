@@ -29,11 +29,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Order matters: pnpm has to exist before setup-node can use `cache: pnpm`,
       # because the cache resolution shells out to `pnpm store path`.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.29.1
 
@@ -43,7 +43,7 @@ jobs:
       # module requires --experimental-sqlite, so on a Node 22 runner the whole
       # `src/db/__tests__` directory fails to load. It also matches the version
       # the project is developed against.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
