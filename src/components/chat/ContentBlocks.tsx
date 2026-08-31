@@ -1,10 +1,11 @@
 /**
  * A message's content blocks, rendered.
  *
- * The six block kinds are not variations on a theme — text is prose, thinking is
+ * The seven block kinds are not variations on a theme — text is prose, thinking is
  * an aside the user has to opt into reading, a tool call is a machine artefact,
- * and an image is neither. Each gets the treatment it needs, and the switch is
- * exhaustive so a seventh kind cannot render as a blank gap.
+ * a provider-side search is a list of sources, and an image is none of those. Each
+ * gets the treatment it needs, and the switch is exhaustive so an eighth kind
+ * cannot render as a blank gap.
  *
  * Two things are deliberately reused rather than reinvented: {@link Markdown} for
  * assistant prose, and {@link CodeBlock} for tool arguments and results. The second
@@ -14,10 +15,11 @@
  */
 
 import { useState } from 'react';
-import { Image, Modal, Pressable, StyleSheet, View } from 'react-native';
+import { Alert, Image, Linking, Modal, Pressable, StyleSheet, View } from 'react-native';
 import type { ViewStyle } from 'react-native';
 
 import { CodeBlock } from '@/components/markdown/CodeBlock';
+import { safeHref } from '@/components/markdown/href';
 import { Markdown } from '@/components/markdown/Markdown';
 import { Badge, Body, Inline, Note, verticalSlop } from '@/components/ui';
 import { useSettings } from '@/stores/settings';
@@ -280,6 +282,59 @@ function Document({ mediaType, name, text }: { mediaType: string; name?: string;
   );
 }
 
+/**
+ * A tool the provider ran on its own side, and the pages it came back with.
+ *
+ * The `raw` wire payload is not shown. It is there to be replayed verbatim on the
+ * next turn, and for web search it is the full text of every result page — which is
+ * a machine artefact the way a `tool_use` argument blob is not: nobody reads it, and
+ * printing it would bury the answer under the sources it was written from.
+ *
+ * Source URLs come from a third party by way of the model, so they go through the
+ * same {@link safeHref} allowlist as a markdown link rather than reaching `openURL`
+ * on trust. One that fails the check renders as text.
+ */
+function ServerTool({ name, summary, sources }: { name: string; summary?: string; sources?: { title?: string; url: string }[] }) {
+  const t = useTheme();
+  return (
+    <View style={{ gap: t.spacing.xs }}>
+      <Inline gap="sm">
+        <Badge label="Web" tone="accent" />
+        <Body size="sm" tone="faint">
+          {summary ?? name.replace(/_/g, ' ')}
+        </Body>
+      </Inline>
+      {sources?.map((source, index) => {
+        const href = safeHref(source.url);
+        const label = source.title?.trim() || source.url;
+        return href ? (
+          <Pressable
+            key={`${source.url}-${index}`}
+            accessibilityRole="link"
+            accessibilityLabel={label}
+            accessibilityHint="Opens the source in your browser"
+            hitSlop={verticalSlop(30)}
+            onPress={() => {
+              Linking.openURL(href).catch(() => {
+                Alert.alert('Could not open link', href);
+              });
+            }}
+            style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+          >
+            <Body size="xs" style={{ color: t.colors.accent, textDecorationLine: 'underline' }} numberOfLines={2}>
+              {label}
+            </Body>
+          </Pressable>
+        ) : (
+          <Body key={`${source.url}-${index}`} size="xs" tone="faint" numberOfLines={2}>
+            {label}
+          </Body>
+        );
+      })}
+    </View>
+  );
+}
+
 export function BlockView({
   block,
   markdown,
@@ -327,6 +382,15 @@ export function BlockView({
           mediaType={block.mediaType}
           {...(block.name !== undefined ? { name: block.name } : {})}
           {...(block.text !== undefined ? { text: block.text } : {})}
+        />
+      );
+
+    case 'server_tool':
+      return (
+        <ServerTool
+          name={block.name}
+          {...(block.summary !== undefined ? { summary: block.summary } : {})}
+          {...(block.sources !== undefined ? { sources: block.sources } : {})}
         />
       );
 

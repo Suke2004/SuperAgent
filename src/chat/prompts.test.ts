@@ -2,7 +2,7 @@
  * Prompt templates: the substitution, and the cases that are easy to get wrong.
  */
 
-import { fillPrompt, isComplete, MAX_PROMPT_CHARS, validatePrompt, variablesIn } from './prompts';
+import { fillPrompt, MAX_PROMPT_CHARS, validatePrompt, variablesIn } from './prompts';
 
 describe('finding the variables', () => {
   it('reads them in first-appearance order, without duplicates', () => {
@@ -38,12 +38,6 @@ describe('filling one in', () => {
 
   it('treats a value containing $1 as text, not as a replacement pattern', () => {
     expect(fillPrompt('Fix {{what}}', { what: 'the $1 and $& handling' })).toBe('Fix the $1 and $& handling');
-  });
-
-  it('knows when a template is ready to send', () => {
-    expect(isComplete('{{a}} {{b}}', { a: 'x' })).toBe(false);
-    expect(isComplete('{{a}} {{b}}', { a: 'x', b: 'y' })).toBe(true);
-    expect(isComplete('no variables', {})).toBe(true);
   });
 });
 

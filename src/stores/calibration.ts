@@ -18,6 +18,17 @@
  * next one is not. And it is capped: a ratio outside [0.5, 2] is more likely a
  * gateway that reports something other than prompt tokens than an estimator that is
  * twice as wrong as its worst known case.
+ *
+ * **Tool definitions get their own factor.** They are JSON, not prose, and the
+ * character-per-token ratio of `{"type":"object","properties":{…}}` is nothing like
+ * that of an English sentence — punctuation-dense text tokenizes far worse than the
+ * 3.7 characters the prose estimator assumes. With a tool manifest often the largest
+ * part of the prompt, one blended factor is pulled between two different errors and
+ * lands on neither. So each turn also yields a *residual* sample: subtract what the
+ * prose factor says the prose cost from the reported total, and what is left is the
+ * manifest. That residual is only believable when the manifest is a real share of the
+ * request — see {@link foldToolSample} — and until it is, tools fall back to the
+ * blended factor, which is what they used before this existed.
  */
 
 import { create } from 'zustand';
@@ -38,22 +49,42 @@ const MAX_RATIO = 2;
 /** Below this the reported count is too small for the ratio to mean anything. */
 const MIN_TOKENS = 200;
 
+/**
+ * Below this share of the estimate, the tool manifest cannot be measured.
+ *
+ * The residual is `reported − proseFactor × prose`, so all of the prose factor's own
+ * error lands in it. When the manifest is a tenth of the request that error swamps the
+ * signal and the "measurement" is noise with a decimal point on it. A fifth is the
+ * point where a 5% prose error moves the tool ratio by less than a quarter of itself.
+ */
+const MIN_TOOL_SHARE = 0.2;
+
 export interface Calibration {
   /** Multiply an estimate by this to get a corrected estimate. */
   factor: number;
   /** How many turns are behind it. Shown so the user can judge it. */
   samples: number;
   updatedAt: number;
+  /** The same, for tool definitions. Absent until a turn carried enough of them. */
+  toolFactor?: number;
+  toolSamples?: number;
 }
 
 export interface CalibrationState {
   /** Keyed exactly like the model registry: `${profileId}::${model}`. */
   byModel: Record<string, Calibration>;
 
-  /** Folds one turn's evidence in. Ignores samples too small or too odd to trust. */
-  record(key: string, estimated: number, reported: number): void;
+  /**
+   * Folds one turn's evidence in. Ignores samples too small or too odd to trust.
+   *
+   * `tools` is the part of `estimated` that was tool definitions. Pass it and the
+   * manifest gets calibrated separately; omit it and only the blended factor moves.
+   */
+  record(key: string, estimated: number, reported: number, tools?: number): void;
   /** The correction factor for a model, or 1 when nothing is known. */
   factorFor(key: string): number;
+  /** The correction factor for tool definitions, falling back to {@link factorFor}. */
+  toolFactorFor(key: string): number;
   get(key: string): Calibration | undefined;
   forget(key: string): void;
   reset(): void;
@@ -72,12 +103,36 @@ export function foldSample(previous: number | undefined, estimated: number, repo
   return previous === undefined ? ratio : previous + ALPHA * (ratio - previous);
 }
 
+/**
+ * The same, for the tool manifest, measured as what the prose factor cannot explain.
+ *
+ * `estimated` is the whole prompt estimate and `tools` the part of it that was tool
+ * definitions, so `estimated − tools` is the prose. Refused when the manifest is too
+ * small to measure ({@link MIN_TOOL_SHARE}, {@link MIN_TOKENS}) or when the residual
+ * implies a ratio outside the believable band — which is what a gateway reporting
+ * something other than prompt tokens looks like from here.
+ */
+export function foldToolSample(
+  previous: number | undefined,
+  estimated: number,
+  reported: number,
+  tools: number,
+  proseFactor: number,
+): number | null {
+  if (tools < MIN_TOKENS || estimated <= 0 || tools / estimated < MIN_TOOL_SHARE) return null;
+  const prose = Math.max(0, estimated - tools);
+  const residual = reported - prose * (proseFactor > 0 ? proseFactor : 1);
+  const ratio = residual / tools;
+  if (!Number.isFinite(ratio) || ratio < MIN_RATIO || ratio > MAX_RATIO) return null;
+  return previous === undefined ? ratio : previous + ALPHA * (ratio - previous);
+}
+
 export const useCalibration = create<CalibrationState>()(
   persist(
     (set, get) => ({
       byModel: {},
 
-      record(key, estimated, reported) {
+      record(key, estimated, reported, tools) {
         const previous = get().byModel[key];
         const factor = foldSample(previous?.factor, estimated, reported);
         if (factor === null) {
@@ -88,13 +143,26 @@ export const useCalibration = create<CalibrationState>()(
           return;
         }
 
+        // Against the *previous* prose factor, not the one this sample just produced:
+        // the residual is what the estimator in force at send time could not explain,
+        // and folding the new factor back in would measure the manifest against a
+        // correction the request never used.
+        const toolFactor =
+          tools === undefined
+            ? null
+            : foldToolSample(previous?.toolFactor, estimated, reported, tools, previous?.factor ?? 1);
+
         set((state) => ({
           byModel: {
             ...state.byModel,
             [key]: {
+              ...(previous ?? {}),
               factor,
               samples: (previous?.samples ?? 0) + 1,
               updatedAt: Date.now(),
+              ...(toolFactor === null
+                ? {}
+                : { toolFactor, toolSamples: (previous?.toolSamples ?? 0) + 1 }),
             },
           },
         }));
@@ -102,6 +170,10 @@ export const useCalibration = create<CalibrationState>()(
 
       factorFor(key) {
         return get().byModel[key]?.factor ?? 1;
+      },
+
+      toolFactorFor(key) {
+        return get().byModel[key]?.toolFactor ?? get().factorFor(key);
       },
 
       get(key) {

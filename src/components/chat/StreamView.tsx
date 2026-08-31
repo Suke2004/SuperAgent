@@ -21,6 +21,7 @@ import { CodeBlock } from '@/components/markdown/CodeBlock';
 import { Markdown } from '@/components/markdown/Markdown';
 import { Glyph } from '@/components/Glyph';
 import { Badge, Body, Button, Inline, Note } from '@/components/ui';
+import { APP_NAME } from '@/lib/app';
 import { estimateTextTokens } from '@/lib/tokens';
 import { formatDuration, formatRate } from '@/lib/when';
 import type { RetryState, StreamPhase, StreamState } from '@/stores/chat';
@@ -32,6 +33,7 @@ const PHASE_LABEL: Record<StreamPhase, string> = {
   connecting: 'Connecting',
   retrying: 'Waiting to retry',
   streaming: 'Streaming',
+  tools: 'Running tools',
   saving: 'Saving',
 };
 
@@ -185,7 +187,7 @@ export function StreamView({
         size={20}
         state={failed ? 'error' : 'thinking'}
         style={{ marginTop: 2 }}
-        label={failed ? 'Jarvis, failed turn' : 'Jarvis is working'}
+        label={failed ? `${APP_NAME}, failed turn` : `${APP_NAME} is working`}
       />
       <View style={{ flex: 1, minWidth: 0, gap: t.spacing.sm }}>
         <Inline gap="sm">

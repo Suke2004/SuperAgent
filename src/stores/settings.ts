@@ -36,6 +36,27 @@ export interface SettingsState {
   maxToolIterations: number;
   /** Ask before running a tool the user has not blanket-approved. */
   confirmToolCalls: boolean;
+  /**
+   * Offer the model the `fetch_url` tool.
+   *
+   * Off by default, and the only built-in tool that is. Writing a file happens inside
+   * the app's own directory and is visible and reversible; fetching a URL makes a
+   * request from the user's network to an address that can have come from a page the
+   * model just read. That is the prompt-injection path, so switching it on is a
+   * decision the user makes rather than one the app makes for them.
+   */
+  allowWebFetch: boolean;
+  /**
+   * Let the provider run its own web search during a turn.
+   *
+   * Anthropic path only, and off by default for two reasons rather than one. It is
+   * billed per search on top of the tokens the results add, and the results are
+   * untrusted text from arbitrary pages entering the context window — the same
+   * injection surface as `allowWebFetch`, so it is the user's decision in the same
+   * way. Unlike `fetch_url` it is not a tool this app answers: the search happens
+   * inside the provider and only the transcript comes back.
+   */
+  allowWebSearch: boolean;
   /** Speak assistant replies with the system voice. */
   ttsEnabled: boolean;
   /**
@@ -109,6 +130,8 @@ const DEFAULTS = {
   autoFailover: true,
   maxToolIterations: 8,
   confirmToolCalls: true,
+  allowWebFetch: false,
+  allowWebSearch: false,
   ttsEnabled: false,
   appLockEnabled: false,
   sendOnEnter: false,

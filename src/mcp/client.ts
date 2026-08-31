@@ -27,6 +27,7 @@ import {
   parseRpcMessage,
   promptsFrom,
   renderCallResult,
+  renderPromptMessages,
   resourcesFrom,
   rpcNotification,
   rpcRequest,
@@ -157,6 +158,24 @@ export class McpClient {
         .filter(Boolean)
         .join('\n');
       return { content: text || 'The resource was empty.' };
+    });
+  }
+
+  /**
+   * Fetch one prompt, filled in, as text for the composer.
+   *
+   * `prompts/list` was implemented from the start and this was not, which left the
+   * settings screen listing prompts under the words "for reference" — a server's
+   * prompts were visible and unusable. This is the other half.
+   */
+  async getPrompt(name: string, args: Readonly<Record<string, string>> = {}): Promise<McpCallResult> {
+    return this.session(async (session) => {
+      const result = await session.call('prompts/get', {
+        name,
+        ...(Object.keys(args).length ? { arguments: args } : {}),
+      });
+      const text = renderPromptMessages(result);
+      return text ? { content: text } : { content: 'That prompt came back empty.', isError: true as const };
     });
   }
 

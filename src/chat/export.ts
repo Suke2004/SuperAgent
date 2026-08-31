@@ -33,6 +33,7 @@
  */
 
 import type { Conversation, StoredMessage } from '@/db/conversations';
+import { APP_WIRE_NAME } from '@/lib/app';
 import { redactString } from '@/lib/redact';
 import type { ContentBlock, TokenUsage } from '@/transports/types';
 
@@ -188,6 +189,14 @@ function blocksToMarkdown(blocks: readonly ContentBlock[], options: ExportOption
           `**Tool result**${block.isError ? ' (error)' : ''}\n\n\`\`\`\n${safe(block.content)}\n\`\`\``,
         );
         break;
+      case 'server_tool': {
+        const lines = [`**${safe(block.summary ?? block.name)}**`];
+        for (const source of block.sources ?? []) {
+          lines.push(`- [${safe(source.title ?? source.url)}](${safe(source.url)})`);
+        }
+        out.push(lines.join('\n'));
+        break;
+      }
     }
   }
   return out.filter(Boolean);
@@ -304,6 +313,18 @@ function blockToJson(block: ContentBlock, options: ExportOptions): Record<string
         content: safe(block.content),
         ...(block.isError ? { isError: true } : {}),
       };
+    case 'server_tool':
+      // `raw` is the provider's own wire payload — pages of fetched text, kept out
+      // of the export for the same reason image `data` is. The summary and the
+      // source list are what a reader wants, and both get walked by `redactDeep`
+      // because neither is a shape this app authored.
+      return {
+        type: 'server_tool',
+        name: safe(block.name),
+        ...(block.summary ? { summary: safe(block.summary) } : {}),
+        ...(block.sources?.length ? { sources: redactDeep(block.sources) } : {}),
+        included: false,
+      };
   }
 }
 
@@ -412,7 +433,7 @@ export function exportConversation(
   const filename = exportFilename(input.conversation.title, format, at);
 
   if (format === 'markdown') {
-    const header = `<!-- Exported ${iso(at)} by Jarvis. API keys are never included. -->\n\n`;
+    const header = `<!-- Exported ${iso(at)} by ${APP_WIRE_NAME}. API keys are never included. -->\n\n`;
     return result(header + conversationToMarkdown(input, options), filename, format, kept);
   }
 
@@ -420,7 +441,7 @@ export function exportConversation(
     stringify({
       schemaVersion: EXPORT_SCHEMA_VERSION,
       exportedAt: iso(at),
-      app: 'Jarvis',
+      app: APP_WIRE_NAME,
       conversation: conversationToJson(input, options),
     }),
     filename,
@@ -450,13 +471,13 @@ export function exportConversations(
     (total, input) => total + input.messages.filter((message) => included(message, options)).length,
     0,
   );
-  const filename = `jarvis-${inputs.length}-conversations-${iso(at).slice(0, 10)}.${
+  const filename = `${APP_WIRE_NAME.toLowerCase()}-${inputs.length}-conversations-${iso(at).slice(0, 10)}.${
     format === 'markdown' ? 'md' : 'json'
   }`;
 
   if (format === 'markdown') {
     const header =
-      `<!-- Exported ${iso(at)} by Jarvis. API keys are never included. -->\n\n` +
+      `<!-- Exported ${iso(at)} by ${APP_WIRE_NAME}. API keys are never included. -->\n\n` +
       `# ${inputs.length} conversations\n\n`;
     const body = inputs.map((input) => conversationToMarkdown(input, options)).join('\n\n---\n\n');
     return result(header + body, filename, format, kept);
@@ -466,7 +487,7 @@ export function exportConversations(
     stringify({
       schemaVersion: EXPORT_SCHEMA_VERSION,
       exportedAt: iso(at),
-      app: 'Jarvis',
+      app: APP_WIRE_NAME,
       conversations: inputs.map((input) => conversationToJson(input, options)),
     }),
     filename,

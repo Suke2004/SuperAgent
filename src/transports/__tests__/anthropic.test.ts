@@ -992,3 +992,147 @@ describe('AnthropicTransport.testConnection', () => {
     expect(step?.detail).toContain('claude-opus-5');
   });
 });
+
+/**
+ * Provider-side web search.
+ *
+ * The load-bearing property is the round trip, not the rendering: the API rejects a
+ * `web_search_tool_result` whose `tool_use_id` no longer matches the
+ * `server_tool_use` before it, so a block that is stored normalised makes every
+ * *later* request in that conversation a 400. Everything here exists to pin that the
+ * wire blocks come back out exactly as they went in.
+ */
+describe('web search', () => {
+  const searchUse = {
+    type: 'server_tool_use',
+    id: 'srvtoolu_1',
+    name: 'web_search',
+    input: { query: 'expo sdk 57' },
+  };
+  const searchResult = {
+    type: 'web_search_tool_result',
+    tool_use_id: 'srvtoolu_1',
+    content: [
+      { type: 'web_search_result', url: 'https://expo.dev/changelog/sdk-57', title: 'Expo SDK 57', page_age: null },
+      { type: 'web_search_result', url: 'https://example.test/notes' },
+    ],
+  };
+
+  it('offers the tool first, so the cached prefix and its marker stay put', () => {
+    const tools = [{ name: 'lookup', description: 'Look something up.', inputSchema: { type: 'object' as const } }];
+    const body = buildAnthropicBody(
+      request({ tools, cache: { tools: true }, serverTools: { webSearch: { maxUses: 3 } } }),
+      false,
+    );
+    const sent = body.tools as Record<string, unknown>[];
+    expect(sent[0]).toEqual({ type: 'web_search_20250305', name: 'web_search', max_uses: 3 });
+    // The marker still sits on the last entry, which is the app's own manifest.
+    expect(sent[sent.length - 1]).toMatchObject({ name: 'lookup', cache_control: { type: 'ephemeral' } });
+  });
+
+  it('says nothing when the setting is off, and omits max_uses when unset', () => {
+    expect(buildAnthropicBody(request(), false).tools).toBeUndefined();
+    const body = buildAnthropicBody(request({ serverTools: { webSearch: {} } }), false);
+    expect(body.tools).toEqual([{ type: 'web_search_20250305', name: 'web_search' }]);
+  });
+
+  it('pairs the streamed call with its result into one block', async () => {
+    const state = createAnthropicStreamState();
+    const events: StreamEvent[] = [];
+    const feed = (frame: Record<string, unknown>) => {
+      events.push(...translateAnthropicEvent({ data: JSON.stringify(frame) }, state));
+    };
+
+    feed({ type: 'content_block_start', index: 0, content_block: { type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_search' } });
+    feed({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"query":' } });
+    feed({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '"expo sdk 57"}' } });
+    feed({ type: 'content_block_stop', index: 0 });
+    // Nothing yet: a call with no result is not a block anything can replay.
+    expect(events).toHaveLength(0);
+
+    feed({ type: 'content_block_start', index: 1, content_block: searchResult });
+    feed({ type: 'content_block_stop', index: 1 });
+
+    const event = events[0];
+    expect(event?.type).toBe('server_tool');
+    const block = event?.type === 'server_tool' ? event.block : undefined;
+    expect(block?.transport).toBe('anthropic');
+    expect(block?.summary).toContain('expo sdk 57');
+    expect(block?.sources).toEqual([
+      { url: 'https://expo.dev/changelog/sdk-57', title: 'Expo SDK 57' },
+      { url: 'https://example.test/notes' },
+    ]);
+    // Both wire blocks, in order, unchanged.
+    expect(block?.raw).toEqual([searchUse, searchResult]);
+
+    // It is not a tool the app has to answer, so the turn is not a tool turn.
+    expect(state.sawToolUse).toBe(false);
+  });
+
+  it('keeps the local tool indexes dense, ignoring the provider-side block', async () => {
+    const state = createAnthropicStreamState();
+    translateAnthropicEvent(
+      { data: JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'server_tool_use', id: 's1', name: 'web_search' } }) },
+      state,
+    );
+    const started = translateAnthropicEvent(
+      { data: JSON.stringify({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_a', name: 'lookup' } }) },
+      state,
+    );
+    expect(started[0]).toEqual({ type: 'tool_use_start', index: 0, id: 'toolu_a', name: 'lookup' });
+  });
+
+  it('refuses to replay a pair whose arguments never finished', () => {
+    const state = createAnthropicStreamState();
+    const feed = (frame: Record<string, unknown>) =>
+      translateAnthropicEvent({ data: JSON.stringify(frame) }, state);
+
+    feed({ type: 'content_block_start', index: 0, content_block: { type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_search' } });
+    feed({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"query":"exp' } });
+    feed({ type: 'content_block_stop', index: 0 });
+    const events = feed({ type: 'content_block_start', index: 1, content_block: searchResult });
+
+    const block = events[0]?.type === 'server_tool' ? events[0].block : undefined;
+    // Shown — the sources were real — but nothing goes back on the wire, because a
+    // result block without its call is a 400 on every later request.
+    expect(block?.sources).toHaveLength(2);
+    expect(block?.raw).toEqual([]);
+  });
+
+  it('pairs the non-streaming blocks the same way', async () => {
+    const { client } = transport([
+      jsonResponse({
+        id: 'msg_1',
+        content: [searchUse, searchResult, { type: 'text', text: 'SDK 57 is out.' }],
+        stop_reason: 'end_turn',
+      }),
+    ]);
+
+    const result = await client.complete(request());
+
+    // Search first, answer second: the order they happened in.
+    expect(result.content.map((block) => block.type)).toEqual(['server_tool', 'text']);
+    const block = result.content[0];
+    expect(block?.type === 'server_tool' && block.raw).toEqual([searchUse, searchResult]);
+  });
+
+  it('replays the block verbatim and only on its own transport', () => {
+    const stored = {
+      type: 'server_tool' as const,
+      transport: 'anthropic' as const,
+      name: 'web_search',
+      raw: [searchUse, searchResult] as Record<string, unknown>[],
+      summary: 'Searched the web',
+    };
+    const [message] = toAnthropicMessages([
+      { role: 'assistant', content: [stored, { type: 'text', text: 'SDK 57 is out.' }] },
+    ]);
+    expect(message?.content).toEqual([searchUse, searchResult, { type: 'text', text: 'SDK 57 is out.' }]);
+
+    // A block another provider produced has no meaning here and is dropped.
+    const [foreign] = toAnthropicMessages([
+      { role: 'assistant', content: [{ ...stored, transport: 'openai' }, { type: 'text', text: 'Hi' }] },
+    ]);
+    expect(foreign?.content).toEqual([{ type: 'text', text: 'Hi' }]);
+  });
+});

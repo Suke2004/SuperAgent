@@ -83,6 +83,23 @@ describe('prefixCost', () => {
     const cost = prefixCost({ ...base, system: 'word '.repeat(500), calibration: 0 });
     expect(cost.system).toBeGreaterThan(0);
   });
+
+  it('corrects tool definitions with their own factor, not the prose one', () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({ ...TOOL, name: `${TOOL.name}_${i}` }));
+    const input = { ...base, system: 'word '.repeat(500), tools: many, calibration: 1 };
+    const plain = prefixCost(input);
+    const corrected = prefixCost({ ...input, toolCalibration: 1.5 });
+    expect(corrected.tools).toBeGreaterThan(plain.tools * 1.4);
+    // Prose is untouched: JSON tokenizing badly says nothing about English.
+    expect(corrected.system).toBe(plain.system);
+  });
+
+  it('falls back to the prose factor when tools have never been measured', () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({ ...TOOL, name: `${TOOL.name}_${i}` }));
+    const blended = prefixCost({ ...base, tools: many, calibration: 1.5 });
+    const explicit = prefixCost({ ...base, tools: many, calibration: 1.5, toolCalibration: 1.5 });
+    expect(blended.tools).toBe(explicit.tools);
+  });
 });
 
 describe('planTurn', () => {

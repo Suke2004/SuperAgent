@@ -31,6 +31,7 @@ import {
   type ConnectionTestStep,
   type ContentBlock,
   type DiscoveredModel,
+  type ServerToolBlock,
   type StopReason,
   type StreamEvent,
   type StreamOptions,
@@ -170,6 +171,9 @@ export class AnthropicTransport implements Transport {
     });
 
     let toolIndex = 0;
+    // A provider-side call and its result are two blocks that have to travel back as
+    // one, keyed on the id that pairs them.
+    const pendingServerTools = new Map<string, Record<string, unknown>[]>();
     for (const block of payload.content ?? []) {
       switch (block.type) {
         case 'text':
@@ -196,6 +200,13 @@ export class AnthropicTransport implements Transport {
           break;
         }
         default:
+          if (block.type === SERVER_TOOL_USE) {
+            pendingServerTools.set(block.id ?? '', [block as unknown as Record<string, unknown>]);
+          } else if (block.type && SERVER_TOOL_RESULTS.has(block.type)) {
+            accumulator.handle(
+              serverToolEvent(pendingServerTools, block as unknown as Record<string, unknown>, block.tool_use_id ?? ''),
+            );
+          }
           break;
       }
     }
@@ -387,6 +398,61 @@ export class AnthropicTransport implements Transport {
 /* Wire types                                                                  */
 /* -------------------------------------------------------------------------- */
 
+/** The block kinds a provider-side tool produces, paired by `tool_use_id`. */
+const SERVER_TOOL_USE = 'server_tool_use';
+const SERVER_TOOL_RESULTS = new Set(['web_search_tool_result']);
+
+/**
+ * One {@link ServerToolBlock} from the provider's own wire blocks.
+ *
+ * `raw` is kept byte-for-byte as it arrived, in order: the API rejects a
+ * `web_search_tool_result` whose `tool_use_id` no longer matches the
+ * `server_tool_use` before it, so this is the one block kind that must not be
+ * normalised. Everything else here is derived for display only, defensively —
+ * `input` and `content` are provider JSON, not a shape this app authored.
+ */
+export function toServerToolBlock(raw: Record<string, unknown>[]): ServerToolBlock {
+  const use = raw.find((block) => block.type === SERVER_TOOL_USE);
+  const query = (use?.input as { query?: unknown } | undefined)?.query;
+  const sources: { title?: string; url: string }[] = [];
+  for (const block of raw) {
+    if (!Array.isArray(block.content)) continue;
+    for (const item of block.content as unknown[]) {
+      const url = (item as { url?: unknown }).url;
+      if (typeof url !== 'string' || !url) continue;
+      const title = (item as { title?: unknown }).title;
+      sources.push({ url, ...(typeof title === 'string' && title ? { title } : {}) });
+    }
+  }
+  return {
+    type: 'server_tool',
+    transport: 'anthropic',
+    name: typeof use?.name === 'string' && use.name ? use.name : 'web_search',
+    raw,
+    ...(typeof query === 'string' && query ? { summary: `Searched the web for “${query}”` } : {}),
+    ...(sources.length ? { sources } : {}),
+  };
+}
+
+/**
+ * A finished provider-side pair as one event.
+ *
+ * An unpaired result is displayed but not replayed: `raw` is emptied, because the
+ * API rejects a `web_search_tool_result` with no matching `server_tool_use` before
+ * it, and a stream that lost the call frame would otherwise poison every later turn
+ * in the conversation.
+ */
+function serverToolEvent(
+  pending: Map<string, Record<string, unknown>[]>,
+  result: Record<string, unknown>,
+  id: string,
+): StreamEvent {
+  const use = pending.get(id);
+  pending.delete(id);
+  const block = toServerToolBlock(use ? [...use, result] : [result]);
+  return { type: 'server_tool', block: use ? block : { ...block, raw: [] } };
+}
+
 interface AnthropicContentBlock {
   type?: string;
   text?: string;
@@ -396,6 +462,10 @@ interface AnthropicContentBlock {
   id?: string;
   name?: string;
   input?: unknown;
+  /** `web_search_tool_result` only: the `server_tool_use` this answers. */
+  tool_use_id?: string;
+  /** `web_search_tool_result` only: the pages found, or an error object. */
+  content?: unknown;
 }
 
 interface AnthropicUsage {
@@ -501,8 +571,22 @@ export function buildAnthropicBody(request: ChatRequest, streaming: boolean): Re
     }
   }
 
+  // Prepended, not appended. The cache marker above goes on the *last* entry, so a
+  // server tool added after it would sit outside the cached prefix and break the
+  // byte-identical prefix the whole caching design depends on. First also keeps the
+  // order stable across turns, which is the other half of that requirement.
+  const webSearch = request.serverTools?.webSearch;
+  if (webSearch) {
+    const definition: Record<string, unknown> = { type: WEB_SEARCH_TOOL, name: 'web_search' };
+    if (webSearch.maxUses !== undefined) definition.max_uses = webSearch.maxUses;
+    body.tools = [definition, ...((body.tools as unknown[]) ?? [])];
+  }
+
   return { ...body, ...(request.extraBody ?? {}) };
 }
+
+/** The versioned name the API knows the server-side search tool by. */
+export const WEB_SEARCH_TOOL = 'web_search_20250305';
 
 /** The only cache type the API offers. Named so the three call sites cannot drift. */
 const EPHEMERAL = { type: 'ephemeral' } as const;
@@ -638,10 +722,27 @@ function toAnthropicBlocks(block: ContentBlock): Record<string, unknown>[] {
         {
           type: 'tool_result',
           tool_use_id: block.toolUseId,
-          content: block.content,
+          // A string is the common shape and the cheaper one to read in a log; the
+          // array form is only used when there is an image to carry alongside it.
+          content: block.images?.length
+            ? [
+                { type: 'text', text: block.content },
+                ...block.images.map((image) => ({
+                  type: 'image' as const,
+                  source: { type: 'base64' as const, media_type: image.mediaType, data: image.data },
+                })),
+              ]
+            : block.content,
           ...(block.isError ? { is_error: true } : {}),
         },
       ];
+
+    case 'server_tool':
+      // Replayed exactly as it arrived, and only on the transport that produced it:
+      // a `web_search_tool_result` whose `tool_use_id` no longer matches the
+      // `server_tool_use` before it is a 400, and another provider has never heard
+      // of either block kind.
+      return block.transport === 'anthropic' ? block.raw : [];
 
     default:
       return [];
@@ -660,6 +761,15 @@ export interface AnthropicStreamState {
   /** Wire block index → local tool index, so tool indexes stay 0-based and dense. */
   toolIndexes: Map<number, number>;
   nextToolIndex: number;
+  /**
+   * Provider-side calls whose arguments are still streaming, by wire index.
+   *
+   * Kept apart from `toolIndexes` on purpose: these are not tools this app can run,
+   * so they must never be handed to the tool loop as something to answer.
+   */
+  serverToolOpen: Map<number, { id: string; name: string; json: string }>;
+  /** Finished `server_tool_use` blocks waiting for the result that pairs with them. */
+  serverToolPending: Map<string, Record<string, unknown>[]>;
 }
 
 export function createAnthropicStreamState(): AnthropicStreamState {
@@ -669,6 +779,8 @@ export function createAnthropicStreamState(): AnthropicStreamState {
     blockKinds: new Map(),
     toolIndexes: new Map(),
     nextToolIndex: 0,
+    serverToolOpen: new Map(),
+    serverToolPending: new Map(),
   };
 }
 
@@ -732,6 +844,13 @@ export function translateAnthropicEvent(raw: SseEvent, state: AnthropicStreamSta
         events.push({ type: 'text_delta', text: block.text });
       } else if (kind === 'thinking' && block?.thinking) {
         events.push({ type: 'thinking_delta', text: block.thinking });
+      } else if (kind === SERVER_TOOL_USE) {
+        state.serverToolOpen.set(index, { id: block?.id ?? '', name: block?.name ?? 'web_search', json: '' });
+      } else if (SERVER_TOOL_RESULTS.has(kind)) {
+        // The result arrives whole rather than as deltas, so the pair is complete here.
+        events.push(
+          serverToolEvent(state.serverToolPending, block as unknown as Record<string, unknown>, block?.tool_use_id ?? ''),
+        );
       }
       break;
     }
@@ -753,7 +872,10 @@ export function translateAnthropicEvent(raw: SseEvent, state: AnthropicStreamSta
           const local = state.toolIndexes.get(index);
           if (local !== undefined && delta.partial_json) {
             events.push({ type: 'tool_use_delta', index: local, partialJson: delta.partial_json });
+            break;
           }
+          const open = state.serverToolOpen.get(index);
+          if (open && delta.partial_json) open.json += delta.partial_json;
           break;
         }
         default:
@@ -768,6 +890,23 @@ export function translateAnthropicEvent(raw: SseEvent, state: AnthropicStreamSta
       const index = frame.index ?? 0;
       const local = state.toolIndexes.get(index);
       if (local !== undefined) events.push({ type: 'tool_use_stop', index: local });
+      const open = state.serverToolOpen.get(index);
+      if (open) {
+        state.serverToolOpen.delete(index);
+        // Arguments that never finished cannot be replayed, so the call is not
+        // remembered; the result frame then shows without a replayable pair.
+        // `safeParseJson` is deliberately not used: its `_raw` fallback exists so a
+        // broken tool call can be reported to the model, and this block goes back on
+        // the wire instead.
+        try {
+          const input: unknown = open.json.trim() ? JSON.parse(open.json) : {};
+          state.serverToolPending.set(open.id, [
+            { type: SERVER_TOOL_USE, id: open.id, name: open.name, input },
+          ]);
+        } catch {
+          // Left unpaired on purpose.
+        }
+      }
       state.blockKinds.delete(index);
       break;
     }

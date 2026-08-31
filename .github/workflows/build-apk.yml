@@ -80,8 +80,10 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # No `--`: pnpm 10 forwards it to the script, and jest then reads the flags as
+      # test-path patterns and finds no tests. Same fix as ci.yml.
       - name: Test
-        run: pnpm test -- --ci --coverage --coverageReporters=text-summary
+        run: pnpm test --ci --coverage --coverageReporters=text-summary
 
       # `inputs.profile` is empty on a tag push, so the fallback is what selects
       # the profile there. `preview` deliberately: a tag says "this commit is a

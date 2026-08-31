@@ -22,7 +22,7 @@ import { create } from 'zustand';
 
 import { McpClient, McpError } from '@/mcp/client';
 import { bridgeTools, decideApproval, failedCall, parseServerUrl } from '@/mcp/protocol';
-import type { ApprovalMode, BridgedTool, McpCallResult } from '@/mcp/protocol';
+import type { ApprovalMode, BridgedTool, McpCallResult, McpPromptArgument } from '@/mcp/protocol';
 import { authorize, forgetTokens, loadAccessToken, refresh } from '@/mcp/oauth';
 import {
   addServer,
@@ -75,8 +75,30 @@ export interface McpState {
 
   /** The tool definitions a conversation's chosen servers contribute. */
   bridge(names: readonly string[] | undefined): BridgedTool[];
+  /**
+   * Whether this call will stop to ask.
+   *
+   * Read by the tool loop before it decides what to run concurrently: an approval
+   * sheet has to be the only one on screen, so calls that need one stay serial while
+   * the pre-approved ones do not have to.
+   */
+  needsApproval(wireName: string, names: readonly string[] | undefined): boolean;
   /** Runs one bridged call: gate, then server, then a result either way. */
   invoke(wireName: string, input: unknown, names: readonly string[] | undefined): Promise<McpCallResult>;
+  /** Every resource the named servers advertised, for the model's resource tool. */
+  resources(names: readonly string[] | undefined): { serverName: string; uri: string; description: string }[];
+  /** Reads one resource by URI, from whichever named server advertised it. */
+  readResource(uri: string, names: readonly string[] | undefined): Promise<McpCallResult>;
+  /** Every prompt the named servers advertised, for the slash-command index. */
+  prompts(names: readonly string[] | undefined): {
+    serverId: string;
+    serverName: string;
+    name: string;
+    description: string;
+    arguments: McpPromptArgument[];
+  }[];
+  /** Fetches one prompt, filled in, as text for the composer. */
+  getPrompt(serverId: string, name: string, args: Readonly<Record<string, string>>): Promise<McpCallResult>;
   /** Answers a pending question. */
   resolve(id: string, decision: ApprovalDecision): void;
 }
@@ -239,6 +261,14 @@ export const useMcp = create<McpState>()((set, get) => ({
     return bridgeTools(sourcesFor(get().servers, names));
   },
 
+  needsApproval(wireName, names) {
+    const bridged = get().bridge(names).find((tool) => tool.wireName === wireName);
+    if (!bridged) return false;
+    const server = get().servers.find((candidate) => candidate.id === bridged.serverId);
+    if (!server) return false;
+    return decideApproval(server.approvals, wireName, getSetting('confirmToolCalls')) === 'ask';
+  },
+
   async invoke(wireName, input, names) {
     const bridged = get().bridge(names).find((tool) => tool.wireName === wireName);
     if (!bridged) {
@@ -269,6 +299,59 @@ export const useMcp = create<McpState>()((set, get) => ({
     }
 
     return runCall(get, server, bridged.tool, input);
+  },
+
+  resources(names) {
+    return enabledServers(get().servers, names).flatMap((server) =>
+      server.resources.map((resource) => ({
+        serverName: server.name,
+        uri: resource.uri,
+        description: resource.description || resource.name,
+      })),
+    );
+  },
+
+  async readResource(uri, names) {
+    // Only a URI a named server actually advertised. Without this the model could
+    // name any URI at all and the server would be asked to read it — `file:///` on a
+    // filesystem server included, which is not what "read a resource" was scoped to.
+    const server = enabledServers(get().servers, names).find((candidate) =>
+      candidate.resources.some((resource) => resource.uri === uri),
+    );
+    if (!server) {
+      return failedCall(
+        `No server in this conversation advertises the resource "${uri}". Call the resource tool with no argument to see what is available.`,
+      );
+    }
+    try {
+      const client = await clientFor(server);
+      return await client.readResource(uri);
+    } catch (error) {
+      return failedCall(describe(error, server.name));
+    }
+  },
+
+  prompts(names) {
+    return enabledServers(get().servers, names).flatMap((server) =>
+      server.prompts.map((prompt) => ({
+        serverId: server.id,
+        serverName: server.name,
+        name: prompt.name,
+        description: prompt.description,
+        arguments: prompt.arguments ?? [],
+      })),
+    );
+  },
+
+  async getPrompt(serverId, name, args) {
+    const server = get().servers.find((candidate) => candidate.id === serverId);
+    if (!server) return failedCall('That server is no longer configured.');
+    try {
+      const client = await clientFor(server);
+      return await client.getPrompt(name, args);
+    } catch (error) {
+      return failedCall(describe(error, server.name));
+    }
   },
 
   resolve(id, decision) {
@@ -354,6 +437,20 @@ function sourcesFor(servers: readonly McpServer[], names: readonly string[] | un
   return servers
     .filter((server) => wanted.has(server.name))
     .map((server) => ({ serverId: server.id, slug: server.name, tools: server.tools, enabled: server.enabled }));
+}
+
+/**
+ * The same set, as whole server rows.
+ *
+ * `sourcesFor` projects down to what tool bridging needs; resources and prompts need
+ * the row itself. Both filter on the conversation's chosen names for the same
+ * reason: a server the user did not add to *this* conversation must not be reachable
+ * from it, whatever the model asks for.
+ */
+function enabledServers(servers: readonly McpServer[], names: readonly string[] | undefined): McpServer[] {
+  if (!names?.length) return [];
+  const wanted = new Set(names);
+  return servers.filter((server) => wanted.has(server.name));
 }
 
 function validate(draft: McpServerDraft, servers: readonly McpServer[], id: string | null): string | null {

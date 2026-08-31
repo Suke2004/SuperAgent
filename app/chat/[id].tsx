@@ -33,6 +33,7 @@ import { useDialogKeys } from '@/components/dialog';
 import { PromptSheet, Sheet } from '@/components/Sheet';
 import { Sidebar } from '@/components/Sidebar';
 import type { SheetAction } from '@/components/Sheet';
+import { CommandBar } from '@/components/chat/CommandBar';
 import { Composer } from '@/components/chat/Composer';
 import { MessageView } from '@/components/chat/MessageView';
 import { ReferenceSheet } from '@/components/chat/ReferenceSheet';
@@ -53,9 +54,13 @@ import {
 } from '@/components/ui';
 import { formatStopSequences, hasBlockingIssue, mergeParams, parseStopSequences, validateConfig } from '@/chat/request';
 import { replyReservation, sendConfirmation } from '@/chat/budget';
+import { buildCommandIndex, buildMentionIndex, commandQuery, mentionQuery, rankCommands, replaceMention } from '@/chat/commands';
+import type { CommandItem } from '@/chat/commands';
+import { deleteGeneratedFile, listGeneratedFiles, shareGeneratedFile } from '@/chat/files';
+import type { GeneratedFile } from '@/chat/files';
 import { appendQuote, quoteMessage } from '@/chat/reference';
-import { captureImage, openAppSettings, pickDocuments, pickImages } from '@/chat/attach';
-import { documentCaveat, documentSupport, imageSupport, MAX_ATTACHMENTS_PER_MESSAGE } from '@/chat/attachments';
+import { attachExistingFile, captureImage, openAppSettings, pickDocuments, pickImages } from '@/chat/attach';
+import { documentCaveat, documentSupport, formatBytes, imageSupport, MAX_ATTACHMENTS_PER_MESSAGE } from '@/chat/attachments';
 import { useMemory } from '@/stores/memory';
 import type { ConfigIssue } from '@/chat/request';
 import { parseTags } from '@/chat/list';
@@ -68,7 +73,16 @@ import { toUnifiedMessages } from '@/db/conversations';
 import type { SearchHit, StoredMessage } from '@/db/conversations';
 import { estimateMessagesTokens, estimateTextTokens, formatCost, formatTokens, estimateCost } from '@/lib/tokens';
 import type { ContextPressure } from '@/lib/tokens';
-import { useChat, useAttachments, useContextNote, useConversation, useDraft, useMessages, useStream } from '@/stores/chat';
+import {
+  useChat,
+  useAttachments,
+  useCanContinue,
+  useContextNote,
+  useConversation,
+  useDraft,
+  useMessages,
+  useStream,
+} from '@/stores/chat';
 import { useCalibration } from '@/stores/calibration';
 import { capabilitiesFor, entryKey, pickableModelIds, useModels } from '@/stores/models';
 import { useProviders } from '@/stores/providers';
@@ -77,7 +91,7 @@ import { useSkills } from '@/stores/skills';
 import { useMcp } from '@/stores/mcp';
 import { describeArguments } from '@/mcp/protocol';
 import { usePrompts } from '@/stores/prompts';
-import { fillPrompt, isComplete, variablesIn } from '@/chat/prompts';
+import { fillPrompt, variablesIn } from '@/chat/prompts';
 import type { Prompt as LibraryPrompt } from '@/chat/prompts';
 import { availableEfforts, controlSupport } from '@/transports/support';
 import type { ContentBlock } from '@/transports/types';
@@ -115,6 +129,8 @@ export default function ChatScreen() {
   const addAttachments = useChat((s) => s.addAttachments);
   const removeAttachment = useChat((s) => s.removeAttachment);
   const contextNote = useContextNote(id);
+  const canContinue = useCanContinue(id);
+  const continueTurn = useChat((s) => s.continueTurn);
   const dismissContextNote = useChat((s) => s.dismissContextNote);
 
   const profiles = useProviders((s) => s.profiles);
@@ -138,7 +154,22 @@ export default function ChatScreen() {
   const [serverMenu, setServerMenu] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   /** The template being filled in, and what has been typed for its variables. */
-  const [filling, setFilling] = useState<LibraryPrompt | null>(null);
+  /**
+   * The fill-in form, as a request rather than a prompt.
+   *
+   * It started as `LibraryPrompt | null`, which meant the form could only ever fill a
+   * template from the library. MCP prompts also declare arguments, and so does
+   * anything else that needs a few strings before it can run, so the form now takes
+   * the three things it actually needs: a title, the field names, and what to do with
+   * the answers.
+   */
+  const [filling, setFilling] = useState<{
+    title: string;
+    fields: readonly string[];
+    /** Which fields must be non-empty before Insert is available. */
+    required?: readonly string[];
+    insert: (values: Record<string, string>) => void;
+  } | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [configOpen, setConfigOpen] = useState(false);
   const [costFor, setCostFor] = useState<StoredMessage | null>(null);
@@ -148,6 +179,10 @@ export default function ChatScreen() {
   /** The collapsible history drawer. Collapsed is unmounted — see `Sidebar`. */
   const [sidebar, setSidebar] = useState(false);
   const [reference, setReference] = useState(false);
+  /** The generated-files sheet, and the one file whose actions are open. */
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [files, setFiles] = useState<GeneratedFile[]>([]);
+  const [fileFor, setFileFor] = useState<GeneratedFile | null>(null);
   const [referenceBusy, setReferenceBusy] = useState(false);
   /** What the last pick refused, and whether Settings is the only way to fix it. */
   const [attachNotes, setAttachNotes] = useState<{ notes: string[]; needsSettings: boolean } | null>(null);
@@ -184,6 +219,13 @@ export default function ChatScreen() {
       setNow(Date.now());
     }, []),
   );
+
+  // `@` offers generated files, so the list has to exist before the files sheet has
+  // ever been opened. A turn is the only thing that produces one, which makes the
+  // message count exactly the right trigger and not a poll.
+  useEffect(() => {
+    void listGeneratedFiles().then(setFiles);
+  }, [messages.length]);
 
   const profile = profiles.find((p) => p.id === conversation?.profileId);
   const model = conversation?.model ?? '';
@@ -427,6 +469,68 @@ export default function ChatScreen() {
     () => ({ now, thinkingExpanded, entries, model }),
     [now, thinkingExpanded, entries, model],
   );
+
+  const enabledServerNames = conversation?.config.servers;
+
+  /**
+   * Every MCP prompt the servers in this conversation advertise.
+   *
+   * Derived from the store's own `servers` array rather than read through
+   * `getState()`, so the memo below actually re-runs when a server is switched on.
+   */
+  const mcpPromptsHere = useMemo(
+    () => useMcp.getState().prompts(enabledServerNames),
+    // `prompts()` reads `servers` off the store, so `mcpServers` is a real input even
+    // though the body does not name it — without it this memo would never see a
+    // server being switched on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mcpServers, enabledServerNames],
+  );
+
+  /**
+   * Every command this conversation can run.
+   *
+   * Rebuilt when the material changes, not per keystroke: the index is a few hundred
+   * strings and the ranking below runs on every character typed after the slash.
+   */
+  const commandItems = useMemo(
+    () =>
+      buildCommandIndex({
+        prompts: library.map((entry) => ({ id: entry.id, title: entry.title, body: entry.body })),
+        skills: installedSkills.map((skill) => ({ name: skill.name, description: skill.description })),
+        mcpPrompts: mcpPromptsHere,
+      }),
+    [library, installedSkills, mcpPromptsHere],
+  );
+
+  const query = commandQuery(draft);
+  const commandMatches = useMemo(
+    () => (query === null ? [] : rankCommands(commandItems, query, 8)),
+    [commandItems, query],
+  );
+
+  /** Everything an `@` can bring into this conversation. Same rows, same ranking. */
+  const mentionItems = useMemo(
+    () =>
+      buildMentionIndex({
+        files: files.map((file) => ({ name: file.name, uri: file.uri, hint: formatBytes(file.bytes) })),
+        skills: installedSkills.map((skill) => ({ name: skill.name, description: skill.description })),
+        // Keyed on the name, not the row id: `config.servers` stores names, so this is
+        // the value the dispatch below has to put in it.
+        servers: mcpServers.map((server) => ({ id: server.name, name: server.name, hint: server.url })),
+      }),
+    [files, installedSkills, mcpServers],
+  );
+
+  // Only one list can be open, and a command wins: the draft cannot be both `/x` and
+  // a sentence ending in `@x`, but a query of `null` from either must not blank the
+  // other's rows while it is being typed.
+  const mention = query === null ? mentionQuery(draft) : null;
+  const mentionMatches = useMemo(
+    () => (mention === null ? [] : rankCommands(mentionItems, mention, 8)),
+    [mentionItems, mention],
+  );
+
 
   if (!loaded) {
     return (
@@ -909,11 +1013,191 @@ ${text}` : text);
           return;
         }
         setValues({});
-        setFilling(prompt);
+        setFilling({
+          title: prompt.title,
+          fields: variables,
+          insert: (filled) => insertPrompt(prompt, filled),
+        });
         setLibraryOpen(false);
       },
     };
   });
+
+  /* ---------------------------------------------------------------------- */
+  /* Slash commands                                                          */
+  /* ---------------------------------------------------------------------- */
+
+  /** Loads the files list and opens the sheet. Refreshed every time — files move. */
+  const openFiles = (): void => {
+    void listGeneratedFiles().then(setFiles);
+    setFilesOpen(true);
+  };
+
+  /**
+   * Runs one command.
+   *
+   * The draft is cleared first in every branch: the `/word` the user typed is the
+   * command, not part of the message, and leaving it in would mean every command
+   * needed the user to delete it afterwards.
+   */
+  const runCommand = (item: CommandItem): void => {
+    setDraft(id, '');
+    switch (item.kind) {
+      case 'app':
+        switch (item.id) {
+          case 'model':
+            setModelMenu(true);
+            return;
+          case 'system':
+            setPrompt({ kind: 'system' });
+            return;
+          case 'skills':
+            setSkillMenu(true);
+            return;
+          case 'servers':
+            setServerMenu(true);
+            return;
+          case 'controls':
+            openModelControls();
+            return;
+          case 'files':
+            openFiles();
+            return;
+          case 'export':
+            setExportOpen(true);
+            return;
+          case 'reference':
+            setReference(true);
+            return;
+          case 'attach':
+            setAttachMenu(true);
+            return;
+          default:
+            return;
+        }
+
+      case 'prompt': {
+        const template = library.find((candidate) => candidate.id === item.id);
+        if (!template) return;
+        const variables = variablesIn(template.body);
+        if (!variables.length) {
+          insertPrompt(template, {});
+          return;
+        }
+        setValues({});
+        setFilling({
+          title: template.title,
+          fields: variables,
+          insert: (filled) => insertPrompt(template, filled),
+        });
+        return;
+      }
+
+      // Turning it on rather than pasting its body: the body is what `invoke_skill`
+      // loads on demand, and putting it in the draft would spend the tokens the whole
+      // progressive-disclosure design exists to avoid.
+      case 'skill':
+        if (!enabledSkills.includes(item.id)) {
+          void useChat.getState().setConfig(id, { skills: [...enabledSkills, item.id] });
+        }
+        return;
+
+      case 'mcp-prompt': {
+        const [serverId = '', name = ''] = item.id.split('::');
+        const declared =
+          useMcp
+            .getState()
+            .prompts(conversation.config.servers)
+            .find((candidate) => candidate.serverId === serverId && candidate.name === name)?.arguments ?? [];
+        if (!declared.length) {
+          void runMcpPrompt(serverId, name, {});
+          return;
+        }
+        setValues({});
+        setFilling({
+          title: name,
+          fields: declared.map((argument) => argument.name),
+          required: declared.filter((argument) => argument.required).map((argument) => argument.name),
+          insert: (filled) => {
+            setFilling(null);
+            setValues({});
+            void runMcpPrompt(serverId, name, filled);
+          },
+        });
+        return;
+      }
+
+      default:
+        return;
+    }
+  };
+
+  /**
+   * Completes one mention.
+   *
+   * The name goes back into the draft in every branch — a mention is part of the
+   * sentence, so "summarise @report.md" has to still read as one. What varies is the
+   * side effect: a file is staged as an attachment, a skill or a server is switched on
+   * for the conversation. Deliberately the same dispatch a slash command uses for the
+   * latter two, so `@files` and `/files` cannot come to mean different things.
+   */
+  const runMention = (item: CommandItem): void => {
+    setDraft(id, replaceMention(useChat.getState().drafts[id] ?? '', item.name));
+
+    switch (item.kind) {
+      case 'file': {
+        const file = files.find((candidate) => candidate.uri === item.id);
+        if (!file) return;
+        // Same admission path as the picker, including the size ceiling: a file this
+        // app wrote is not exempt from what the request can carry.
+        void runPick(() =>
+          attachExistingFile(attachments, transport, caps, { uri: file.uri, name: file.name, size: file.bytes }),
+        );
+        return;
+      }
+
+      case 'skill':
+        if (!enabledSkills.includes(item.id)) {
+          void useChat.getState().setConfig(id, { skills: [...enabledSkills, item.id] });
+        }
+        return;
+
+      case 'server': {
+        const servers = conversation.config.servers ?? [];
+        if (!servers.includes(item.id)) {
+          void useChat.getState().setConfig(id, { servers: [...servers, item.id] });
+        }
+        return;
+      }
+
+      default:
+        return;
+    }
+  };
+
+  /**
+   * Fetches an MCP prompt and puts it in the draft.
+   *
+   * Into the draft rather than straight into a send: a server-side template is
+   * somebody else's text, and the user should read what they are about to say. A
+   * failure is an alert rather than a silent no-op — the prompt came from a server
+   * that may simply be unreachable.
+   */
+  const runMcpPrompt = async (
+    serverId: string,
+    name: string,
+    args: Record<string, string>,
+  ): Promise<void> => {
+    const result = await useMcp.getState().getPrompt(serverId, name, args);
+    if (result.isError) {
+      Alert.alert('Could not load that prompt', result.content);
+      return;
+    }
+    const current = useChat.getState().drafts[id] ?? '';
+    setDraft(id, current.trim() ? `${current.trimEnd()}
+
+${result.content}` : result.content);
+  };
 
   const promptProps = ((): {
     title: string;
@@ -1093,6 +1377,11 @@ ${text}` : text);
         <View style={{ paddingHorizontal: t.spacing.md }}>
           <OfflineBanner />
         </View>
+
+        {/* Between the transcript and the composer: it is a menu over what is being
+            typed, so it belongs against the input rather than over the conversation. */}
+        <CommandBar items={commandMatches} onSelect={runCommand} />
+        <CommandBar items={mentionMatches} onSelect={runMention} prefix="@" />
         <Composer
           value={draft}
           onChangeText={(text) => setDraft(id, text)}
@@ -1114,6 +1403,7 @@ ${text}` : text);
           {...(blocked ? { disabledReason: blocked } : {})}
           {...(contextNote !== undefined ? { contextNote } : {})}
           onDismissContextNote={() => dismissContextNote(id)}
+          {...(canContinue && !streaming ? { onContinue: () => continueTurn(id) } : {})}
         />
       </View>
 
@@ -1137,6 +1427,71 @@ ${text}` : text);
           setSidebar(false);
           setReference(true);
         }}
+      />
+
+      {/* Files the model produced. Reopened rather than cached: `writePdf` can add one
+          between two visits, and a stale list is a file the user cannot find. */}
+      <Sheet
+        visible={filesOpen}
+        title="Files"
+        subtitle={files.length ? `${files.length} ${plural(files.length, 'file')} in this app's storage` : undefined}
+        body={
+          files.length
+            ? undefined
+            : 'Nothing yet. Ask for a document — a report, a CSV, a PDF — and it will appear here.'
+        }
+        actions={files.map((file) => ({
+          label: file.name,
+          subtitle: formatBytes(file.bytes),
+          onPress: () => {
+            setFilesOpen(false);
+            setFileFor(file);
+          },
+        }))}
+        onClose={() => setFilesOpen(false)}
+      />
+
+      <Sheet
+        visible={fileFor !== null}
+        title={fileFor?.name ?? ''}
+        subtitle={fileFor ? formatBytes(fileFor.bytes) : undefined}
+        actions={
+          fileFor
+            ? [
+                {
+                  label: 'Share',
+                  subtitle: 'Hands the file to another app, or saves it where you choose',
+                  onPress: () => {
+                    const target = fileFor;
+                    setFileFor(null);
+                    void shareGeneratedFile(target.uri).then((shared) => {
+                      if (!shared) Alert.alert('Sharing is unavailable', 'This device has no share sheet.');
+                    });
+                  },
+                },
+                {
+                  label: 'Delete',
+                  destructive: true,
+                  onPress: () => {
+                    const target = fileFor;
+                    Alert.alert('Delete this file?', `${target.name} cannot be recovered.`, [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Delete',
+                        style: 'destructive',
+                        onPress: () => {
+                          deleteGeneratedFile(target.uri);
+                          setFileFor(null);
+                          void listGeneratedFiles().then(setFiles);
+                        },
+                      },
+                    ]);
+                  },
+                },
+              ]
+            : []
+        }
+        onClose={() => setFileFor(null)}
       />
 
       <ReferenceSheet
@@ -1350,7 +1705,7 @@ ${text}` : text);
                 </Body>
                 <ScrollView keyboardShouldPersistTaps="handled">
                   <Stack gap="md">
-                    {variablesIn(filling.body).map((name) => (
+                    {filling.fields.map((name) => (
                       <Field
                         key={name}
                         label={name}
@@ -1364,8 +1719,8 @@ ${text}` : text);
                 <Inline gap="md">
                   <Button
                     label="Insert"
-                    disabled={!isComplete(filling.body, values)}
-                    onPress={() => insertPrompt(filling, values)}
+                    disabled={(filling.required ?? filling.fields).some((name) => !values[name]?.trim())}
+                    onPress={() => filling.insert(values)}
                   />
                   <Button label="Cancel" variant="ghost" onPress={() => setFilling(null)} />
                 </Inline>

@@ -1,5 +1,5 @@
 /**
- * The Jarvis mark.
+ * The app's mark.
  *
  * Four arms turning clockwise from a common centre — pure orthogonal geometry, so
  * it is built from absolutely-positioned `View`s rather than SVG. `react-native-svg`

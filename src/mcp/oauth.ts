@@ -35,6 +35,7 @@ import {
   protectedResourceUrls,
   verifierFrom,
 } from './protocol';
+import { APP_WIRE_NAME } from '@/lib/app';
 import { USER_AGENT } from '@/transports/http';
 import { log } from '@/lib/log';
 import { deleteApiKey, loadApiKey, saveApiKey } from '@/lib/secureKey';
@@ -156,7 +157,7 @@ export async function registerClient(endpoint: string, redirect: string): Promis
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'User-Agent': USER_AGENT },
     body: JSON.stringify({
-      client_name: 'AgentRouter Mobile',
+      client_name: APP_WIRE_NAME,
       redirect_uris: [redirect],
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],

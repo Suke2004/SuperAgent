@@ -141,9 +141,20 @@ export interface McpResource {
   description: string;
 }
 
+export interface McpPromptArgument {
+  name: string;
+  description: string;
+  required: boolean;
+}
+
 export interface McpPrompt {
   name: string;
   description: string;
+  /**
+   * The arguments the server declares, so the app can ask for them before calling
+   * `prompts/get`. Absent on a server that declares none.
+   */
+  arguments: McpPromptArgument[];
 }
 
 /**
@@ -190,9 +201,67 @@ export function promptsFrom(result: Record<string, unknown>): McpPrompt[] {
     out.push({
       name: entry.name.trim(),
       description: clampProse(typeof entry.description === 'string' ? entry.description : '', DESCRIPTION_CAP),
+      arguments: promptArgumentsFrom(entry.arguments),
     });
   }
   return out;
+}
+
+/**
+ * The declared arguments of one prompt.
+ *
+ * Kept rather than dropped because they are the difference between a prompt that can
+ * be inserted and one that returns "missing required argument". A server that omits
+ * them entirely declares none, which is the common case.
+ */
+function promptArgumentsFrom(value: unknown): McpPromptArgument[] {
+  if (!Array.isArray(value)) return [];
+  const out: McpPromptArgument[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry) || typeof entry.name !== 'string' || !entry.name.trim()) continue;
+    out.push({
+      name: entry.name.trim(),
+      description: clampProse(typeof entry.description === 'string' ? entry.description : '', DESCRIPTION_CAP),
+      required: entry.required === true,
+    });
+  }
+  return out;
+}
+
+/**
+ * Flatten a `prompts/get` reply into text for the composer.
+ *
+ * A prompt comes back as a list of chat messages, which is the wrong shape for a
+ * draft: the user is about to send *one* message. Roles are kept as labels only when
+ * there is more than one message, because `user: …` in front of a single line is
+ * noise the model then has to read past.
+ */
+export function renderPromptMessages(result: Record<string, unknown>): string {
+  const raw = Array.isArray(result.messages) ? result.messages : [];
+  const parts: { role: string; text: string }[] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry)) continue;
+    const role = typeof entry.role === 'string' ? entry.role : 'user';
+    const content = entry.content;
+    const items = Array.isArray(content) ? content : [content];
+    for (const item of items) {
+      if (typeof item === 'string') {
+        parts.push({ role, text: item });
+        continue;
+      }
+      if (isRecord(item) && item.type === 'text' && typeof item.text === 'string') {
+        parts.push({ role, text: item.text });
+        continue;
+      }
+      if (isRecord(item) && isRecord(item.resource) && typeof item.resource.text === 'string') {
+        parts.push({ role, text: item.resource.text });
+      }
+    }
+  }
+  const kept = parts.filter((part) => part.text.trim().length > 0);
+  if (!kept.length) return '';
+  if (kept.length === 1) return (kept[0]?.text ?? '').trim();
+  return kept.map((part) => `${part.role}: ${part.text.trim()}`).join('\n\n');
 }
 
 /** The next page cursor, when the server paginated its list. */
@@ -288,7 +357,32 @@ export function bridgeTools(sources: readonly BridgeSource[]): BridgedTool[] {
 export interface McpCallResult {
   content: string;
   isError?: true;
+  /**
+   * Images the tool returned, for transports that can carry one inside a tool
+   * result.
+   *
+   * These used to be dropped and replaced with the sentence "[image: …, not
+   * shown]", which quietly broke every screenshot-, chart- and diagram-producing
+   * server: the model was told the call worked and given nothing to look at, so it
+   * either guessed or claimed it could not see. They are still *described* in
+   * `content` as well, because a text-only transport gets the description and
+   * nothing else.
+   */
+  images?: { mediaType: string; data: string }[];
 }
+
+/**
+ * A ceiling on image bytes carried back from one tool call.
+ *
+ * Base64, so roughly 1.5 MB of pixels. Past this the image is described rather than
+ * inlined: a server that returns a full-page screenshot at 4× density would spend
+ * the whole context window on one tool result, and the failure would look like the
+ * model forgetting the conversation.
+ */
+export const MAX_TOOL_IMAGE_BASE64 = 2_000_000;
+
+/** Media types worth handing to a vision model. Anything else is described. */
+const TOOL_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
 /**
  * Flatten a `tools/call` result into the text a `tool_result` block carries.
@@ -304,6 +398,7 @@ export interface McpCallResult {
  */
 export function renderCallResult(result: Record<string, unknown>): McpCallResult {
   const parts: string[] = [];
+  const images: { mediaType: string; data: string }[] = [];
   const raw = Array.isArray(result.content) ? result.content : [];
   for (const entry of raw) {
     if (!isRecord(entry)) continue;
@@ -313,7 +408,18 @@ export function renderCallResult(result: Record<string, unknown>): McpCallResult
     }
     if (entry.type === 'image' || entry.type === 'audio') {
       const mediaType = typeof entry.mimeType === 'string' ? entry.mimeType : 'unknown';
-      parts.push(`[${String(entry.type)}: ${mediaType}, not shown]`);
+      const data = typeof entry.data === 'string' ? entry.data : '';
+      const carried =
+        entry.type === 'image' &&
+        TOOL_IMAGE_TYPES.has(mediaType) &&
+        data.length > 0 &&
+        data.length <= MAX_TOOL_IMAGE_BASE64;
+      if (carried) {
+        images.push({ mediaType, data });
+        parts.push(`[image: ${mediaType}, attached below]`);
+      } else {
+        parts.push(`[${String(entry.type)}: ${mediaType}, not shown]`);
+      }
       continue;
     }
     if (entry.type === 'resource' && isRecord(entry.resource)) {
@@ -333,7 +439,11 @@ export function renderCallResult(result: Record<string, unknown>): McpCallResult
   }
 
   const content = parts.join('\n').trim() || 'The tool returned no content.';
-  return result.isError === true ? { content, isError: true } : { content };
+  return {
+    content,
+    ...(result.isError === true ? { isError: true as const } : {}),
+    ...(images.length ? { images } : {}),
+  };
 }
 
 /** The result body for a call this app refused or could not make. */

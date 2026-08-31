@@ -22,6 +22,7 @@ import { Glyph } from '@/components/Glyph';
 import { Badge, Body, Inline, MIN_TARGET, Note, verticalSlop } from '@/components/ui';
 import { isToolTurn } from '@/db/content';
 import type { StoredMessage } from '@/db/conversations';
+import { APP_NAME } from '@/lib/app';
 import { estimateCost, formatCost, formatUsage } from '@/lib/tokens';
 import type { ModelPricing } from '@/lib/tokens';
 import { whenBucket } from '@/lib/when';
@@ -235,7 +236,7 @@ function MessageViewInner({
             size={20}
             state={message.error ? 'error' : 'idle'}
             style={{ marginTop: 2 }}
-            {...(message.error ? { label: 'Jarvis, failed turn' } : {})}
+            {...(message.error ? { label: `${APP_NAME}, failed turn` } : {})}
           />
           <View style={{ flex: 1, minWidth: 0 }}>{body}</View>
         </View>

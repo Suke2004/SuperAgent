@@ -6,14 +6,13 @@
  * formatting side free of both is what lets the security test grep a real
  * artefact without a mock in sight.
  *
- * **Why there is no "save to file".** The clipboard and the share sheet already
- * cover it — the share sheet's own targets (Drive, Files, mail) are what a user
- * means by "save it". `expo-file-system` is in the tree now (attachments, and the
- * skills zip export writes through `Directory.pickDirectoryAsync`), so this is a
- * choice rather than a missing capability: a folder picker is a worse handover for
- * a transcript than a share sheet, and the same one is there if that changes.
- * Documented rather than left as a gap so the next person does not think it was
- * forgotten.
+ * **Why an exported transcript has no "save to file".** The clipboard and the share
+ * sheet already cover it — the share sheet's own targets (Drive, Files, mail) are what
+ * a user means by "save it", and a folder picker is a worse handover for a transcript
+ * than a share sheet. Files the *model* produces are a different case and do land on
+ * disk: `write_file` and `create_pdf` write into the app's own document directory and
+ * `src/chat/files.ts` lists, shares and deletes them. This is about the export button,
+ * not about the app being unable to write.
  */
 
 import * as Clipboard from 'expo-clipboard';

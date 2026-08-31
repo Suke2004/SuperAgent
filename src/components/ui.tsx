@@ -1063,7 +1063,7 @@ function StepButton({
 /**
  * Busy indicator.
  *
- * The Jarvis mark rather than a platform spinner: the app's one long wait is a model
+ * The app's mark rather than a platform spinner: the app's one long wait is a model
  * thinking, and the same turning mark stands for it everywhere — in a stream header,
  * on a settings screen doing a reachability probe, on the splash.
  */

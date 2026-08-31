@@ -607,6 +607,15 @@ function toOpenAiContentParts(block: ContentBlock): Record<string, unknown>[] {
       // confuse the model and pay for the tokens twice.
       return [];
 
+    case 'server_tool': {
+      // Another provider's own tool blocks cannot be replayed here — this API has
+      // never heard of them — but dropping them silently would leave an assistant
+      // turn that cites sources it no longer contains, and possibly no content at
+      // all. The summary and the source list go back as text instead.
+      const lines = [block.summary ?? block.name, ...(block.sources ?? []).map((s) => `- ${s.title ?? ''} ${s.url}`.trim())];
+      return [{ type: 'text', text: `[${lines.join('\n')}]` }];
+    }
+
     default:
       return [];
   }
