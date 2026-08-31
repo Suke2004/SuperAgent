@@ -17,6 +17,7 @@ import { useSettings } from '@/stores/settings';
 import { useSkills } from '@/stores/skills';
 import { useMcp } from '@/stores/mcp';
 import { usePrompts } from '@/stores/prompts';
+import { useProjects } from '@/stores/projects';
 
 export default function SettingsHub() {
   const router = useRouter();
@@ -27,6 +28,7 @@ export default function SettingsHub() {
   const skillCount = useSkills((s) => s.skills.length);
   const serverCount = useMcp((s) => s.servers.length);
   const promptCount = usePrompts((s) => s.prompts.length);
+  const projectCount = useProjects((s) => s.projects.length);
   const active = profiles.find((p) => p.id === activeId);
   const [lockAvailable, setLockAvailable] = useState<boolean | null>(null);
 
@@ -122,6 +124,12 @@ export default function SettingsHub() {
           value={settings.allowWebSearch}
           onChange={(next) => settings.set('allowWebSearch', next)}
         />
+        <SwitchRow
+          label="Let the model run code"
+          subtitle="JavaScript in a sandbox with no network, no storage and no access to this app. For arithmetic and parsing it would otherwise guess at."
+          value={settings.allowRunCode}
+          onChange={(next) => settings.set('allowRunCode', next)}
+        />
       </Section>
 
       <Section
@@ -135,6 +143,20 @@ export default function SettingsHub() {
           value={promptCount ? `${promptCount}` : 'None'}
           subtitle="Write, edit or delete reusable prompts"
           onPress={() => router.push('/settings/prompts')}
+        />
+      </Section>
+
+      <Section
+        title="Projects"
+        note="A project groups conversations around one piece of work, with instructions and documents all of them inherit."
+      >
+        <Row
+          first
+          chevron
+          label="Projects"
+          value={projectCount ? `${projectCount}` : 'None'}
+          subtitle="Shared instructions and reference documents"
+          onPress={() => router.push('/settings/projects')}
         />
       </Section>
 

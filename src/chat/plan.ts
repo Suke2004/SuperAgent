@@ -25,11 +25,17 @@
  * Pure module, no imports from the loop. The loop calls it; the tests call it too.
  */
 
-import { CREATE_PDF, FETCH_URL, READ_RESOURCE, WRITE_FILE } from '@/chat/builtins';
+import { CREATE_PDF, FETCH_URL, READ_RESOURCE, RUN_CODE, WRITE_FILE } from '@/chat/builtins';
 import { MCP_TOOL_PREFIX } from '@/mcp/protocol';
 
-/** Built-ins that only read. Everything else is blocked while planning. */
-const READ_ONLY_BUILTINS = new Set<string>([FETCH_URL, READ_RESOURCE]);
+/**
+ * Built-ins that only read. Everything else is blocked while planning.
+ *
+ * `run_code` is in here, which reads oddly for a tool called "run" and is right: it
+ * changes nothing outside a sandbox with no filesystem and no network, and the sums a
+ * model does while planning are exactly the ones a plan should be built on.
+ */
+const READ_ONLY_BUILTINS = new Set<string>([FETCH_URL, READ_RESOURCE, RUN_CODE]);
 
 /** Built-ins that produce a file. Named so the reason for blocking them is visible. */
 const WRITING_BUILTINS = new Set<string>([WRITE_FILE, CREATE_PDF]);

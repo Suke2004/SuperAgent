@@ -141,8 +141,10 @@ So "terminal" splits into three things, of which two are buildable:
   ([client.ts](src/mcp/client.ts)) already speaks HTTP/SSE with OAuth, so the work is a renderer
   and a docs page, not a protocol.
 - **A JS sandbox for arithmetic and data munging**, the equivalent of Claude's analysis tool.
-  Hermes can `eval` but the app ships with JS engine hardening assumptions worth not breaking;
-  treat this as v1.2 and scope it separately.
+  **Built in v1.1** as `run_code`: not Hermes `eval` but a zero-sized `react-native-webview`
+  under `default-src 'none'; script-src 'unsafe-inline'`, so the engine that runs model-written
+  code is not the engine holding the API keys. Off by default. See
+  [sandbox.ts](src/chat/sandbox.ts).
 
 ### 5. UI issues → the ones I can point at
 
@@ -211,9 +213,9 @@ Reference surface: the Claude apps plus Claude Code, since the request is "every
 | **Voice input** | ✅ v1.1 — hold-to-talk into the draft | Full-duplex voice mode still open (§6) |
 | **Web search** | ✅ v1.1 — Anthropic server-side tool, off by default, source list in the transcript | Citations on text blocks done: `citations_delta` → a source list under the answer, quoted in an export |
 | **Web fetch (read a URL)** | ✅ v1.1 — `fetch_url`, off by default, re-checks the address it landed on | — |
-| **Artifacts** (rendered HTML/SVG/code preview) | ❌ | v1.2 — `react-native-webview`, sandboxed, no network |
-| **Analysis tool** (run code) | ❌ | v1.2, see §4 |
-| **Projects** (grouped chats + shared knowledge) | ⚠ tags + pins only | v1.2 — a project is a tag with a system prompt and a document set |
+| **Artifacts** (rendered HTML/SVG/code preview) | ✅ v1.1 — Preview on any `html`/`svg` fence, `react-native-webview` under `default-src 'none'`, navigation refused ([artifact.ts](src/chat/artifact.ts)) | No new content block: an artifact is a view of a fence already in the transcript, so old messages get it too |
+| **Analysis tool** (run code) | ✅ v1.1 — `run_code`, off by default, JS in a WebView with no network, no storage and no bridge ([sandbox.ts](src/chat/sandbox.ts)) | A calculator, not a shell; classified read-only for plan mode |
+| **Projects** (grouped chats + shared knowledge) | ✅ v1.1 — instructions + documents inherited by every conversation, filter chips on the list ([project.ts](src/chat/project.ts)) | Prompt order: project instructions → conversation prompt → knowledge, fenced and marked source-material |
 | **@-mentions** of files, skills, connectors | ✅ v1.1 | Same index and ranking as `/`, one anchored regex apart |
 | **MCP prompts usable, not just listed** | ✅ v1.1 — `prompts/get` ([client.ts:173](src/mcp/client.ts:173)) | — |
 | **MCP resources readable by the model** | ✅ v1.1 — `read_mcp_resource` built-in | — |

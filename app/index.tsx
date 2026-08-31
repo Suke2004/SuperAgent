@@ -60,6 +60,7 @@ import { splitOnMatches } from '@/db/search';
 import { streamingAvailable } from '@/lib/gateway';
 import { whenBucket } from '@/lib/when';
 import { useChat } from '@/stores/chat';
+import { useProjects } from '@/stores/projects';
 import { useProviders } from '@/stores/providers';
 import { useReachability } from '@/stores/reachability';
 import { useTheme } from '@/theme';
@@ -270,11 +271,16 @@ export default function Home() {
   const failover = useProviders((s) => s.activeFailover);
   const refreshKeyStatus = useProviders((s) => s.refreshKeyStatus);
   const reach = useReachability((s) => s.status);
+  const projects = useProjects((s) => s.projects);
+  const projectCounts = useProjects((s) => s.counts);
 
   const [now, setNow] = useState(() => Date.now());
   const [query, setQuery] = useState('');
   const [tag, setTag] = useState<string | undefined>(undefined);
-  const [found, setFound] = useState<{ query: string; tag?: string; hits: SearchHit[] } | null>(null);
+  const [projectId, setProjectId] = useState<string | undefined>(undefined);
+  const [found, setFound] = useState<{ query: string; tag?: string; projectId?: string; hits: SearchHit[] } | null>(
+    null,
+  );
   const [menuFor, setMenuFor] = useState<Conversation | null>(null);
   const [prompt, setPrompt] = useState<{ kind: 'rename' | 'tags'; conversation: Conversation } | null>(null);
   const [keyChecked, setKeyChecked] = useState(false);
@@ -319,7 +325,7 @@ export default function Home() {
   // outside the tag you just picked.
   const trimmed = query.trim();
   const searchable = trimmed.length >= MIN_SEARCH_LENGTH;
-  const fresh = found?.query === trimmed && found?.tag === tag;
+  const fresh = found?.query === trimmed && found?.tag === tag && found?.projectId === projectId;
   // Memoised for its identity, not its cost: the row list below depends on it, and a
   // fresh `[]` each render would rebuild every row on every keystroke.
   const hits = useMemo(() => (searchable && fresh && found ? found.hits : NO_HITS), [searchable, fresh, found]);
@@ -330,8 +336,9 @@ export default function Home() {
   useFocusEffect(
     useCallback(() => {
       setNow(Date.now());
-      void loadList({ archived: showArchived });
-    }, [loadList, showArchived]),
+      void useProjects.getState().load();
+      void loadList({ archived: showArchived, ...(projectId ? { projectId } : {}) });
+    }, [loadList, showArchived, projectId]),
   );
 
   // SecureStore is the source of truth for whether a key exists; the store only
@@ -350,24 +357,26 @@ export default function Home() {
     if (!searchable) return;
     let cancelled = false;
     const timer = setTimeout(() => {
-      // The tag filter belongs in the query, not on top of the results: the hits are
-      // message rows, so there is nothing tag-shaped to filter them by afterwards.
-      void searchMessages(trimmed, { ...(tag ? { tag } : {}) })
+      // The tag and project filters belong in the query, not on top of the results:
+      // the hits are message rows, so there is nothing tag- or project-shaped to
+      // filter them by afterwards.
+      const filters = { ...(tag ? { tag } : {}), ...(projectId ? { projectId } : {}) };
+      void searchMessages(trimmed, filters)
         .then((rows) => {
-          if (!cancelled) setFound({ query: trimmed, ...(tag ? { tag } : {}), hits: rows });
+          if (!cancelled) setFound({ query: trimmed, ...filters, hits: rows });
         })
         .catch(() => {
           // The list above is still correct; a failed full-text pass should not
           // blank the screen. `searchMessages` has already logged it. Recording an
           // empty result against this query stops it retrying on every render.
-          if (!cancelled) setFound({ query: trimmed, ...(tag ? { tag } : {}), hits: [] });
+          if (!cancelled) setFound({ query: trimmed, ...filters, hits: [] });
         });
     }, SEARCH_DEBOUNCE_MS);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [trimmed, searchable, tag]);
+  }, [trimmed, searchable, tag, projectId]);
 
   const filtered = useMemo(
     () => filterConversations(conversations, { query, ...(tag ? { tag } : {}) }),
@@ -422,14 +431,17 @@ export default function Home() {
     if (starting) return;
     setStarting(true);
     try {
-      const id = await useChat.getState().start();
+      // Started inside whatever project is being shown: the filter is the answer to
+      // "which work am I looking at", and a new chat started from that view belongs
+      // to it. Nothing is picked when the filter is off.
+      const id = await useChat.getState().start(projectId ? { projectId } : undefined);
       openConversation(id);
     } catch (error) {
       Alert.alert('Could not start a conversation', error instanceof Error ? error.message : String(error));
     } finally {
       setStarting(false);
     }
-  }, [openConversation, starting]);
+  }, [openConversation, starting, projectId]);
 
   /**
    * The launch redirect: the app opens on a chat, not on this list.
@@ -914,6 +926,39 @@ export default function Home() {
           ))}
         </Inline>
       ) : null}
+
+      {projects.length ? (
+        // Same control as the tag filter, and announced the same way. It is a query
+        // filter rather than a client-side one, because a project's conversations can
+        // sit past the end of the loaded page.
+        <Inline gap="xs" accessibilityRole="radiogroup" accessibilityLabel="Filter by project">
+          <Pressable
+            onPress={() => setProjectId(undefined)}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: projectId === undefined, selected: projectId === undefined }}
+            accessibilityLabel="All projects"
+            accessibilityHint="Clears the project filter"
+            hitSlop={verticalSlop(MIN_TARGET)}
+          >
+            <Badge label="All chats" tone={projectId === undefined ? 'accent' : 'neutral'} />
+          </Pressable>
+          {projects.map((project) => (
+            <Pressable
+              key={project.id}
+              onPress={() => setProjectId(projectId === project.id ? undefined : project.id)}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: projectId === project.id, selected: projectId === project.id }}
+              accessibilityLabel={`Project ${project.name}, ${projectCounts[project.id] ?? 0} conversation${(projectCounts[project.id] ?? 0) === 1 ? '' : 's'}`}
+              hitSlop={verticalSlop(MIN_TARGET)}
+            >
+              <Badge
+                label={projectCounts[project.id] ? `${project.name} · ${projectCounts[project.id]}` : project.name}
+                tone={projectId === project.id ? 'accent' : 'neutral'}
+              />
+            </Pressable>
+          ))}
+        </Inline>
+      ) : null}
     </View>
   );
 
@@ -952,6 +997,8 @@ export default function Home() {
     )
   ) : tag ? (
     <Empty title="No conversations with that tag" body="Tap All to clear the filter." />
+  ) : projectId ? (
+    <Empty title="Nothing in this project yet" body="Move a conversation into it from its ⋯ menu, or tap All chats." />
   ) : listLoading ? (
     <Spinner label="Loading" />
   ) : showArchived ? (

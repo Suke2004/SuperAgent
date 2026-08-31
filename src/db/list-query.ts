@@ -41,6 +41,8 @@ export interface ListQueryOptions {
   archived?: boolean;
   tag?: string;
   profileId?: string;
+  /** Only this project's conversations. `null` means only the ones in no project. */
+  projectId?: string | null;
   limit?: number;
   /** Omit or pass `null` for the first page. */
   after?: ListCursor | null;
@@ -78,6 +80,16 @@ export function buildListQuery(options: ListQueryOptions = {}): SqlQuery {
   if (options.tag) {
     where.push('EXISTS (SELECT 1 FROM conversation_tags t WHERE t.conversation_id = c.id AND t.tag = ?)');
     params.push(options.tag);
+  }
+  // `null` is a filter, not "no filter": the main list wants the chats that are in no
+  // project, so an absent key and an explicit null cannot mean the same thing.
+  if (options.projectId !== undefined) {
+    if (options.projectId === null) {
+      where.push('c.project_id IS NULL');
+    } else {
+      where.push('c.project_id = ?');
+      params.push(options.projectId);
+    }
   }
   if (options.after) {
     // A row-value comparison rather than the expanded `a < ? OR (a = ? AND …)`

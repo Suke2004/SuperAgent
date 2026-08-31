@@ -57,8 +57,10 @@ import {
   parsePdf,
   parseWriteFile,
   READ_RESOURCE,
+  RUN_CODE,
   WRITE_FILE,
 } from '@/chat/builtins';
+import { parseRunCode, runInSandbox } from '@/chat/sandbox';
 import { writeGeneratedFile, writePdf } from '@/chat/files';
 import { fetchAsText } from '@/chat/web';
 import { describeWithheldTools, selectTools } from '@/chat/tools';
@@ -72,6 +74,7 @@ import { reportedUsage } from '@/chat/usage';
 import { describeTrim, trimToBudget } from '@/chat/trim';
 import type { TrimReport } from '@/chat/trim';
 import { planCacheForRequest } from '@/chat/cache';
+import { projectSystemPrompt } from '@/chat/project';
 import { invalidateTransports, resolveTransport } from '@/lib/gateway';
 import { log } from '@/lib/log';
 import { estimateRequestTokens } from '@/lib/tokens';
@@ -81,6 +84,7 @@ import { activeProfile, useProviders } from '@/stores/providers';
 import { useMemory } from '@/stores/memory';
 import { useSkills } from '@/stores/skills';
 import { useMcp } from '@/stores/mcp';
+import { useProjects } from '@/stores/projects';
 import { useReachability } from '@/stores/reachability';
 import { useSendQueue } from '@/stores/queue';
 import { getSetting } from '@/stores/settings';
@@ -315,7 +319,7 @@ export interface ChatState {
   open(conversationId: string): Promise<void>;
   reload(conversationId: string): Promise<void>;
 
-  start(init?: { title?: string; model?: string; profileId?: string }): Promise<string>;
+  start(init?: { title?: string; model?: string; profileId?: string; projectId?: string }): Promise<string>;
   rename(conversationId: string, title: string): Promise<void>;
   setSystemPrompt(conversationId: string, prompt: string): Promise<void>;
   setModel(conversationId: string, model: string): Promise<void>;
@@ -328,6 +332,8 @@ export interface ChatState {
    */
   setProfile(conversationId: string, profileId: string): Promise<void>;
   setConfig(conversationId: string, patch: Partial<ConversationConfig>): Promise<void>;
+  /** Moves a conversation into a project, or out of one with `undefined`. */
+  setProject(conversationId: string, projectId: string | undefined): Promise<void>;
   setPinned(conversationId: string, pinned: boolean): Promise<void>;
   /**
    * Moves a conversation out of the list without destroying it.
@@ -468,6 +474,7 @@ export const useChat = create<ChatState>()((set, get) => ({
       profileId: resolved.id,
       model: init?.model ?? resolved.defaultModel,
       ...(init?.title ? { title: init.title } : {}),
+      ...(init?.projectId ? { projectId: init.projectId } : {}),
       ...(seedPrompt ? { systemPrompt: seedPrompt } : {}),
     });
     set((state) => ({
@@ -508,6 +515,11 @@ export const useChat = create<ChatState>()((set, get) => ({
     const config = { ...current.config, ...patch };
     await updateConversation(conversationId, { config });
     patchConversation(set, conversationId, { config });
+  },
+
+  async setProject(conversationId, projectId) {
+    await updateConversation(conversationId, { projectId: projectId ?? null });
+    patchConversation(set, conversationId, projectId ? { projectId } : { projectId: undefined });
   },
 
   async setPinned(conversationId, pinned) {
@@ -943,6 +955,7 @@ async function resolveCall(
   if (call.name === WRITE_FILE) return resolveWriteFile(call.input);
   if (call.name === CREATE_PDF) return resolvePdf(call.input);
   if (call.name === FETCH_URL) return resolveFetch(call.input);
+  if (call.name === RUN_CODE) return resolveRunCode(call.input);
   if (call.name === READ_RESOURCE) return resolveResource(call.input, servers);
   if (call.name.startsWith(`${MCP_TOOL_PREFIX}_`)) return useMcp.getState().invoke(call.name, call.input, servers);
   return { content: `There is no tool called "${call.name}".`, isError: true };
@@ -999,6 +1012,30 @@ async function resolveFetch(input: unknown): Promise<ResolvedCall> {
   }
   const outcome = await fetchAsText(input);
   return outcome.isError ? { content: outcome.content, isError: true } : { content: outcome.content };
+}
+
+/**
+ * Runs the model's code in the sandbox, if the user has switched it on.
+ *
+ * Re-reads the setting for the same reason `resolveFetch` does. Output is returned even
+ * when the program threw: a stack trace is the most useful thing the model can be given
+ * to fix its own code, and "it failed" is not.
+ */
+async function resolveRunCode(input: unknown): Promise<ResolvedCall> {
+  if (!getSetting('allowRunCode')) {
+    return {
+      content:
+        'Running code is switched off in this app (Settings → Built-in tools). Ask the user to turn it on if the task needs it.',
+      isError: true,
+    };
+  }
+  const request = parseRunCode(input);
+  if (!request.ok) return { content: request.reason, isError: true };
+  const result = await runInSandbox(request.code);
+  if (!result.ok) {
+    return { content: result.output || 'The code produced no output and did not finish cleanly.', isError: true };
+  }
+  return { content: result.output || 'The code ran and printed nothing.' };
 }
 
 /**
@@ -1140,6 +1177,14 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     const calibrationFactor = useCalibration.getState().factorFor(calibrationKey);
     const toolCalibrationFactor = useCalibration.getState().toolFactorFor(calibrationKey);
 
+    // The project, for the same reason and read at the same point: its instructions
+    // and documents are part of the prefix the history budget is computed against.
+    if (conversation.projectId && !useProjects.getState().loaded) await useProjects.getState().load();
+    const systemPrompt = projectSystemPrompt(
+      useProjects.getState().byId(conversation.projectId),
+      conversation.systemPrompt,
+    );
+
     // The skills this conversation switched on, resolved against what is installed.
     // Loaded on demand rather than assumed: the startup load is fire-and-forget, and
     // a send during the first second of the app's life would otherwise silently get
@@ -1164,6 +1209,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       ...(enabledSkills.length ? [invokeSkillTool(enabledSkills)] : []),
       ...builtinTools({
         web: getSetting('allowWebFetch'),
+        code: getSetting('allowRunCode'),
         resources: useMcp.getState().resources(conversation.config.servers).map((resource) => resource.uri),
       }),
       ...bridged.map((tool) => tool.definition),
@@ -1183,6 +1229,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       live,
       publish,
       signal: controller.signal,
+      ...(systemPrompt ? { systemPrompt } : {}),
       ...(memoryBlock.text ? { memory: memoryBlock.text } : {}),
       ...(skillCatalogue ? { skills: skillCatalogue } : {}),
       ...(selection.tools.length ? { tools: selection.tools } : {}),
@@ -1216,7 +1263,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       capabilities,
       wireHints,
       config: conversation.config,
-      ...(conversation.systemPrompt ? { systemPrompt: conversation.systemPrompt } : {}),
+      ...(systemPrompt ? { systemPrompt } : {}),
       messages,
       ...(summary ? { summary } : {}),
       ...(memoryBlock.text ? { memory: memoryBlock.text } : {}),
@@ -1648,6 +1695,15 @@ interface StrategyInput {
   live: LiveStream;
   publish(force?: boolean): void;
   signal: AbortSignal;
+  /**
+   * The conversation's prompt with its project folded in, when there is one.
+   *
+   * Passed rather than read off `conversation`, because the project's instructions and
+   * documents are part of the prefix the request will carry: budgeting against the
+   * conversation's own prompt alone is how a project with 40k characters of knowledge
+   * plans a history that does not fit.
+   */
+  systemPrompt?: string;
   /** The rendered memory block, so the budget counts what the request will carry. */
   memory?: string;
   /** The skill catalogue, for the same reason. */
@@ -1722,7 +1778,7 @@ async function applyContextStrategy(input: StrategyInput): Promise<StrategyResul
   // The same prefix the request will actually carry — prompt, memory, skills and
   // summary — rather than the prompt alone. Counting less than is sent is how a
   // budget declared roomy produces a request over the window.
-  const system = composeSystem(conversation.systemPrompt, previousSummary, input.memory, input.skills);
+  const system = composeSystem(input.systemPrompt ?? conversation.systemPrompt, previousSummary, input.memory, input.skills);
   const budget = planTurn({
     transport: 'anthropic',
     contextWindow: capabilities.contextWindow,

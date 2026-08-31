@@ -104,6 +104,8 @@ export interface Conversation {
   forkedFromMessageId?: string;
   lastMessageAt?: number;
   preview?: string;
+  /** The project this conversation belongs to, if any. See `@/chat/project`. */
+  projectId?: string;
   tags: string[];
   /** Populated by {@link listConversations}; absent on a single read. */
   messageCount?: number;
@@ -188,6 +190,7 @@ interface ConversationRow {
   forked_from_message_id: string | null;
   last_message_at: number | null;
   preview: string | null;
+  project_id: string | null;
   tags: string | null;
   message_count?: number;
 }
@@ -256,6 +259,7 @@ function toConversation(row: ConversationRow): Conversation {
   if (row.forked_from_message_id !== null) conversation.forkedFromMessageId = row.forked_from_message_id;
   if (row.last_message_at !== null) conversation.lastMessageAt = row.last_message_at;
   if (row.preview !== null) conversation.preview = row.preview;
+  if (row.project_id !== null) conversation.projectId = row.project_id;
   if (row.message_count !== undefined) conversation.messageCount = row.message_count;
   return conversation;
 }
@@ -315,6 +319,7 @@ export interface NewConversation {
   systemPrompt?: string;
   config?: ConversationConfig;
   tags?: string[];
+  projectId?: string;
   forkedFromId?: string;
   forkedFromMessageId?: string;
 }
@@ -327,8 +332,8 @@ export async function createConversation(input: NewConversation): Promise<Conver
   await db.runAsync(
     `INSERT INTO conversations
        (id, title, created_at, updated_at, pinned, archived, system_prompt, profile_id, model,
-        config, forked_from_id, forked_from_message_id, last_message_at, preview)
-     VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+        config, forked_from_id, forked_from_message_id, last_message_at, preview, project_id)
+     VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`,
     [
       id,
       input.title ?? DEFAULT_TITLE,
@@ -340,6 +345,7 @@ export async function createConversation(input: NewConversation): Promise<Conver
       JSON.stringify(input.config ?? {}),
       input.forkedFromId ?? null,
       input.forkedFromMessageId ?? null,
+      input.projectId ?? null,
     ],
   );
 
@@ -364,6 +370,8 @@ export interface ListOptions {
   archived?: boolean;
   tag?: string;
   profileId?: string;
+  /** Only this project's conversations. `null` means only the ones in no project. */
+  projectId?: string | null;
   limit?: number;
   /** The cursor returned by the previous page. Omit for the first page. */
   after?: ListCursor | null;
@@ -403,6 +411,8 @@ export interface ConversationPatch {
   pinned?: boolean;
   archived?: boolean;
   config?: ConversationConfig;
+  /** `null` takes the conversation out of its project without deleting anything. */
+  projectId?: string | null;
 }
 
 /**
@@ -444,6 +454,10 @@ export async function updateConversation(id: string, patch: ConversationPatch): 
   if (patch.config !== undefined) {
     sets.push('config = ?');
     params.push(JSON.stringify(patch.config));
+  }
+  if (patch.projectId !== undefined) {
+    sets.push('project_id = ?');
+    params.push(patch.projectId);
   }
 
   if (!sets.length) return;
@@ -802,6 +816,8 @@ export async function forkConversation(
     ...(source.systemPrompt !== undefined ? { systemPrompt: source.systemPrompt } : {}),
     config: source.config,
     tags: source.tags,
+    // Same project as the original: a fork is another attempt at the same work.
+    ...(source.projectId !== undefined ? { projectId: source.projectId } : {}),
     forkedFromId: source.id,
     forkedFromMessageId: throughMessageId,
   });
@@ -907,6 +923,8 @@ export interface SearchOptions {
    * a broken filter rather than a broader search.
    */
   tag?: string;
+  /** Restrict hits to this project's conversations. Mirrors {@link ListOptions.projectId}. */
+  projectId?: string;
   limit?: number;
 }
 
@@ -930,10 +948,11 @@ export async function searchMessages(query: string, options: SearchOptions = {})
   // Both passes already join `conversations`, so the tag filter is one predicate
   // against the row that is there anyway. Without it, picking a tag and then
   // typing narrows the list above the results but not the results themselves.
-  const tagFilter = options.tag
-    ? ' AND EXISTS (SELECT 1 FROM conversation_tags t WHERE t.conversation_id = c.id AND t.tag = ?)'
-    : '';
-  const tagParams = options.tag ? [options.tag] : [];
+  // The project filter is there for the same reason.
+  const tagFilter =
+    (options.tag ? ' AND EXISTS (SELECT 1 FROM conversation_tags t WHERE t.conversation_id = c.id AND t.tag = ?)' : '') +
+    (options.projectId ? ' AND c.project_id = ?' : '');
+  const tagParams = [...(options.tag ? [options.tag] : []), ...(options.projectId ? [options.projectId] : [])];
 
   if (ftsAvailable) {
     const match = buildFtsQuery(trimmed);

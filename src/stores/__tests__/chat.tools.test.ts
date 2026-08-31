@@ -231,6 +231,11 @@ jest.mock('@/stores/reachability', () => ({
 jest.mock('@/stores/queue', () => ({
   useSendQueue: { getState: () => ({ drop: jest.fn(), queue: jest.fn() }) },
 }));
+// Mocked for its module graph, not its behaviour: the real store reaches `@/db/schema`,
+// and the conversations in this file are in no project anyway.
+jest.mock('@/stores/projects', () => ({
+  useProjects: { getState: () => ({ loaded: true, byId: () => undefined, load: jest.fn() }) },
+}));
 
 import * as db from '@/db/conversations';
 import { useChat } from '@/stores/chat';

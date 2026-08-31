@@ -140,6 +140,61 @@ describe('the list query plan', () => {
   });
 });
 
+describe('the project filter', () => {
+  /** Puts every third conversation in `prj_a`, and runs the real query against it. */
+  function seededWithProject(): DatabaseSync {
+    const db = migrated();
+    seed(db, 30);
+    db.exec(
+      `INSERT INTO projects (id, created_at, updated_at, name, instructions, knowledge)
+       VALUES ('prj_a', 1, 1, 'A', '', '[]')`,
+    );
+    db.exec("UPDATE conversations SET project_id = 'prj_a' WHERE CAST(substr(id, 2) AS INTEGER) % 3 = 0");
+    return db;
+  }
+
+  it('returns only that project’s conversations', () => {
+    const db = seededWithProject();
+    const { sql, params } = buildListQuery({ projectId: 'prj_a' });
+    const rows = db.prepare(sql).all(...params) as unknown as (Row & { project_id: string | null })[];
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => row.project_id === 'prj_a')).toBe(true);
+    db.close();
+  });
+
+  // The distinction the builder's `!== undefined` check exists for: an absent key is
+  // "every conversation", an explicit null is "the ones in no project". Collapsing
+  // them would make the unfiltered list drop every conversation in a project.
+  it('tells an absent filter apart from an explicit null', () => {
+    const db = seededWithProject();
+    const count = (options: Parameters<typeof buildListQuery>[0]): number => {
+      const { sql, params } = buildListQuery({ ...options, limit: 500 });
+      return (db.prepare(sql).all(...params) as unknown[]).length;
+    };
+    const all = count({});
+    const loose = count({ projectId: null });
+    const inProject = count({ projectId: 'prj_a' });
+    expect(inProject).toBeGreaterThan(0);
+    expect(loose).toBeGreaterThan(0);
+    expect(loose + inProject).toBe(all);
+    db.close();
+  });
+
+  it('does not sort, filtered or paged', () => {
+    const db = seededWithProject();
+    db.exec('ANALYZE');
+    for (const options of [
+      { projectId: 'prj_a' },
+      { projectId: null },
+      { projectId: 'prj_a', after: { pinned: false, updatedAt: 1_700_000_003_000, id: 'c0009' } },
+    ]) {
+      const { sql, params } = buildListQuery(options);
+      expect(plan(db, sql, params)).not.toMatch(/TEMP B-TREE/);
+    }
+    db.close();
+  });
+});
+
 describe('paging with a cursor', () => {
   it('visits every unarchived conversation exactly once, in list order', () => {
     const db = migrated();

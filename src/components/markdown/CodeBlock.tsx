@@ -20,6 +20,8 @@ import { highlightLines, plainLines } from '@/components/markdown/highlight';
 import type { HighlightSpan } from '@/components/markdown/highlight';
 import { resolveLanguage, shouldHighlight } from '@/components/markdown/lang';
 import { SYNTAX_ITALIC, syntaxColors } from '@/components/markdown/syntax';
+import { ArtifactPreview } from '@/components/ArtifactPreview';
+import { artifactKind } from '@/chat/artifact';
 import { useTheme } from '@/theme';
 
 const COPIED_MS = 1600;
@@ -33,6 +35,7 @@ export function CodeBlock({ code, lang }: { code: string; lang?: string }) {
   const t = useTheme();
   const colors = syntaxColors(t.scheme);
   const [copied, setCopied] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Clearing on unmount matters here: a transcript scrolls blocks out of the
@@ -71,6 +74,10 @@ export function CodeBlock({ code, lang }: { code: string; lang?: string }) {
 
   const lineHeight = Math.round(t.fontSize.code * 1.5);
 
+  // A view of this fence, not a new kind of content: whether it can be rendered is a
+  // property of the tag and the text, so old messages get the button too.
+  const kind = useMemo(() => artifactKind(lang, code), [lang, code]);
+
   return (
     <View
       style={{
@@ -99,22 +106,41 @@ export function CodeBlock({ code, lang }: { code: string; lang?: string }) {
         >
           {(lang ?? '').trim() || 'text'}
         </Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={copied ? 'Copied' : 'Copy code'}
-          onPress={onCopy}
-          hitSlop={8}
-          style={({ pressed }) => ({
-            paddingHorizontal: t.spacing.sm,
-            paddingVertical: t.spacing.xs,
-            borderRadius: t.radius.sm,
-            backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
-          })}
-        >
-          <Text style={{ color: copied ? t.colors.success : t.colors.accent, fontSize: t.fontSize.xs, fontWeight: '700' }}>
-            {copied ? 'Copied' : 'Copy'}
-          </Text>
-        </Pressable>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {kind ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Preview this code rendered"
+              accessibilityHint="Opens it full screen, with no network access"
+              onPress={() => setPreviewing(true)}
+              hitSlop={8}
+              style={({ pressed }) => ({
+                paddingHorizontal: t.spacing.sm,
+                paddingVertical: t.spacing.xs,
+                borderRadius: t.radius.sm,
+                backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
+              })}
+            >
+              <Text style={{ color: t.colors.accent, fontSize: t.fontSize.xs, fontWeight: '700' }}>Preview</Text>
+            </Pressable>
+          ) : null}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={copied ? 'Copied' : 'Copy code'}
+            onPress={onCopy}
+            hitSlop={8}
+            style={({ pressed }) => ({
+              paddingHorizontal: t.spacing.sm,
+              paddingVertical: t.spacing.xs,
+              borderRadius: t.radius.sm,
+              backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
+            })}
+          >
+            <Text style={{ color: copied ? t.colors.success : t.colors.accent, fontSize: t.fontSize.xs, fontWeight: '700' }}>
+              {copied ? 'Copied' : 'Copy'}
+            </Text>
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView
@@ -158,6 +184,12 @@ export function CodeBlock({ code, lang }: { code: string; lang?: string }) {
           ))}
         </View>
       </ScrollView>
+
+      {/* Mounted only while open: a transcript with twenty fences in it should not be
+          holding twenty WebViews, each of which is a browser. */}
+      {kind && previewing ? (
+        <ArtifactPreview visible code={code} kind={kind} onClose={() => setPreviewing(false)} />
+      ) : null}
     </View>
   );
 }
