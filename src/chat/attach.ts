@@ -352,6 +352,56 @@ export async function pickDocuments(
 }
 
 /**
+ * Attaches a file this app already has, by URI.
+ *
+ * Same admission rules as {@link pickDocuments} and deliberately the same code path —
+ * a generated file is not exempt from the size ceiling just because the app wrote it,
+ * and a 9 MB PDF the model produced would break the request exactly as a picked one
+ * does. The one difference is that the source is *not* deleted afterwards: this is the
+ * user's file living in the app's own directory, not a copy the picker made in the
+ * cache.
+ */
+export async function attachExistingFile(
+  existing: readonly ContentBlock[],
+  transport: TransportKind,
+  capabilities: ModelCapabilities | undefined,
+  source: { uri: string; name: string; size?: number },
+): Promise<AttachResult> {
+  if (remainingSlots(existing) === 0) {
+    return { blocks: [], notes: [`${MAX_ATTACHMENTS_PER_MESSAGE} attachments is the limit for one message.`] };
+  }
+
+  const mediaType = mediaTypeFor(source.name, undefined);
+  const support = documentSupport(transport, capabilities, mediaType);
+  if (!support.supported) return { blocks: [], notes: [`${source.name}: ${support.reason}`] };
+
+  const admission = admitDocument(existing, {
+    mediaType,
+    name: source.name,
+    ...(source.size !== undefined ? { size: source.size } : {}),
+  });
+  if (!admission.ok) return { blocks: [], notes: [admission.reason] };
+
+  let block: DocumentBlock;
+  try {
+    block = await readDocument(source.uri, source.name, mediaType);
+  } catch (error) {
+    log.warn('attach', 'could not read a generated file', error);
+    return { blocks: [], notes: [`${source.name} could not be read.`] };
+  }
+
+  // Second pass on the real encoded size, for the same reason `pickDocuments` does it.
+  const encoded = admitDocument(existing, {
+    mediaType,
+    name: source.name,
+    size: block.data ? Math.floor((block.data.length * 3) / 4) : (block.text?.length ?? 0),
+  });
+  if (!encoded.ok) return { blocks: [], notes: [encoded.reason] };
+
+  return { blocks: [block], notes: [] };
+}
+
+/**
  * Reads one document into a block.
  *
  * Text is read as text even when the transport has a native document block for it:

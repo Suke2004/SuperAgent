@@ -116,6 +116,12 @@ export default function SettingsHub() {
           value={settings.allowWebFetch}
           onChange={(next) => settings.set('allowWebFetch', next)}
         />
+        <SwitchRow
+          label="Let the model search the web"
+          subtitle="Anthropic profiles only · billed per search, and the results enter the context window"
+          value={settings.allowWebSearch}
+          onChange={(next) => settings.set('allowWebSearch', next)}
+        />
       </Section>
 
       <Section

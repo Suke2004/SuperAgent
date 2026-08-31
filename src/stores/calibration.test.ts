@@ -10,7 +10,7 @@
  * rather than mocking the platform.
  */
 
-import { foldSample } from '@/stores/calibration';
+import { foldSample, foldToolSample } from '@/stores/calibration';
 
 describe('foldSample', () => {
   it('takes the first believable sample whole', () => {
@@ -51,5 +51,46 @@ describe('foldSample', () => {
 
   it('rejects a zero estimate rather than returning Infinity', () => {
     expect(foldSample(1, 0, 1_000)).toBeNull();
+  });
+});
+
+describe('foldToolSample', () => {
+  it('measures the manifest as what the prose factor could not explain', () => {
+    // 4_000 estimated, 1_000 of it tools. Prose factor 1, so prose explains 3_000 of
+    // the 4_200 reported and the remaining 1_200 is the manifest: 1.2×.
+    expect(foldToolSample(undefined, 4_000, 4_200, 1_000, 1)).toBeCloseTo(1.2, 10);
+  });
+
+  it('uses the prose factor rather than assuming the prose was right', () => {
+    // Prose 3_000 at 1.1 explains 3_300; 4_500 reported leaves 1_200 for 1_000 of
+    // tools. Without the factor this would read as 1.5× and blame the manifest for
+    // an error the prose estimator already knows about.
+    expect(foldToolSample(undefined, 4_000, 4_500, 1_000, 1.1)).toBeCloseTo(1.2, 10);
+  });
+
+  it('smooths like the prose fold does', () => {
+    // 1 + 0.25 * (1.2 - 1)
+    expect(foldToolSample(1, 4_000, 4_200, 1_000, 1)).toBeCloseTo(1.05, 10);
+  });
+
+  it('refuses a manifest too small a share of the request to measure', () => {
+    // 1_000 of 20_000 is noise: a 5% prose error is 950 tokens, which would move this
+    // ratio by nearly a whole factor of itself.
+    expect(foldToolSample(undefined, 20_000, 20_500, 1_000, 1)).toBeNull();
+  });
+
+  it('refuses a manifest too small in absolute terms', () => {
+    expect(foldToolSample(undefined, 400, 420, 199, 1)).toBeNull();
+  });
+
+  it('refuses a residual that is not believable as estimator error', () => {
+    // Reported below what the prose alone should cost: the manifest cannot have a
+    // negative size, so something other than prompt tokens is being reported.
+    expect(foldToolSample(undefined, 4_000, 2_000, 1_000, 1)).toBeNull();
+    expect(foldToolSample(undefined, 4_000, 9_000, 1_000, 1)).toBeNull();
+  });
+
+  it('rejects a zero estimate rather than dividing by it', () => {
+    expect(foldToolSample(undefined, 0, 1_000, 1_000, 1)).toBeNull();
   });
 });

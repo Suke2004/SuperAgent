@@ -1,9 +1,12 @@
 import {
   APP_COMMANDS,
   buildCommandIndex,
+  buildMentionIndex,
   commandName,
   commandQuery,
+  mentionQuery,
   rankCommands,
+  replaceMention,
   uniqueNames,
 } from '@/chat/commands';
 import type { CommandItem } from '@/chat/commands';
@@ -125,5 +128,76 @@ describe('buildCommandIndex', () => {
 
   it('keeps app commands first so a learned name always wins', () => {
     expect(index[0]?.kind).toBe('app');
+  });
+});
+
+describe('mentionQuery', () => {
+  it('is null for a draft with no mention', () => {
+    expect(mentionQuery('summarise the report')).toBeNull();
+    expect(mentionQuery('')).toBeNull();
+  });
+
+  it('opens the full list on a bare at-sign', () => {
+    expect(mentionQuery('@')).toBe('');
+    expect(mentionQuery('summarise @')).toBe('');
+  });
+
+  it('reads the word being typed at the end of a sentence, lowercased', () => {
+    expect(mentionQuery('summarise @Report')).toBe('report');
+  });
+
+  it('leaves an email address alone', () => {
+    // The failure this prevents: a list opening over the keyboard every time someone
+    // types an address into a message.
+    expect(mentionQuery('write to ada@example')).toBeNull();
+  });
+
+  it('closes once the mention is finished', () => {
+    expect(mentionQuery('summarise @report.md and stop')).toBeNull();
+  });
+
+  it('gives up on something too long to be a name', () => {
+    expect(mentionQuery(`@${'a'.repeat(60)}`)).toBeNull();
+  });
+});
+
+describe('replaceMention', () => {
+  it('completes the token in place and keeps the sentence', () => {
+    expect(replaceMention('summarise @rep', 'report-md')).toBe('summarise @report-md ');
+  });
+
+  it('completes a bare at-sign', () => {
+    expect(replaceMention('@', 'report-md')).toBe('@report-md ');
+  });
+
+  it('leaves a draft with no mention untouched', () => {
+    expect(replaceMention('summarise the report', 'report-md')).toBe('summarise the report');
+  });
+});
+
+describe('buildMentionIndex', () => {
+  const index = buildMentionIndex({
+    files: [{ name: 'Q3 report.pdf', uri: 'file:///docs/q3.pdf', hint: '412 kB' }],
+    skills: [{ name: 'pdf-processing', description: 'Extracts tables from a PDF.' }],
+    servers: [{ id: 'notes', name: 'notes', hint: 'https://mcp.example/notes' }],
+  });
+
+  it('carries every source', () => {
+    expect(index.map((item) => item.kind)).toEqual(['file', 'skill', 'server']);
+  });
+
+  it('makes a file name typeable but keeps the real one on the row', () => {
+    expect(index[0]?.name).toBe('q3-report-pdf');
+    expect(index[0]?.label).toBe('Q3 report.pdf');
+  });
+
+  it('dispatches a file on its uri and a server on its name', () => {
+    // `config.servers` stores names, so the id has to be the name and not a row id.
+    expect(index[0]?.id).toBe('file:///docs/q3.pdf');
+    expect(index[2]?.id).toBe('notes');
+  });
+
+  it('is ranked by the same function the slash list uses', () => {
+    expect(rankCommands(index, 'pdf')[0]?.kind).toBe('skill');
   });
 });

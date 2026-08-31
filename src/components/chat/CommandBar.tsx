@@ -1,11 +1,13 @@
 /**
- * The slash-command list.
+ * The slash-command list, and the `@`-mention list — the same list.
  *
  * Typing `/` at the start of a draft is the fastest way to reach the things this app
  * keeps behind sheets — a model, a skill, a server, a saved prompt, an MCP prompt —
  * and before this existed there was no way to reach them at all without leaving the
- * keyboard. The ranking and the index live in `@/chat/commands`, which is pure and
- * tested; this file is the list and nothing else.
+ * keyboard. `@` mid-sentence reaches the things a message can *carry*: a generated
+ * file, a skill, a server. Same rows, same ranking, one `prefix` apart. The ranking and
+ * both indexes live in `@/chat/commands`, which is pure and tested; this file is the
+ * list and nothing else.
  *
  * It sits above the composer rather than in a modal: the query is being typed into
  * the composer, so a sheet that covers it would hide the thing the list is filtering
@@ -27,23 +29,28 @@ const KIND_LABEL: Record<CommandKind, string> = {
   app: 'App',
   prompt: 'Prompt',
   skill: 'Skill',
-  'mcp-prompt': 'Server',
+  'mcp-prompt': 'Server prompt',
+  file: 'File',
+  server: 'Server',
 };
 
 export function CommandBar({
   items,
   onSelect,
+  prefix = '/',
 }: {
   /** Already ranked and capped by `rankCommands`. Empty ⇒ nothing renders. */
   items: readonly CommandItem[];
   onSelect: (item: CommandItem) => void;
+  /** The trigger the names are shown behind — `/` for commands, `@` for mentions. */
+  prefix?: '/' | '@';
 }) {
   const t = useTheme();
   if (!items.length) return null;
 
   return (
     <View
-      accessibilityLabel="Commands"
+      accessibilityLabel={prefix === '@' ? 'Mentions' : 'Commands'}
       style={{
         marginHorizontal: t.spacing.md,
         maxHeight: MAX_HEIGHT,
@@ -75,7 +82,7 @@ export function CommandBar({
             })}
           >
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.spacing.sm }}>
-              <Body mono numberOfLines={1}>{`/${item.name}`}</Body>
+              <Body mono numberOfLines={1}>{`${prefix}${item.name}`}</Body>
               <Body size="xs" tone="faint">
                 {KIND_LABEL[item.kind]}
               </Body>

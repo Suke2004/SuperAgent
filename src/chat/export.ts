@@ -189,6 +189,14 @@ function blocksToMarkdown(blocks: readonly ContentBlock[], options: ExportOption
           `**Tool result**${block.isError ? ' (error)' : ''}\n\n\`\`\`\n${safe(block.content)}\n\`\`\``,
         );
         break;
+      case 'server_tool': {
+        const lines = [`**${safe(block.summary ?? block.name)}**`];
+        for (const source of block.sources ?? []) {
+          lines.push(`- [${safe(source.title ?? source.url)}](${safe(source.url)})`);
+        }
+        out.push(lines.join('\n'));
+        break;
+      }
     }
   }
   return out.filter(Boolean);
@@ -304,6 +312,18 @@ function blockToJson(block: ContentBlock, options: ExportOptions): Record<string
         toolUseId: safe(block.toolUseId),
         content: safe(block.content),
         ...(block.isError ? { isError: true } : {}),
+      };
+    case 'server_tool':
+      // `raw` is the provider's own wire payload — pages of fetched text, kept out
+      // of the export for the same reason image `data` is. The summary and the
+      // source list are what a reader wants, and both get walked by `redactDeep`
+      // because neither is a shape this app authored.
+      return {
+        type: 'server_tool',
+        name: safe(block.name),
+        ...(block.summary ? { summary: safe(block.summary) } : {}),
+        ...(block.sources?.length ? { sources: redactDeep(block.sources) } : {}),
+        included: false,
       };
   }
 }

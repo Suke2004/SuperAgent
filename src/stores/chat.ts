@@ -88,9 +88,11 @@ import { summariseFailure } from '@/transports/index';
 import type { ModelCapabilities } from '@/transports/support';
 import type {
   ContentBlock,
+  ServerToolBlock,
   StopReason,
   StreamEvent,
   TokenUsage,
+  ToolDefinition,
   ToolUseBlock,
   Transport,
   UnifiedMessage,
@@ -174,6 +176,8 @@ interface LiveStream extends Omit<StreamState, 'toolCalls'> {
   toolIndex: Map<number, PartialToolCall>;
   thinkingSignature?: string;
   redactedThinking: string[];
+  /** Provider-side tool blocks, in the order the provider ran them. */
+  serverTools: ServerToolBlock[];
   stopReason: StopReason;
   id?: string;
 }
@@ -213,6 +217,8 @@ function blocksOf(live: LiveStream): ContentBlock[] {
   for (const data of live.redactedThinking) {
     blocks.push({ type: 'thinking', text: '', redacted: data });
   }
+  // Before the text: the model searched and then wrote the answer from what it found.
+  blocks.push(...live.serverTools);
   if (live.text) blocks.push({ type: 'text', text: live.text });
   for (const call of live.toolIndex.values()) {
     let input: unknown = {};
@@ -1050,6 +1056,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     thinking: '',
     toolIndex: new Map(),
     redactedThinking: [],
+    serverTools: [],
     usage: {},
     droppedParams: [],
     stopReason: 'unknown',
@@ -1114,7 +1121,9 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     // memory switch is off. Read *before* the context strategy, because the memory
     // block is part of the prefix the history budget is computed against.
     const memoryBlock = useMemory.getState().promptBlock(conversation.config.memory);
-    const calibrationFactor = useCalibration.getState().factorFor(`${profile.id}::${model}`);
+    const calibrationKey = `${profile.id}::${model}`;
+    const calibrationFactor = useCalibration.getState().factorFor(calibrationKey);
+    const toolCalibrationFactor = useCalibration.getState().toolFactorFor(calibrationKey);
 
     // The skills this conversation switched on, resolved against what is installed.
     // Loaded on demand rather than assumed: the startup load is fire-and-forget, and
@@ -1161,7 +1170,9 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       signal: controller.signal,
       ...(memoryBlock.text ? { memory: memoryBlock.text } : {}),
       ...(skillCatalogue ? { skills: skillCatalogue } : {}),
+      ...(selection.tools.length ? { tools: selection.tools } : {}),
       calibration: calibrationFactor,
+      toolCalibration: toolCalibrationFactor,
     });
 
     if (changed) await get().reload(conversationId);
@@ -1198,6 +1209,12 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       ...(withheldNote ? { withheld: withheldNote } : {}),
       ...(selection.tools.length ? { tools: selection.tools } : {}),
     });
+    // Provider-side search is not part of the manifest: it is not a tool this app can
+    // answer, so offering it on a transport that cannot run it would leave the model
+    // calling into nothing. Anthropic only, and only when the user has switched it on.
+    if (profile.kind === 'anthropic' && getSetting('allowWebSearch')) {
+      request.serverTools = { webSearch: {} };
+    }
     // Breakpoints last, over the assembled request, and suppressed when history was
     // rewritten this turn: a rewritten prefix cannot be a cache hit, so asking for
     // a write would pay the 1.25× premium for an entry nothing will read.
@@ -1219,8 +1236,11 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
 
     // What the composer's gauge would have said about this exact prompt. Kept so the
     // gateway's own `prompt_tokens` can be compared against it below — the only
-    // ground truth this app ever gets about its estimator.
-    const estimatedPrompt = estimateRequestTokens(request).total;
+    // ground truth this app ever gets about its estimator. The tool share is kept
+    // separately so the manifest can be calibrated against the residual rather than
+    // being blended into one factor with prose it tokenizes nothing like.
+    const estimate = estimateRequestTokens(request);
+    const estimatedPrompt = estimate.total;
 
     let yielded = false;
     const consume = async (transport: Transport): Promise<void> => {
@@ -1341,7 +1361,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     // One labelled sample of how wrong the estimator is for this model. Only when
     // the gateway actually reported a prompt count — an absent one is not a zero.
     if (usage.input !== undefined) {
-      useCalibration.getState().record(`${profile.id}::${model}`, estimatedPrompt, usage.input);
+      useCalibration.getState().record(calibrationKey, estimatedPrompt, usage.input, estimate.tools);
     }
 
     const pricing = useModels.getState().get(`${profile.id}::${model}`)?.pricing;
@@ -1568,6 +1588,9 @@ function applyEvent(live: LiveStream, event: StreamEvent): void {
     }
     case 'tool_use_stop':
       break;
+    case 'server_tool':
+      live.serverTools.push(event.block);
+      break;
     case 'usage':
       live.usage = { ...live.usage, ...event.usage };
       break;
@@ -1601,8 +1624,19 @@ interface StrategyInput {
   memory?: string;
   /** The skill catalogue, for the same reason. */
   skills?: string;
+  /**
+   * The tool manifest this turn will carry, for the same reason again.
+   *
+   * `budget.ts` was written to count tools and was never handed any, so a
+   * conversation with two chatty MCP servers planned its history against a prefix
+   * tens of thousands of tokens smaller than the one that went on the wire — the
+   * exact failure `prefixCost` counting tools exists to prevent.
+   */
+  tools?: readonly ToolDefinition[];
   /** Correction factor for this model's estimator, from `@/stores/calibration`. */
   calibration?: number;
+  /** The same, measured against tool definitions rather than prose. */
+  toolCalibration?: number;
 }
 
 interface StrategyResult {
@@ -1667,7 +1701,9 @@ async function applyContextStrategy(input: StrategyInput): Promise<StrategyResul
     params,
     ...(conversation.config.reasoning ? { reasoning: conversation.config.reasoning } : {}),
     ...(system ? { system } : {}),
+    ...(input.tools?.length ? { tools: input.tools } : {}),
     ...(input.calibration ? { calibration: input.calibration } : {}),
+    ...(input.toolCalibration ? { toolCalibration: input.toolCalibration } : {}),
   });
 
   // With the ladder off, the two cheap steps are disabled by making them

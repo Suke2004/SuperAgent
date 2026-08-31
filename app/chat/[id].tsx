@@ -54,12 +54,12 @@ import {
 } from '@/components/ui';
 import { formatStopSequences, hasBlockingIssue, mergeParams, parseStopSequences, validateConfig } from '@/chat/request';
 import { replyReservation, sendConfirmation } from '@/chat/budget';
-import { buildCommandIndex, commandQuery, rankCommands } from '@/chat/commands';
+import { buildCommandIndex, buildMentionIndex, commandQuery, mentionQuery, rankCommands, replaceMention } from '@/chat/commands';
 import type { CommandItem } from '@/chat/commands';
 import { deleteGeneratedFile, listGeneratedFiles, shareGeneratedFile } from '@/chat/files';
 import type { GeneratedFile } from '@/chat/files';
 import { appendQuote, quoteMessage } from '@/chat/reference';
-import { captureImage, openAppSettings, pickDocuments, pickImages } from '@/chat/attach';
+import { attachExistingFile, captureImage, openAppSettings, pickDocuments, pickImages } from '@/chat/attach';
 import { documentCaveat, documentSupport, formatBytes, imageSupport, MAX_ATTACHMENTS_PER_MESSAGE } from '@/chat/attachments';
 import { useMemory } from '@/stores/memory';
 import type { ConfigIssue } from '@/chat/request';
@@ -219,6 +219,13 @@ export default function ChatScreen() {
       setNow(Date.now());
     }, []),
   );
+
+  // `@` offers generated files, so the list has to exist before the files sheet has
+  // ever been opened. A turn is the only thing that produces one, which makes the
+  // message count exactly the right trigger and not a poll.
+  useEffect(() => {
+    void listGeneratedFiles().then(setFiles);
+  }, [messages.length]);
 
   const profile = profiles.find((p) => p.id === conversation?.profileId);
   const model = conversation?.model ?? '';
@@ -500,6 +507,28 @@ export default function ChatScreen() {
   const commandMatches = useMemo(
     () => (query === null ? [] : rankCommands(commandItems, query, 8)),
     [commandItems, query],
+  );
+
+  /** Everything an `@` can bring into this conversation. Same rows, same ranking. */
+  const mentionItems = useMemo(
+    () =>
+      buildMentionIndex({
+        files: files.map((file) => ({ name: file.name, uri: file.uri, hint: formatBytes(file.bytes) })),
+        skills: installedSkills.map((skill) => ({ name: skill.name, description: skill.description })),
+        // Keyed on the name, not the row id: `config.servers` stores names, so this is
+        // the value the dispatch below has to put in it.
+        servers: mcpServers.map((server) => ({ id: server.name, name: server.name, hint: server.url })),
+      }),
+    [files, installedSkills, mcpServers],
+  );
+
+  // Only one list can be open, and a command wins: the draft cannot be both `/x` and
+  // a sentence ending in `@x`, but a query of `null` from either must not blank the
+  // other's rows while it is being typed.
+  const mention = query === null ? mentionQuery(draft) : null;
+  const mentionMatches = useMemo(
+    () => (mention === null ? [] : rankCommands(mentionItems, mention, 8)),
+    [mentionItems, mention],
   );
 
 
@@ -1104,6 +1133,49 @@ ${text}` : text);
   };
 
   /**
+   * Completes one mention.
+   *
+   * The name goes back into the draft in every branch — a mention is part of the
+   * sentence, so "summarise @report.md" has to still read as one. What varies is the
+   * side effect: a file is staged as an attachment, a skill or a server is switched on
+   * for the conversation. Deliberately the same dispatch a slash command uses for the
+   * latter two, so `@files` and `/files` cannot come to mean different things.
+   */
+  const runMention = (item: CommandItem): void => {
+    setDraft(id, replaceMention(useChat.getState().drafts[id] ?? '', item.name));
+
+    switch (item.kind) {
+      case 'file': {
+        const file = files.find((candidate) => candidate.uri === item.id);
+        if (!file) return;
+        // Same admission path as the picker, including the size ceiling: a file this
+        // app wrote is not exempt from what the request can carry.
+        void runPick(() =>
+          attachExistingFile(attachments, transport, caps, { uri: file.uri, name: file.name, size: file.bytes }),
+        );
+        return;
+      }
+
+      case 'skill':
+        if (!enabledSkills.includes(item.id)) {
+          void useChat.getState().setConfig(id, { skills: [...enabledSkills, item.id] });
+        }
+        return;
+
+      case 'server': {
+        const servers = conversation.config.servers ?? [];
+        if (!servers.includes(item.id)) {
+          void useChat.getState().setConfig(id, { servers: [...servers, item.id] });
+        }
+        return;
+      }
+
+      default:
+        return;
+    }
+  };
+
+  /**
    * Fetches an MCP prompt and puts it in the draft.
    *
    * Into the draft rather than straight into a send: a server-side template is
@@ -1309,6 +1381,7 @@ ${result.content}` : result.content);
         {/* Between the transcript and the composer: it is a menu over what is being
             typed, so it belongs against the input rather than over the conversation. */}
         <CommandBar items={commandMatches} onSelect={runCommand} />
+        <CommandBar items={mentionMatches} onSelect={runMention} prefix="@" />
         <Composer
           value={draft}
           onChangeText={(text) => setDraft(id, text)}

@@ -128,6 +128,11 @@ export function estimateBlockTokens(block: ContentBlock): number {
       return estimateTextTokens(block.name) + estimateTextTokens(safeJson(block.input)) + 8;
     case 'tool_result':
       return estimateTextTokens(block.content) + 8;
+    case 'server_tool':
+      // Replayed verbatim, so the JSON of the wire blocks is what is actually
+      // charged — search results are pages of text and easily the largest block
+      // in a turn that used one.
+      return estimateTextTokens(safeJson(block.raw)) + 8;
   }
 }
 

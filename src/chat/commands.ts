@@ -15,10 +15,17 @@
  * keyboard. The trigger is the whole draft being a single `/word` — which is what a
  * command is — and the moment a space or a second line appears, the draft is a
  * message again.
+ *
+ * **`@`-mentions share all of this.** A mention is the same list, the same ranking and
+ * the same rows over a different index — files, skills and servers — so it is
+ * {@link mentionQuery} plus {@link buildMentionIndex} here rather than a second engine
+ * next door. The one real difference is position: a command *is* the draft, while a
+ * mention is a word inside a sentence, so the trigger is the token being typed at the
+ * end of the draft and {@link replaceMention} puts the chosen name back in place of it.
  */
 
 /** Where a command came from, which decides what selecting it does. */
-export type CommandKind = 'app' | 'prompt' | 'skill' | 'mcp-prompt';
+export type CommandKind = 'app' | 'prompt' | 'skill' | 'mcp-prompt' | 'file' | 'server';
 
 export interface CommandItem {
   kind: CommandKind;
@@ -91,7 +98,14 @@ function score(item: CommandItem, query: string): number | null {
  * typed `/model` expecting the picker gets the picker even if a template is called
  * "model notes". Everything after that is the user's own material.
  */
-const KIND_ORDER: Record<CommandKind, number> = { app: 0, prompt: 1, skill: 2, 'mcp-prompt': 3 };
+const KIND_ORDER: Record<CommandKind, number> = {
+  app: 0,
+  prompt: 1,
+  file: 1,
+  skill: 2,
+  'mcp-prompt': 3,
+  server: 3,
+};
 
 /**
  * The list to show, best first.
@@ -196,4 +210,79 @@ export function buildCommandIndex(input: IndexInput): CommandItem[] {
 function firstLine(body: string): string {
   const line = body.split('\n').find((candidate) => candidate.trim().length > 0) ?? '';
   return line.trim().length > 80 ? `${line.trim().slice(0, 79)}…` : line.trim();
+}
+
+/* ------------------------------------------------------------------------- */
+/* Mentions                                                                   */
+/* ------------------------------------------------------------------------- */
+
+/**
+ * The mention being typed: `@` plus the word the caret is at the end of.
+ *
+ * Anchored to the end of the draft rather than to its start, because "summarise
+ * @report.md" is the whole point — a mention is a word in a sentence. Anchored to a
+ * word *boundary* on the left so an email address does not open the list: `a@b` has no
+ * whitespace before the `@` and is therefore not a mention. `@` on its own returns
+ * `''`, which opens the full list.
+ */
+const MENTION = /(^|\s)@([^\s@]*)$/;
+
+export function mentionQuery(draft: string): string | null {
+  const match = MENTION.exec(draft);
+  if (!match) return null;
+  const query = match[2] ?? '';
+  return query.length > MAX_QUERY ? null : query.toLowerCase();
+}
+
+/**
+ * Puts the chosen name in place of the token being typed.
+ *
+ * The mention *stays in the draft*, unlike a slash command which is consumed: the
+ * sentence has to still read as a sentence once the file is attached, and "summarise
+ * @report.md" is what the model should see. Selecting only completes the word.
+ */
+export function replaceMention(draft: string, name: string): string {
+  return draft.replace(MENTION, (_match, lead: string) => `${lead}@${name} `);
+}
+
+export interface MentionInput {
+  /** Files this app has produced, newest first. */
+  files: readonly { name: string; uri: string; hint?: string }[];
+  skills: readonly { name: string; description: string }[];
+  servers: readonly { id: string; name: string; hint?: string }[];
+}
+
+/**
+ * The mention index: things that can be *brought into* a conversation.
+ *
+ * Files first, because a file is the one entry that acts on this message rather than
+ * on the conversation, and it is the reason someone reaches for `@`. Skills and
+ * servers are the same dispatch as their slash entries — switched on for the
+ * conversation, not pasted — so `@` and `/` cannot disagree about what a name means.
+ */
+export function buildMentionIndex(input: MentionInput): CommandItem[] {
+  const items: CommandItem[] = [
+    ...input.files.map((file) => ({
+      kind: 'file' as const,
+      id: file.uri,
+      name: commandName(file.name),
+      label: file.name,
+      ...(file.hint !== undefined ? { hint: file.hint } : {}),
+    })),
+    ...input.skills.map((skill) => ({
+      kind: 'skill' as const,
+      id: skill.name,
+      name: skill.name,
+      label: skill.name,
+      hint: skill.description,
+    })),
+    ...input.servers.map((server) => ({
+      kind: 'server' as const,
+      id: server.id,
+      name: commandName(server.name),
+      label: server.name,
+      ...(server.hint !== undefined ? { hint: server.hint } : {}),
+    })),
+  ];
+  return uniqueNames(items);
 }

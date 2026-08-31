@@ -11,18 +11,34 @@ into a feature.
 
 ## Status — 2026-08-31
 
-Everything in Part 3 items 1–7 is implemented and on green gates (`pnpm gates`: typecheck, lint,
-1245 tests, coverage thresholds). See [CHANGELOG.md](CHANGELOG.md) `[Unreleased]` for the
-user-facing list. Two things named below deliberately did **not** land:
+Everything in Part 3, items 1–8, is implemented and on green gates (`pnpm gates`: typecheck, lint,
+1281 tests, coverage thresholds). See [CHANGELOG.md](CHANGELOG.md) `[Unreleased]` for the
+user-facing list. Nothing on this list was deferred.
 
-- **Item 8, web search.** It is a server-side tool on the Anthropic path, which means a new block
-  kind that has to survive the round trip (`server_tool_use`, `web_search_tool_result`, and
-  `citations` on text blocks) plus a source list in the transcript — transport, store and renderer,
-  not a `resolveCall` branch. `fetch_url` covers "read this page" today. v1.2.
-- **`@`-mentions.** `/` already reaches skills, servers, prompts and app commands through the same
-  index; a second trigger over the same list is a second thing to learn, not a second capability.
-- **`estimateToolTokens` calibration.** Still uncalibrated. Worth one sample per turn, but the
-  manifest is now budget-fitted, which was the failure the calibration was meant to catch.
+How the last three landed, since they are the ones with a design worth recording:
+
+- **Item 8, web search.** A server-side tool on the Anthropic path, so it needed a new block kind
+  that survives the round trip. `ServerToolBlock` carries the provider's `server_tool_use` and
+  `web_search_tool_result` frames **verbatim** in `raw`, plus a derived summary and source list for
+  the transcript. Verbatim is load-bearing rather than tidy: the API rejects a result block whose
+  `tool_use_id` no longer matches the call before it, so a normalised copy would make every *later*
+  request in that conversation a 400. A pair whose arguments were cut off mid-stream is shown but
+  replayed as nothing, for the same reason. The tool definition is prepended to `body.tools` so the
+  `cache_control` marker stays on the last entry and the cached prefix keeps its bytes. Off by
+  default behind `allowWebSearch`, Anthropic profiles only — it is billed per search, and search
+  results are untrusted text entering the window, the same injection surface as `fetch_url`.
+  `citations` on text blocks is still not implemented; sources come from the result block instead,
+  which is what the source list needs.
+- **`@`-mentions.** Built as one engine rather than two: `CommandKind` gained `file` and `server`,
+  and `rankCommands`, `uniqueNames` and `CommandBar` are shared with `/` behind a `prefix` prop. The
+  one real difference is position — a command *is* the draft, a mention is a word inside a sentence —
+  so it lives in a single anchored regex, and `ada@example` does not open the list. `@file` reuses
+  the picker's whole admission path, size ceiling included.
+- **`estimateToolTokens` calibration.** Fixed a larger bug behind it: `planTurn`'s only caller was
+  never passed `tools` at all, so the manifest was excluded from the history budget entirely,
+  contradicting `budget.ts`'s own rationale. Tools now flow into the budget, and are corrected by
+  their own residual-derived factor rather than the prose one — JSON tokenizing badly says nothing
+  about English. The factor falls back to the blended one until there is enough evidence to measure.
 
 One correction to §3 below: a truncated arguments blob is **refused with an error result**, not
 retried. The app cannot reconstruct JSON it never received, and a retry loop over a truncated
@@ -193,12 +209,12 @@ Reference surface: the Claude apps plus Claude Code, since the request is "every
 | **Slash commands** | ❌ | §1 |
 | **File / document generation** | ❌ | §2 |
 | **Voice input** | ❌ | §6 |
-| **Web search with citations** | ❌ | v1.1 — server-side tool on the Anthropic path, or an MCP search server |
+| **Web search** | ✅ v1.1 — Anthropic server-side tool, off by default, source list in the transcript | Citations on text blocks not done; sources come from the result block |
 | **Web fetch (read a URL)** | ❌ | v1.1 — cheapest real tool to add; one `fetch`, a size cap, HTML→text |
 | **Artifacts** (rendered HTML/SVG/code preview) | ❌ | v1.2 — `react-native-webview`, sandboxed, no network |
 | **Analysis tool** (run code) | ❌ | v1.2, see §4 |
 | **Projects** (grouped chats + shared knowledge) | ⚠ tags + pins only | v1.2 — a project is a tag with a system prompt and a document set |
-| **@-mentions** of files, skills, connectors | ⚠ quote-a-message only | v1.1, same index as `/` |
+| **@-mentions** of files, skills, connectors | ✅ v1.1 | Same index and ranking as `/`, one anchored regex apart |
 | **MCP prompts usable, not just listed** | ⚠ list only | §1 |
 | **MCP resources readable by the model** | ⚠ `resources/read` exists, unused by the loop | v1.1 — expose as a built-in tool |
 | **Subagents / task delegation** | ❌ | Not v1.1. Two models on one phone battery is a different product. |
@@ -226,7 +242,8 @@ Reference surface: the Claude apps plus Claude Code, since the request is "every
   a 40-second MCP call shows nothing. With more tools this becomes the most-seen state in the app.
 - **`estimateToolTokens` gets no calibration.** Text estimates are corrected against the
   gateway's reported counts (`useCalibration`); the tool manifest — soon the largest part of the
-  prompt — is not. Worth one sample per turn.
+  prompt — is not. Worth one sample per turn. *(Fixed in v1.1: its own residual-derived factor,
+  and the manifest now reaches the history budget at all. See Status above.)*
 
 ---
 
@@ -252,8 +269,7 @@ Each numbered item is shippable on its own and each ends on green gates
    them, resources pagination.
 8. **Web search**, once 3 proves the tool path.
 
-Items 1–5 are v1.1. Items 6–8 are v1.1 if they land, v1.2 if they do not. Everything marked v1.2
-in the table above is out of scope here.
+Items 1–8 all landed in v1.1. Everything marked v1.2 in the table above is out of scope here.
 
 ## Part 4 — Not building, and why
 

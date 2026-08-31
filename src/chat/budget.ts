@@ -59,6 +59,15 @@ export interface TurnBudgetInput {
    * runs 15% above them here too.
    */
   calibration?: number;
+  /**
+   * The same, for tool definitions.
+   *
+   * Separate because a tool manifest is punctuation-dense JSON and the prose
+   * estimator's characters-per-token assumption does not hold on it. Defaults to
+   * {@link calibration}, which is what tools were multiplied by before the residual
+   * measurement existed.
+   */
+  toolCalibration?: number;
   margin?: number;
 }
 
@@ -106,10 +115,11 @@ export function replyReservation(params: SamplingParams, reasoning?: ReasoningCo
 /** What the immovable parts of the request cost. */
 export function prefixCost(input: TurnBudgetInput): PrefixCost {
   const factor = input.calibration && input.calibration > 0 ? input.calibration : 1;
+  const toolFactor = input.toolCalibration && input.toolCalibration > 0 ? input.toolCalibration : factor;
   const system = Math.round(estimateTextTokens(input.system ?? '') * factor);
   let tools = 0;
   for (const tool of input.tools ?? []) tools += estimateToolTokens(tool);
-  tools = Math.round(tools * factor);
+  tools = Math.round(tools * toolFactor);
   return { system, tools, framing: REQUEST_OVERHEAD, total: system + tools + REQUEST_OVERHEAD };
 }
 

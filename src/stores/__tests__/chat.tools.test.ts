@@ -197,7 +197,7 @@ jest.mock('@/stores/models', () => ({
   useModels: { getState: () => ({ get: () => undefined }) },
 }));
 jest.mock('@/stores/calibration', () => ({
-  useCalibration: { getState: () => ({ factorFor: () => undefined, record: jest.fn() }) },
+  useCalibration: { getState: () => ({ factorFor: () => undefined, toolFactorFor: () => undefined, record: jest.fn() }) },
 }));
 jest.mock('@/stores/memory', () => ({
   useMemory: {

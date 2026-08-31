@@ -27,6 +27,13 @@ and is marked **needs a rebuild** below.
   as editable text rather than being sent. Declares `RECORD_AUDIO` and the
   speech-recognition permission strings. **Needs a rebuild**
   (`expo-speech-recognition`).
+- **`@`-mentions** — `@` in the composer offers generated files, installed skills and
+  connected MCP servers over the same index and ranking as `/`. A file mention attaches
+  through the picker's own admission path, size ceiling included.
+- **Web search** — on Anthropic profiles the model can search the web on the
+  provider's side, with the query and the pages it found shown under the reply and each
+  source openable. Off by default: it is billed per search, and search results are
+  untrusted text entering the context window.
 
 ### Changed
 
@@ -41,6 +48,12 @@ and is marked **needs a rebuild** below.
   message to be sent again.
 
 ### Fixed
+
+- The tool manifest was left out of the turn's history budget entirely — `planTurn` was
+  written to count it and was never handed it — so a conversation with two chatty MCP
+  servers planned its history against a prefix tens of thousands of tokens smaller than
+  the one that went on the wire. Tool definitions are now counted, and corrected by
+  their own measured factor rather than the one derived from prose.
 
 - Image and audio content returned by an MCP tool reached the model as the sentence
   "[image: …, not shown]". It is now passed through as a real image block on

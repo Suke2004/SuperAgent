@@ -90,7 +90,42 @@ export type ContentBlock =
   | DocumentBlock
   | ThinkingBlock
   | ToolUseBlock
-  | ToolResultBlock;
+  | ToolResultBlock
+  | ServerToolBlock;
+
+/**
+ * A tool the *provider* ran, kept verbatim so it can be replayed.
+ *
+ * Web search on the Anthropic path is not a tool this app executes: the model calls
+ * it server-side and the results come back inside the same stream as
+ * `server_tool_use` / `web_search_tool_result` blocks. Two things follow, and both are
+ * why this block exists rather than the results being flattened into text.
+ *
+ *  1. **It has to round-trip byte-for-byte.** A later turn replays the assistant's
+ *     content, and the API rejects a `web_search_tool_result` whose `tool_use_id` no
+ *     longer matches a `server_tool_use` — or that has been rewritten into prose. So
+ *     `raw` is the wire block untouched, and the adapter that produced it hands it
+ *     straight back.
+ *  2. **Only its own transport can send it.** The OpenAI path has no such block, and
+ *     forwarding one would be a schema error on a message the user cannot edit. The
+ *     `transport` field is what every adapter checks before replaying.
+ *
+ * `summary` and `sources` are the app's own reading of `raw`, for the transcript.
+ * Derived once at translation time rather than re-parsed by the renderer, because the
+ * shape is the provider's and this is the file that knows it.
+ */
+export interface ServerToolBlock {
+  type: 'server_tool';
+  transport: TransportKind;
+  /** What the provider ran, e.g. `web_search`. */
+  name: string;
+  /** The wire blocks, verbatim and in order. Never rewritten. */
+  raw: Record<string, unknown>[];
+  /** One line for the transcript, e.g. `Searched the web for "expo sdk 57"`. */
+  summary?: string;
+  /** Pages the search returned, for the source list under the message. */
+  sources?: { title?: string; url: string }[];
+}
 
 export type UnifiedRole = 'user' | 'assistant';
 
@@ -111,6 +146,21 @@ export interface ToolDefinition {
 }
 
 export type ToolChoice = { type: 'auto' } | { type: 'none' } | { type: 'any' } | { type: 'tool'; name: string };
+
+/**
+ * Tools the *provider* runs, rather than ones this app executes.
+ *
+ * Kept apart from {@link ToolDefinition} because there is no schema to send and no
+ * result to return: the provider is told the tool exists by name and version, and the
+ * calls and their results arrive inside the reply. A transport with no equivalent
+ * ignores this field, which is why it is not a `ToolDefinition` with a magic name —
+ * that would put a tool in the manifest that the model could call and nothing could
+ * answer.
+ */
+export interface ServerTools {
+  /** Anthropic path only. `maxUses` caps searches per turn; the API defaults to 5. */
+  webSearch?: { maxUses?: number };
+}
 
 /* -------------------------------------------------------------------------- */
 /* Sampling and reasoning                                                      */
@@ -212,6 +262,8 @@ export interface ChatRequest {
   reasoning?: ReasoningConfig;
   tools?: ToolDefinition[];
   toolChoice?: ToolChoice;
+  /** Tools the provider runs itself. See {@link ServerTools}. */
+  serverTools?: ServerTools;
   /** Prompt-cache breakpoints. See {@link CacheMarks}. */
   cache?: CacheMarks;
   /** Per-model wire quirks. See {@link WireHints}. */
@@ -263,6 +315,13 @@ export type StreamEvent =
   | { type: 'tool_use_start'; index: number; id: string; name: string }
   | { type: 'tool_use_delta'; index: number; partialJson: string }
   | { type: 'tool_use_stop'; index: number }
+  /**
+   * A tool the provider ran and answered on its own, already whole.
+   *
+   * One event rather than start/delta/stop: nothing streams usefully out of a search
+   * result, and the app has no half-state to show. See {@link ServerToolBlock}.
+   */
+  | { type: 'server_tool'; block: ServerToolBlock }
   | { type: 'usage'; usage: Partial<TokenUsage> }
   | { type: 'stop'; reason: StopReason }
   /**
@@ -406,6 +465,7 @@ export function createResultAccumulator(): {
   let thinking = '';
   let signature: string | undefined;
   const redacted: string[] = [];
+  const serverTools: ServerToolBlock[] = [];
   const toolCalls = new Map<number, { id: string; name: string; json: string }>();
 
   return {
@@ -426,6 +486,9 @@ export function createResultAccumulator(): {
           break;
         case 'redacted_thinking':
           redacted.push(event.data);
+          break;
+        case 'server_tool':
+          serverTools.push(event.block);
           break;
         case 'tool_use_start': {
           // Non-destructive, like `start` above. Some gateways repeat the call id
@@ -474,6 +537,9 @@ export function createResultAccumulator(): {
       for (const blob of redacted) {
         content.push({ type: 'thinking', text: '', redacted: blob });
       }
+      // Before the text, which is the order they happened in: the model searched and
+      // then wrote the answer.
+      content.push(...serverTools);
       if (text) content.push({ type: 'text', text });
       for (const [, call] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
         content.push({
