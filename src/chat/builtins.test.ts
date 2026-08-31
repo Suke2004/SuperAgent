@@ -10,6 +10,7 @@ import {
   parsePdf,
   parseWriteFile,
   READ_RESOURCE,
+  RUN_CODE,
   safeBasename,
   WRITE_FILE,
 } from '@/chat/builtins';
@@ -180,10 +181,15 @@ describe('builtinTools', () => {
     expect((tool?.inputSchema.properties as Record<string, { enum?: string[] }>).uri?.enum).toEqual(['file:///a']);
   });
 
+  it('offers the sandbox only when it is switched on', () => {
+    expect(builtinTools({ web: false, resources: [] }).map((t) => t.name)).not.toContain(RUN_CODE);
+    expect(builtinTools({ web: false, code: true, resources: [] }).map((t) => t.name)).toContain(RUN_CODE);
+  });
+
   it('declares every name the loop dispatches on', () => {
     // The bug this catches: adding a tool here and forgetting the loop's own list, so
     // the model is offered a tool that comes back "unknown tool".
-    const all = builtinTools({ web: true, resources: ['file:///a'] }).map((tool) => tool.name);
+    const all = builtinTools({ web: true, code: true, resources: ['file:///a'] }).map((tool) => tool.name);
     expect([...all].sort()).toEqual([...BUILTIN_TOOL_NAMES].sort());
   });
 });

@@ -57,11 +57,14 @@ import {
   parsePdf,
   parseWriteFile,
   READ_RESOURCE,
+  RUN_CODE,
   WRITE_FILE,
 } from '@/chat/builtins';
+import { parseRunCode, runInSandbox } from '@/chat/sandbox';
 import { writeGeneratedFile, writePdf } from '@/chat/files';
 import { fetchAsText } from '@/chat/web';
 import { describeWithheldTools, selectTools } from '@/chat/tools';
+import { blockedInPlanMode, describeBlockedCalls, planRefusal } from '@/chat/plan';
 import { INVOKE_SKILL, invokeSkillTool, renderSkillCatalogue, resolveSkillCall } from '@/chat/skill';
 import type { Skill } from '@/chat/skill';
 import { MCP_TOOL_PREFIX } from '@/mcp/protocol';
@@ -71,6 +74,7 @@ import { reportedUsage } from '@/chat/usage';
 import { describeTrim, trimToBudget } from '@/chat/trim';
 import type { TrimReport } from '@/chat/trim';
 import { planCacheForRequest } from '@/chat/cache';
+import { projectSystemPrompt } from '@/chat/project';
 import { invalidateTransports, resolveTransport } from '@/lib/gateway';
 import { log } from '@/lib/log';
 import { estimateRequestTokens } from '@/lib/tokens';
@@ -80,6 +84,7 @@ import { activeProfile, useProviders } from '@/stores/providers';
 import { useMemory } from '@/stores/memory';
 import { useSkills } from '@/stores/skills';
 import { useMcp } from '@/stores/mcp';
+import { useProjects } from '@/stores/projects';
 import { useReachability } from '@/stores/reachability';
 import { useSendQueue } from '@/stores/queue';
 import { getSetting } from '@/stores/settings';
@@ -87,6 +92,7 @@ import { GatewayError } from '@/transports/errors';
 import { summariseFailure } from '@/transports/index';
 import type { ModelCapabilities } from '@/transports/support';
 import type {
+  Citation,
   ContentBlock,
   ServerToolBlock,
   StopReason,
@@ -178,6 +184,8 @@ interface LiveStream extends Omit<StreamState, 'toolCalls'> {
   redactedThinking: string[];
   /** Provider-side tool blocks, in the order the provider ran them. */
   serverTools: ServerToolBlock[];
+  /** Sources the provider says it used, de-duplicated as they arrive. */
+  citations: Citation[];
   stopReason: StopReason;
   id?: string;
 }
@@ -219,7 +227,9 @@ function blocksOf(live: LiveStream): ContentBlock[] {
   }
   // Before the text: the model searched and then wrote the answer from what it found.
   blocks.push(...live.serverTools);
-  if (live.text) blocks.push({ type: 'text', text: live.text });
+  if (live.text) {
+    blocks.push({ type: 'text', text: live.text, ...(live.citations.length ? { citations: live.citations } : {}) });
+  }
   for (const call of live.toolIndex.values()) {
     let input: unknown = {};
     try {
@@ -309,7 +319,7 @@ export interface ChatState {
   open(conversationId: string): Promise<void>;
   reload(conversationId: string): Promise<void>;
 
-  start(init?: { title?: string; model?: string; profileId?: string }): Promise<string>;
+  start(init?: { title?: string; model?: string; profileId?: string; projectId?: string }): Promise<string>;
   rename(conversationId: string, title: string): Promise<void>;
   setSystemPrompt(conversationId: string, prompt: string): Promise<void>;
   setModel(conversationId: string, model: string): Promise<void>;
@@ -322,6 +332,8 @@ export interface ChatState {
    */
   setProfile(conversationId: string, profileId: string): Promise<void>;
   setConfig(conversationId: string, patch: Partial<ConversationConfig>): Promise<void>;
+  /** Moves a conversation into a project, or out of one with `undefined`. */
+  setProject(conversationId: string, projectId: string | undefined): Promise<void>;
   setPinned(conversationId: string, pinned: boolean): Promise<void>;
   /**
    * Moves a conversation out of the list without destroying it.
@@ -462,6 +474,7 @@ export const useChat = create<ChatState>()((set, get) => ({
       profileId: resolved.id,
       model: init?.model ?? resolved.defaultModel,
       ...(init?.title ? { title: init.title } : {}),
+      ...(init?.projectId ? { projectId: init.projectId } : {}),
       ...(seedPrompt ? { systemPrompt: seedPrompt } : {}),
     });
     set((state) => ({
@@ -502,6 +515,11 @@ export const useChat = create<ChatState>()((set, get) => ({
     const config = { ...current.config, ...patch };
     await updateConversation(conversationId, { config });
     patchConversation(set, conversationId, { config });
+  },
+
+  async setProject(conversationId, projectId) {
+    await updateConversation(conversationId, { projectId: projectId ?? null });
+    patchConversation(set, conversationId, projectId ? { projectId } : { projectId: undefined });
   },
 
   async setPinned(conversationId, pinned) {
@@ -903,6 +921,8 @@ interface ResolvedCall {
   images?: { mediaType: string; data: string }[];
   /** A file this call produced, for the transcript and the files list. */
   file?: { name: string; uri: string; bytes: number };
+  /** True when plan mode refused the call, for the note above the composer. */
+  blocked?: true;
 }
 
 /**
@@ -916,6 +936,7 @@ async function resolveCall(
   call: ToolUseBlock,
   skills: readonly Skill[],
   servers: readonly string[] | undefined,
+  planMode = false,
 ): Promise<ResolvedCall> {
   // A truncated arguments blob never reaches a tool. `blocksOf` keeps it verbatim as
   // evidence the stream was cut off, and forwarding it would send a server
@@ -927,10 +948,14 @@ async function resolveCall(
       isError: true,
     };
   }
+  // Before the routing, not inside each branch: a gate the user switched on has to
+  // hold for every tool, including one added later that nobody thought to gate.
+  if (planMode && blockedInPlanMode(call.name)) return { content: planRefusal(call.name), isError: true, blocked: true };
   if (call.name === INVOKE_SKILL) return resolveSkillCall(call.input, skills);
   if (call.name === WRITE_FILE) return resolveWriteFile(call.input);
   if (call.name === CREATE_PDF) return resolvePdf(call.input);
   if (call.name === FETCH_URL) return resolveFetch(call.input);
+  if (call.name === RUN_CODE) return resolveRunCode(call.input);
   if (call.name === READ_RESOURCE) return resolveResource(call.input, servers);
   if (call.name.startsWith(`${MCP_TOOL_PREFIX}_`)) return useMcp.getState().invoke(call.name, call.input, servers);
   return { content: `There is no tool called "${call.name}".`, isError: true };
@@ -990,6 +1015,30 @@ async function resolveFetch(input: unknown): Promise<ResolvedCall> {
 }
 
 /**
+ * Runs the model's code in the sandbox, if the user has switched it on.
+ *
+ * Re-reads the setting for the same reason `resolveFetch` does. Output is returned even
+ * when the program threw: a stack trace is the most useful thing the model can be given
+ * to fix its own code, and "it failed" is not.
+ */
+async function resolveRunCode(input: unknown): Promise<ResolvedCall> {
+  if (!getSetting('allowRunCode')) {
+    return {
+      content:
+        'Running code is switched off in this app (Settings → Built-in tools). Ask the user to turn it on if the task needs it.',
+      isError: true,
+    };
+  }
+  const request = parseRunCode(input);
+  if (!request.ok) return { content: request.reason, isError: true };
+  const result = await runInSandbox(request.code);
+  if (!result.ok) {
+    return { content: result.output || 'The code produced no output and did not finish cleanly.', isError: true };
+  }
+  return { content: result.output || 'The code ran and printed nothing.' };
+}
+
+/**
  * Reads an MCP resource, or lists what there is.
  *
  * Calling with no URI lists rather than failing: the enum in the schema can be long
@@ -1046,6 +1095,8 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
   const model = options.modelOverride ?? conversation.model;
   const capabilities = capabilitiesFor(profile.id, model);
   const wireHints = wireHintsFor(profile.id, model);
+  /** Read once per turn: a toggle flipped mid-stream must not half-apply. */
+  const planMode = conversation.config.planMode === true;
 
   const live: LiveStream = {
     conversationId,
@@ -1057,6 +1108,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     toolIndex: new Map(),
     redactedThinking: [],
     serverTools: [],
+    citations: [],
     usage: {},
     droppedParams: [],
     stopReason: 'unknown',
@@ -1125,6 +1177,14 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     const calibrationFactor = useCalibration.getState().factorFor(calibrationKey);
     const toolCalibrationFactor = useCalibration.getState().toolFactorFor(calibrationKey);
 
+    // The project, for the same reason and read at the same point: its instructions
+    // and documents are part of the prefix the history budget is computed against.
+    if (conversation.projectId && !useProjects.getState().loaded) await useProjects.getState().load();
+    const systemPrompt = projectSystemPrompt(
+      useProjects.getState().byId(conversation.projectId),
+      conversation.systemPrompt,
+    );
+
     // The skills this conversation switched on, resolved against what is installed.
     // Loaded on demand rather than assumed: the startup load is fire-and-forget, and
     // a send during the first second of the app's life would otherwise silently get
@@ -1149,6 +1209,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       ...(enabledSkills.length ? [invokeSkillTool(enabledSkills)] : []),
       ...builtinTools({
         web: getSetting('allowWebFetch'),
+        code: getSetting('allowRunCode'),
         resources: useMcp.getState().resources(conversation.config.servers).map((resource) => resource.uri),
       }),
       ...bridged.map((tool) => tool.definition),
@@ -1168,6 +1229,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       live,
       publish,
       signal: controller.signal,
+      ...(systemPrompt ? { systemPrompt } : {}),
       ...(memoryBlock.text ? { memory: memoryBlock.text } : {}),
       ...(skillCatalogue ? { skills: skillCatalogue } : {}),
       ...(selection.tools.length ? { tools: selection.tools } : {}),
@@ -1201,7 +1263,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       capabilities,
       wireHints,
       config: conversation.config,
-      ...(conversation.systemPrompt ? { systemPrompt: conversation.systemPrompt } : {}),
+      ...(systemPrompt ? { systemPrompt } : {}),
       messages,
       ...(summary ? { summary } : {}),
       ...(memoryBlock.text ? { memory: memoryBlock.text } : {}),
@@ -1327,7 +1389,8 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       const asks = (call: ToolUseBlock): boolean =>
         call.name.startsWith(`${MCP_TOOL_PREFIX}_`) &&
         useMcp.getState().needsApproval(call.name, conversation.config.servers);
-      const resolve = (call: ToolUseBlock) => resolveCall(call, enabledSkills, conversation.config.servers);
+      const resolve = (call: ToolUseBlock) =>
+        resolveCall(call, enabledSkills, conversation.config.servers, planMode);
 
       const settled = new Map<string, ResolvedCall>();
       await Promise.all(
@@ -1343,6 +1406,11 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       }
       live.phase = 'saving';
       publish(true);
+
+      // Said out loud, because the difference between "the model planned" and "the
+      // model did it" is not visible in a transcript that reads the same either way.
+      const blockedNote = describeBlockedCalls(invocations.filter((i) => i.result.blocked).length);
+      if (blockedNote) setContextNote(set, conversationId, blockedNote);
     }
     const invoked = invocations.map((i) => i.result.name).filter((name): name is string => Boolean(name));
     if (invoked.length) meta.skillsInvoked = invoked;
@@ -1591,6 +1659,13 @@ function applyEvent(live: LiveStream, event: StreamEvent): void {
     case 'server_tool':
       live.serverTools.push(event.block);
       break;
+    case 'citation':
+      // Same de-dupe as the transport accumulator: a provider cites one page for
+      // several consecutive sentences, and eight identical rows is not a source list.
+      if (!live.citations.some((existing) => existing.url === event.citation.url)) {
+        live.citations.push(event.citation);
+      }
+      break;
     case 'usage':
       live.usage = { ...live.usage, ...event.usage };
       break;
@@ -1620,6 +1695,15 @@ interface StrategyInput {
   live: LiveStream;
   publish(force?: boolean): void;
   signal: AbortSignal;
+  /**
+   * The conversation's prompt with its project folded in, when there is one.
+   *
+   * Passed rather than read off `conversation`, because the project's instructions and
+   * documents are part of the prefix the request will carry: budgeting against the
+   * conversation's own prompt alone is how a project with 40k characters of knowledge
+   * plans a history that does not fit.
+   */
+  systemPrompt?: string;
   /** The rendered memory block, so the budget counts what the request will carry. */
   memory?: string;
   /** The skill catalogue, for the same reason. */
@@ -1694,7 +1778,7 @@ async function applyContextStrategy(input: StrategyInput): Promise<StrategyResul
   // The same prefix the request will actually carry — prompt, memory, skills and
   // summary — rather than the prompt alone. Counting less than is sent is how a
   // budget declared roomy produces a request over the window.
-  const system = composeSystem(conversation.systemPrompt, previousSummary, input.memory, input.skills);
+  const system = composeSystem(input.systemPrompt ?? conversation.systemPrompt, previousSummary, input.memory, input.skills);
   const budget = planTurn({
     transport: 'anthropic',
     contextWindow: capabilities.contextWindow,

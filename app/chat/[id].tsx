@@ -29,6 +29,7 @@ import { Alert, Modal, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { OfflineBadge, OfflineBanner } from '@/components/OfflineBanner';
+import { CodeSandbox } from '@/components/CodeSandbox';
 import { useDialogKeys } from '@/components/dialog';
 import { PromptSheet, Sheet } from '@/components/Sheet';
 import { Sidebar } from '@/components/Sidebar';
@@ -91,6 +92,7 @@ import { useSkills } from '@/stores/skills';
 import { useMcp } from '@/stores/mcp';
 import { describeArguments } from '@/mcp/protocol';
 import { usePrompts } from '@/stores/prompts';
+import { useProjects } from '@/stores/projects';
 import { fillPrompt, variablesIn } from '@/chat/prompts';
 import type { Prompt as LibraryPrompt } from '@/chat/prompts';
 import { availableEfforts, controlSupport } from '@/transports/support';
@@ -138,10 +140,12 @@ export default function ChatScreen() {
   const mcpServers = useMcp((s) => s.servers);
   const pendingApproval = useMcp((s) => s.pending[0] ?? null);
   const library = usePrompts((s) => s.prompts);
+  const projects = useProjects((s) => s.projects);
   const entries = useModels((s) => s.entries);
   const showThinkingByDefault = useSettings((s) => s.showThinkingByDefault);
   const memoryEnabled = useSettings((s) => s.memoryEnabled);
   const contextStrategy = useSettings((s) => s.contextStrategy);
+  const allowRunCode = useSettings((s) => s.allowRunCode);
 
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -152,6 +156,7 @@ export default function ChatScreen() {
   const [profileMenu, setProfileMenu] = useState(false);
   const [skillMenu, setSkillMenu] = useState(false);
   const [serverMenu, setServerMenu] = useState(false);
+  const [projectMenu, setProjectMenu] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   /** The template being filled in, and what has been typed for its variables. */
   /**
@@ -877,6 +882,8 @@ ${text}` : text);
     },
   ];
 
+  const currentProject = projects.find((project) => project.id === conversation.projectId);
+
   const conversationActions: SheetAction[] = [
     {
       label: 'System prompt',
@@ -897,6 +904,15 @@ ${text}` : text);
       onPress: openModelControls,
     },
     {
+      // A toggle rather than a screen: it has one state, and burying a safety gate
+      // behind another sheet is how it stops being used.
+      label: conversation.config.planMode ? 'Plan mode: on — turn it off' : 'Plan mode: off — turn it on',
+      subtitle: conversation.config.planMode
+        ? 'The model plans and reads, but writing files and MCP tools are refused.'
+        : 'Ask the model to propose before it acts. Reading still works.',
+      onPress: () => void useChat.getState().setConfig(id, { planMode: !conversation.config.planMode }),
+    },
+    {
       label: 'Skills',
       subtitle:
         (conversation.config.skills ?? []).length > 0
@@ -915,6 +931,18 @@ ${text}` : text);
             ? 'None on for this conversation'
             : 'None added yet — Settings → MCP servers',
       onPress: () => setServerMenu(true),
+    },
+    {
+      label: 'Project',
+      subtitle: currentProject
+        ? `${currentProject.name} — its instructions and documents are in every turn`
+        : projects.length
+          ? 'Not in a project'
+          : 'None yet — Settings → Projects',
+      onPress: () => {
+        void useProjects.getState().load();
+        setProjectMenu(true);
+      },
     },
     { label: 'Rename', subtitle: conversation.title, onPress: () => setPrompt({ kind: 'rename' }) },
     {
@@ -1001,6 +1029,32 @@ ${text}` : text);
         }),
     };
   });
+
+  // "None" first and always present: taking a conversation out of a project has to be
+  // as reachable as putting it in one, and it is the option a mis-tap needs.
+  const projectActions: SheetAction[] = [
+    {
+      label: 'No project',
+      subtitle: currentProject ? 'Takes this conversation out — the project itself stays' : 'Current',
+      onPress: () => {
+        void useChat.getState().setProject(id, undefined);
+        setProjectMenu(false);
+      },
+    },
+    ...projects.map((project) => ({
+      label: project.name,
+      subtitle:
+        project.id === conversation.projectId
+          ? 'Current'
+          : project.knowledge.length
+            ? `${project.knowledge.length} document${project.knowledge.length === 1 ? '' : 's'}`
+            : 'Instructions only',
+      onPress: () => {
+        void useChat.getState().setProject(id, project.id);
+        setProjectMenu(false);
+      },
+    })),
+  ];
 
   const libraryActions: SheetAction[] = library.map((prompt) => {
     const variables = variablesIn(prompt.body);
@@ -1610,6 +1664,22 @@ ${result.content}` : result.content);
         onClose={() => setServerMenu(false)}
       />
 
+      <Sheet
+        visible={projectMenu}
+        title="Project"
+        body={
+          projects.length
+            ? 'A project’s instructions and documents are added to every turn of every conversation in it. Moving this conversation changes what the next message carries, not what has already been said.'
+            : 'A project groups conversations around one piece of work and gives them shared instructions and documents. Make one in Settings → Projects.'
+        }
+        actions={
+          projects.length
+            ? projectActions
+            : [{ label: 'Open Settings → Projects', onPress: () => router.push('/settings/projects') }]
+        }
+        onClose={() => setProjectMenu(false)}
+      />
+
       {/* The approval gate. The turn is blocked on this answer, so it is not
           dismissible by tapping away: closing without deciding would leave the model
           waiting on a question nothing will ever answer. The arguments are shown in
@@ -1894,6 +1964,12 @@ ${result.content}` : result.content);
           </View>
         </View>
       </Modal>
+
+      {/* One host per screen, not one per message: the queue in `@/chat/sandbox` is
+          keyed by run id, so a second WebView would just be a second engine nobody
+          routes to. Mounted only while the tool is switched on — an idle WebView is
+          a process. */}
+      {allowRunCode ? <CodeSandbox /> : null}
     </View>
   );
 }

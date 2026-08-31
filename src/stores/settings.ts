@@ -57,6 +57,16 @@ export interface SettingsState {
    * inside the provider and only the transcript comes back.
    */
   allowWebSearch: boolean;
+  /**
+   * Offer the model the `run_code` tool.
+   *
+   * Off by default, like `allowWebFetch`, and for a related reason: the code it runs was
+   * written by a model that may have been reading somebody else's page a moment earlier.
+   * The sandbox is a WebView with no network, no storage and no bridge into this app, so
+   * what it can do is arithmetic — but "this app executes model output" is a sentence a
+   * user should have agreed to. See `@/chat/sandbox`.
+   */
+  allowRunCode: boolean;
   /** Speak assistant replies with the system voice. */
   ttsEnabled: boolean;
   /**
@@ -132,6 +142,7 @@ const DEFAULTS = {
   confirmToolCalls: true,
   allowWebFetch: false,
   allowWebSearch: false,
+  allowRunCode: false,
   ttsEnabled: false,
   appLockEnabled: false,
   sendOnEnter: false,

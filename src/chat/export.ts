@@ -166,6 +166,19 @@ function blocksToMarkdown(blocks: readonly ContentBlock[], options: ExportOption
     switch (block.type) {
       case 'text':
         if (block.text.trim()) out.push(safe(block.text));
+        // Footnoted under the text, matching the `server_tool` source list. The quoted
+        // passage goes in here even though the transcript drops it: a document is read
+        // to check an answer, and the quotation is the check.
+        if (block.citations?.length) {
+          out.push(
+            block.citations
+              .map((citation) => {
+                const link = `- [${safe(citation.title ?? citation.url)}](${safe(citation.url)})`;
+                return citation.citedText ? `${link}\n  > ${safe(citation.citedText).split('\n').join('\n  > ')}` : link;
+              })
+              .join('\n'),
+          );
+        }
         break;
       case 'thinking':
         if (!options.includeThinking) break;
@@ -281,7 +294,13 @@ function conversationToMarkdown(input: ExportInput, options: ExportOptions): str
 function blockToJson(block: ContentBlock, options: ExportOptions): Record<string, unknown> | null {
   switch (block.type) {
     case 'text':
-      return { type: 'text', text: safe(block.text) };
+      // `redactDeep`, not `safe`, on the citations: a URL and a title come from a
+      // third party by way of the model, so neither is a shape this app authored.
+      return {
+        type: 'text',
+        text: safe(block.text),
+        ...(block.citations?.length ? { citations: redactDeep(block.citations) } : {}),
+      };
     case 'thinking':
       if (!options.includeThinking) return null;
       return {

@@ -27,6 +27,27 @@ export type TransportKind = 'anthropic' | 'openai';
 export interface TextBlock {
   type: 'text';
   text: string;
+  /**
+   * Where the model says this text came from, when it cited anything.
+   *
+   * Only produced by a server-side search: the provider attaches a citation to the
+   * text block as it writes, which is a stronger claim than the source list on the
+   * {@link ServerToolBlock} — that says "these pages were found", this says "this
+   * sentence came from that page".
+   *
+   * Not replayed. The API does not require citations on a text block sent back to
+   * it, and unlike `ServerToolBlock.raw` there is no id pairing that breaks without
+   * them, so they stay a display-and-export concern and cost nothing on the wire.
+   */
+  citations?: Citation[];
+}
+
+/** One cited source. Provider JSON, narrowed to the three fields worth showing. */
+export interface Citation {
+  url: string;
+  title?: string;
+  /** The passage the provider says was used. Quoted in an export, not the transcript. */
+  citedText?: string;
 }
 
 export interface ImageBlock {
@@ -322,6 +343,14 @@ export type StreamEvent =
    * result, and the app has no half-state to show. See {@link ServerToolBlock}.
    */
   | { type: 'server_tool'; block: ServerToolBlock }
+  /**
+   * A source the model attributed the text it is writing to.
+   *
+   * Separate from `text_delta` because it arrives on its own frame and applies to the
+   * text block being written, not to a span this app could locate in it. Collected
+   * onto the one text block the accumulator produces.
+   */
+  | { type: 'citation'; citation: Citation }
   | { type: 'usage'; usage: Partial<TokenUsage> }
   | { type: 'stop'; reason: StopReason }
   /**
@@ -466,6 +495,7 @@ export function createResultAccumulator(): {
   let signature: string | undefined;
   const redacted: string[] = [];
   const serverTools: ServerToolBlock[] = [];
+  const citations: Citation[] = [];
   const toolCalls = new Map<number, { id: string; name: string; json: string }>();
 
   return {
@@ -489,6 +519,11 @@ export function createResultAccumulator(): {
           break;
         case 'server_tool':
           serverTools.push(event.block);
+          break;
+        case 'citation':
+          // De-duplicated on the URL: a provider cites the same page for consecutive
+          // sentences, and a source list that repeats one page eight times is noise.
+          if (!citations.some((existing) => existing.url === event.citation.url)) citations.push(event.citation);
           break;
         case 'tool_use_start': {
           // Non-destructive, like `start` above. Some gateways repeat the call id
@@ -540,7 +575,7 @@ export function createResultAccumulator(): {
       // Before the text, which is the order they happened in: the model searched and
       // then wrote the answer.
       content.push(...serverTools);
-      if (text) content.push({ type: 'text', text });
+      if (text) content.push({ type: 'text', text, ...(citations.length ? { citations } : {}) });
       for (const [, call] of [...toolCalls.entries()].sort((a, b) => a[0] - b[0])) {
         content.push({
           type: 'tool_use',

@@ -286,6 +286,50 @@ describe('attachments', () => {
   });
 });
 
+describe('citations', () => {
+  const cited: ExportInput = {
+    conversation: conversation(),
+    messages: [
+      message({
+        id: 'm1',
+        role: 'assistant',
+        content: [
+          {
+            type: 'text',
+            text: 'SDK 57 is out.',
+            citations: [
+              { url: 'https://expo.dev/sdk-57', title: 'Expo SDK 57', citedText: 'SDK 57 ships RN 0.86.' },
+              { url: 'https://example.test/notes' },
+            ],
+          },
+        ],
+        text: 'SDK 57 is out.',
+      }),
+    ],
+  };
+
+  it('lists the sources under the answer, quoting the passage', () => {
+    const out = exportConversation(cited, 'markdown', { now: AT });
+    expect(out.text).toContain('- [Expo SDK 57](https://expo.dev/sdk-57)');
+    expect(out.text).toContain('> SDK 57 ships RN 0.86.');
+    // No title: the URL stands in for one, so there is still something to click.
+    expect(out.text).toContain('- [https://example.test/notes](https://example.test/notes)');
+  });
+
+  it('keeps them structured in JSON', () => {
+    const json = JSON.parse(exportConversation(cited, 'json', { now: AT }).text);
+    expect(json.conversation.messages[0].content[0].citations).toEqual([
+      { url: 'https://expo.dev/sdk-57', title: 'Expo SDK 57', citedText: 'SDK 57 ships RN 0.86.' },
+      { url: 'https://example.test/notes' },
+    ]);
+  });
+
+  it('says nothing extra about a text block with no citations', () => {
+    const json = JSON.parse(exportConversation(simple(), 'json', { now: AT }).text);
+    expect(json.conversation.messages[0].content[0].citations).toBeUndefined();
+  });
+});
+
 describe('the options', () => {
   it('leaves thinking out by default, because it is not what the user meant', () => {
     const input: ExportInput = {

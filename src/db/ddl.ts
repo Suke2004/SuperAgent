@@ -10,7 +10,7 @@
  */
 
 /** Bumped whenever {@link MIGRATIONS} grows. Stored in SQLite's `user_version`. */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 /**
  * The FTS index and the three triggers that keep it in step with `messages`.
@@ -282,5 +282,34 @@ export const MIGRATIONS: readonly string[] = [
     -- Settings → Memory, and re-reviewing them buys nothing. Only new distillations
     -- insert a 0.
     ALTER TABLE memories ADD COLUMN approved INTEGER NOT NULL DEFAULT 1;
+  `,
+  /* 6 → 7 */ `
+    -- Projects: a group of conversations that share instructions and documents.
+    --
+    -- A table rather than a reuse of \`conversation_tags\` because a project carries
+    -- content of its own. A tag is a label with nothing behind it; this has a prompt
+    -- every chat in the group inherits and a document set they all read, and hanging
+    -- those off a string in a join table would mean a second table anyway.
+    CREATE TABLE IF NOT EXISTS projects (
+      id           TEXT    PRIMARY KEY NOT NULL,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      name         TEXT    NOT NULL,
+      -- Prepended to the system prompt of every conversation in the project, above
+      -- the conversation's own prompt. See \`@/chat/project\`.
+      instructions TEXT    NOT NULL DEFAULT '',
+      -- JSON [{name, text}]: reference documents, as already-extracted text. The
+      -- bytes of the original file are not kept — only what a model can read.
+      knowledge    TEXT    NOT NULL DEFAULT '[]'
+    );
+
+    -- Nullable, and the app clears it on delete rather than relying on the cascade:
+    -- \`PRAGMA foreign_keys\` is a per-connection setting, so a schema that only
+    -- enforces this in SQL would leave dangling ids on any connection that forgot.
+    ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects (id) ON DELETE SET NULL;
+
+    -- The project's own conversation list: newest first, same shape as the main list.
+    CREATE INDEX IF NOT EXISTS conversations_project
+      ON conversations (project_id, updated_at DESC, id DESC);
   `,
 ];

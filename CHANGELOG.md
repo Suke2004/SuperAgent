@@ -34,6 +34,33 @@ and is marked **needs a rebuild** below.
   provider's side, with the query and the pages it found shown under the reply and each
   source openable. Off by default: it is billed per search, and search results are
   untrusted text entering the context window.
+- **Plan mode** — a per-conversation toggle in the conversation menu. Reading still
+  works, so the plan is built on what is actually there; writing a file, rendering a
+  document and every connected MCP tool are refused with an instruction to write out
+  the steps instead. The refusal is a gate in the tool router, not a line in the
+  system prompt, so a tool added later inherits it.
+- **Citations** — where a provider says which page a sentence came from, the sources
+  appear under the answer and open in the browser through the same allowlist as a
+  markdown link. An export keeps them, with the quoted passage.
+- **Projects** — a project groups conversations around one piece of work and lends all
+  of them a set of instructions and reference documents. Managed in Settings →
+  Projects, joined or left from a conversation's `⋯` menu, and used as a filter on the
+  conversation list, where a new chat inherits whichever project is showing. The
+  documents are sent as source material under their own heading, with an explicit note
+  that directions written inside them are not instructions to follow. Conversations
+  outlive their project: deleting one unfiles its chats and keeps them.
+- **Artifacts** — an `html` or `svg` code fence gets a **Preview** button that renders
+  it full screen. The document is served under `default-src 'none'` with only inline
+  style and script allowed, so an interactive chart works and a hostile one has nowhere
+  to send anything; the first navigation is the document itself and every later one is
+  refused and reported. No new message type, so replies already in the transcript get
+  the button too. **Needs a rebuild** (`react-native-webview`).
+- **Analysis tool** — `run_code`, off until switched on in Settings → Built-in tools.
+  JavaScript runs in a WebView of its own with no network, no storage and no bridge
+  into the app, `console.log` captured and the last expression's value returned. For
+  arithmetic, parsing and sorting the model would otherwise guess at. It is not a
+  shell, and a program that loops is given up on after five seconds rather than being
+  left to stall the turn. **Needs a rebuild** (`react-native-webview`).
 
 ### Changed
 

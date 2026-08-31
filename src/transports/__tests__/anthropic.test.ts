@@ -15,6 +15,7 @@ import {
   buildAnthropicBody,
   createAnthropicStreamState,
   toAnthropicMessages,
+  toCitation,
   translateAnthropicEvent,
   translateAnthropicUsage,
   translateStopReason,
@@ -1134,5 +1135,123 @@ describe('web search', () => {
       { role: 'assistant', content: [{ ...stored, transport: 'openai' }, { type: 'text', text: 'Hi' }] },
     ]);
     expect(foreign?.content).toEqual([{ type: 'text', text: 'Hi' }]);
+  });
+});
+
+describe('citations', () => {
+  it('narrows the provider JSON to the three fields worth keeping', () => {
+    expect(
+      toCitation({
+        type: 'web_search_result_location',
+        url: 'https://expo.dev/changelog/sdk-57',
+        title: 'Expo SDK 57',
+        cited_text: 'SDK 57 ships React Native 0.86.',
+        encrypted_index: 'opaque',
+      }),
+    ).toEqual({
+      url: 'https://expo.dev/changelog/sdk-57',
+      title: 'Expo SDK 57',
+      citedText: 'SDK 57 ships React Native 0.86.',
+    });
+  });
+
+  it('drops anything without a usable url, because a source you cannot open is not one', () => {
+    expect(toCitation({ title: 'No link' })).toBeNull();
+    expect(toCitation({ url: '' })).toBeNull();
+    expect(toCitation({ url: 42 })).toBeNull();
+    expect(toCitation(null)).toBeNull();
+    expect(toCitation('https://example.test')).toBeNull();
+  });
+
+  it('omits the optional fields rather than storing empty ones', () => {
+    expect(toCitation({ url: 'https://example.test', title: '', cited_text: '' })).toEqual({
+      url: 'https://example.test',
+    });
+  });
+
+  it('translates a citations_delta into a citation event', () => {
+    const state = createAnthropicStreamState();
+    expect(
+      translateAnthropicEvent(
+        {
+          data: JSON.stringify({
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'citations_delta', citation: { url: 'https://example.test', title: 'Example' } },
+          }),
+        },
+        state,
+      ),
+    ).toEqual([{ type: 'citation', citation: { url: 'https://example.test', title: 'Example' } }]);
+  });
+
+  it('emits nothing for a malformed citation instead of a half-built one', () => {
+    const state = createAnthropicStreamState();
+    expect(
+      translateAnthropicEvent(
+        { data: JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'citations_delta', citation: {} } }) },
+        state,
+      ),
+    ).toEqual([]);
+  });
+
+  it('attaches them to the text block, de-duplicated on the url', () => {
+    const accumulator = createResultAccumulator();
+    accumulator.handle({ type: 'text_delta', text: 'SDK 57 is out.' });
+    accumulator.handle({ type: 'citation', citation: { url: 'https://a.test', title: 'A' } });
+    // The same page cited for the next sentence: one row, not two.
+    accumulator.handle({ type: 'citation', citation: { url: 'https://a.test', title: 'A' } });
+    accumulator.handle({ type: 'citation', citation: { url: 'https://b.test' } });
+
+    const [block] = accumulator.result().content;
+    expect(block).toEqual({
+      type: 'text',
+      text: 'SDK 57 is out.',
+      citations: [{ url: 'https://a.test', title: 'A' }, { url: 'https://b.test' }],
+    });
+  });
+
+  it('leaves the citations key off a text block that has none', () => {
+    const accumulator = createResultAccumulator();
+    accumulator.handle({ type: 'text_delta', text: 'Hi' });
+    expect(accumulator.result().content[0]).toEqual({ type: 'text', text: 'Hi' });
+  });
+
+  it('reads them off a non-streamed text block too', async () => {
+    const { client } = transport([
+      jsonResponse({
+        id: 'msg_1',
+        content: [
+          {
+            type: 'text',
+            text: 'SDK 57 is out.',
+            citations: [
+              { url: 'https://expo.dev/changelog/sdk-57', title: 'Expo SDK 57' },
+              { title: 'unusable' },
+            ],
+          },
+        ],
+        stop_reason: 'end_turn',
+      }),
+    ]);
+
+    const [block] = (await client.complete(request())).content;
+    expect(block).toEqual({
+      type: 'text',
+      text: 'SDK 57 is out.',
+      citations: [{ url: 'https://expo.dev/changelog/sdk-57', title: 'Expo SDK 57' }],
+    });
+  });
+
+  it('is not sent back on the next turn', () => {
+    // There is no id pairing to break, and the API does not want them on input, so a
+    // replay carries the text alone.
+    const [message] = toAnthropicMessages([
+      {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'SDK 57 is out.', citations: [{ url: 'https://a.test' }] }],
+      },
+    ]);
+    expect(message?.content).toEqual([{ type: 'text', text: 'SDK 57 is out.' }]);
   });
 });

@@ -14,6 +14,7 @@
  *     `max_tokens` with a large thinking budget starves the visible answer.
  */
 
+import { PLAN_MODE_NOTE } from '@/chat/plan';
 import type { ConversationConfig } from '@/db/conversations';
 import type { ModelCapabilities } from '@/transports/support';
 import { controlSupport } from '@/transports/support';
@@ -314,7 +315,14 @@ export function buildRequest(input: BuildInput): ChatRequest {
   const params = mergeParams(input.capabilities, { ...input.config.params, ...input.paramOverrides });
   const reasoning = resolveReasoning(input.transport, input.capabilities, input.config.reasoning);
 
-  const system = composeSystem(input.systemPrompt, input.summary, input.memory, input.skills, input.withheld);
+  const system = composeSystem(
+    input.systemPrompt,
+    input.summary,
+    input.memory,
+    input.skills,
+    input.withheld,
+    input.config.planMode ? PLAN_MODE_NOTE : undefined,
+  );
 
   const request: ChatRequest = {
     model: input.model,
@@ -343,6 +351,10 @@ export function buildRequest(input: BuildInput): ChatRequest {
  * `withheld` sits with the catalogue for the same reason — it is also a statement
  * about what is available. It is empty on every request whose tool manifest fit,
  * which keeps the cached prefix byte-identical on the common path.
+ *
+ * `plan` breaks the ordering rule on purpose and goes second, above memory: it is a
+ * constraint on what the model may do this turn, and a remembered preference or a
+ * skill description must not be read as outranking it.
  */
 export function composeSystem(
   prompt: string | undefined,
@@ -350,9 +362,11 @@ export function composeSystem(
   memory?: string,
   skills?: string,
   withheld?: string,
+  plan?: string,
 ): string | undefined {
   const parts: string[] = [];
   if (prompt?.trim()) parts.push(prompt.trim());
+  if (plan?.trim()) parts.push(plan.trim());
   if (memory?.trim()) parts.push(memory.trim());
   if (skills?.trim()) parts.push(skills.trim());
   if (withheld?.trim()) parts.push(withheld.trim());

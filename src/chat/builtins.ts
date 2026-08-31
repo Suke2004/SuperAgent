@@ -9,6 +9,11 @@
  * an Android app has no useful shell to offer, and a tool that pretends otherwise
  * fails in ways that read as the model lying.
  *
+ * `run_code` is the one apparent exception and is not one. It is a JavaScript engine in
+ * a WebView with no network, no storage and no bridge to this app — a calculator, not a
+ * shell — and it is off until the user turns it on. Its rules live in `@/chat/sandbox`;
+ * only the definition is here.
+ *
  * This module is pure. Definitions, argument validation, filename and URL rules live
  * here with their tests; the file system, the PDF renderer and `fetch` live in
  * `@/chat/files` and `@/chat/web`, called by the tool loop.
@@ -20,9 +25,10 @@ export const WRITE_FILE = 'write_file';
 export const CREATE_PDF = 'create_pdf';
 export const FETCH_URL = 'fetch_url';
 export const READ_RESOURCE = 'read_mcp_resource';
+export const RUN_CODE = 'run_code';
 
 /** Every name this module can answer to, for the loop's "is this mine?" check. */
-export const BUILTIN_TOOL_NAMES: readonly string[] = [WRITE_FILE, CREATE_PDF, FETCH_URL, READ_RESOURCE];
+export const BUILTIN_TOOL_NAMES: readonly string[] = [WRITE_FILE, CREATE_PDF, FETCH_URL, READ_RESOURCE, RUN_CODE];
 
 /* -------------------------------------------------------------------------- */
 /* Filenames                                                                   */
@@ -203,6 +209,8 @@ export interface BuiltinOptions {
   web: boolean;
   /** The resource URIs the conversation's servers advertise, for the enum. */
   resources: readonly string[];
+  /** False when the user has not switched the code sandbox on. */
+  code?: boolean;
 }
 
 /**
@@ -267,6 +275,27 @@ export function builtinTools(options: BuiltinOptions): ToolDefinition[] {
         type: 'object',
         properties: { url: { type: 'string', description: 'An absolute http or https URL.' } },
         required: ['url'],
+        additionalProperties: false,
+      },
+    });
+  }
+
+  // Off by default, and the switch says why: this runs code somebody else wrote. The
+  // sandbox holds — no network, no storage, no bridge — but a user should still be the
+  // one who decides that an app of theirs executes model output.
+  if (options.code) {
+    tools.push({
+      name: RUN_CODE,
+      description:
+        'Run JavaScript in a sandbox on this device and get back what it printed. Use it for arithmetic, parsing, ' +
+        'sorting, statistics and checking your own work — anything where being exactly right matters more than ' +
+        'being fast. `console.log` is captured, and the value of the last expression is returned. Runs ' +
+        'synchronously: promises are not awaited, and there is no network, no filesystem and no access to this ' +
+        'conversation.',
+      inputSchema: {
+        type: 'object',
+        properties: { code: { type: 'string', description: 'The JavaScript to run. Synchronous only.' } },
+        required: ['code'],
         additionalProperties: false,
       },
     });
