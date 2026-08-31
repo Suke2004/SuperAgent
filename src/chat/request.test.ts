@@ -428,6 +428,14 @@ describe('composeSystem', () => {
   it('includes a summary with no prompt', () => {
     expect(composeSystem(undefined, 'Notes.')).toContain('Notes.');
   });
+
+  it('puts the plan-mode note above memory and the catalogue', () => {
+    // A constraint on what the model may do this turn has to outrank a remembered
+    // preference; anything below memory reads as advice.
+    const composed = composeSystem('Be terse.', undefined, 'Notes about the user.', 'A skill list.', undefined, '# Plan mode\n\nPropose first.') as string;
+    expect(composed.indexOf('# Plan mode')).toBeLessThan(composed.indexOf('Notes about the user.'));
+    expect(composed.indexOf('Be terse.')).toBeLessThan(composed.indexOf('# Plan mode'));
+  });
 });
 
 describe('buildRequest', () => {

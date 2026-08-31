@@ -34,6 +34,14 @@ and is marked **needs a rebuild** below.
   provider's side, with the query and the pages it found shown under the reply and each
   source openable. Off by default: it is billed per search, and search results are
   untrusted text entering the context window.
+- **Plan mode** — a per-conversation toggle in the conversation menu. Reading still
+  works, so the plan is built on what is actually there; writing a file, rendering a
+  document and every connected MCP tool are refused with an instruction to write out
+  the steps instead. The refusal is a gate in the tool router, not a line in the
+  system prompt, so a tool added later inherits it.
+- **Citations** — where a provider says which page a sentence came from, the sources
+  appear under the answer and open in the browser through the same allowlist as a
+  markdown link. An export keeps them, with the quoted passage.
 
 ### Changed
 

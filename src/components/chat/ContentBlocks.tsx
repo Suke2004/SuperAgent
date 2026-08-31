@@ -24,7 +24,7 @@ import { Markdown } from '@/components/markdown/Markdown';
 import { Badge, Body, Inline, Note, verticalSlop } from '@/components/ui';
 import { useSettings } from '@/stores/settings';
 import { useTheme } from '@/theme';
-import type { ContentBlock } from '@/transports/types';
+import type { Citation, ContentBlock } from '@/transports/types';
 
 /** Tall enough to see what an attachment is, short enough not to own the screen. */
 const IMAGE_HEIGHT = 220;
@@ -294,17 +294,11 @@ function Document({ mediaType, name, text }: { mediaType: string; name?: string;
  * same {@link safeHref} allowlist as a markdown link rather than reaching `openURL`
  * on trust. One that fails the check renders as text.
  */
-function ServerTool({ name, summary, sources }: { name: string; summary?: string; sources?: { title?: string; url: string }[] }) {
+function SourceLinks({ sources }: { sources: readonly { title?: string; url: string }[] }) {
   const t = useTheme();
   return (
-    <View style={{ gap: t.spacing.xs }}>
-      <Inline gap="sm">
-        <Badge label="Web" tone="accent" />
-        <Body size="sm" tone="faint">
-          {summary ?? name.replace(/_/g, ' ')}
-        </Body>
-      </Inline>
-      {sources?.map((source, index) => {
+    <>
+      {sources.map((source, index) => {
         const href = safeHref(source.url);
         const label = source.title?.trim() || source.url;
         return href ? (
@@ -331,6 +325,42 @@ function ServerTool({ name, summary, sources }: { name: string; summary?: string
           </Body>
         );
       })}
+    </>
+  );
+}
+
+function ServerTool({ name, summary, sources }: { name: string; summary?: string; sources?: { title?: string; url: string }[] }) {
+  const t = useTheme();
+  return (
+    <View style={{ gap: t.spacing.xs }}>
+      <Inline gap="sm">
+        <Badge label="Web" tone="accent" />
+        <Body size="sm" tone="faint">
+          {summary ?? name.replace(/_/g, ' ')}
+        </Body>
+      </Inline>
+      {sources ? <SourceLinks sources={sources} /> : null}
+    </View>
+  );
+}
+
+/**
+ * The sources a cited answer was written from.
+ *
+ * Under the text rather than inline: the provider cites per passage, and a marker
+ * threaded into the prose would have to survive markdown rendering to land in the
+ * right place. A list under the answer says the same thing and cannot land wrong.
+ *
+ * `citedText` is not shown. It is a quotation of the source, so on a phone it doubles
+ * the height of the block to repeat what the model already paraphrased above it; the
+ * export keeps it, where there is room.
+ */
+function Citations({ citations }: { citations: readonly Citation[] }) {
+  const t = useTheme();
+  return (
+    <View style={{ gap: t.spacing.xs, marginTop: t.spacing.xs }}>
+      <Note>{citations.length === 1 ? '1 source' : `${citations.length} sources`}</Note>
+      <SourceLinks sources={citations} />
     </View>
   );
 }
@@ -346,15 +376,23 @@ export function BlockView({
   thinkingExpanded: boolean;
 }) {
   switch (block.type) {
-    case 'text':
+    case 'text': {
       if (!block.text) return null;
-      return markdown ? (
+      const body = markdown ? (
         <Markdown source={block.text} />
       ) : (
         <Body mono selectable>
           {block.text}
         </Body>
       );
+      if (!block.citations?.length) return body;
+      return (
+        <View>
+          {body}
+          <Citations citations={block.citations} />
+        </View>
+      );
+    }
 
     case 'thinking':
       return (

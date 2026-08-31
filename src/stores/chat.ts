@@ -62,6 +62,7 @@ import {
 import { writeGeneratedFile, writePdf } from '@/chat/files';
 import { fetchAsText } from '@/chat/web';
 import { describeWithheldTools, selectTools } from '@/chat/tools';
+import { blockedInPlanMode, describeBlockedCalls, planRefusal } from '@/chat/plan';
 import { INVOKE_SKILL, invokeSkillTool, renderSkillCatalogue, resolveSkillCall } from '@/chat/skill';
 import type { Skill } from '@/chat/skill';
 import { MCP_TOOL_PREFIX } from '@/mcp/protocol';
@@ -87,6 +88,7 @@ import { GatewayError } from '@/transports/errors';
 import { summariseFailure } from '@/transports/index';
 import type { ModelCapabilities } from '@/transports/support';
 import type {
+  Citation,
   ContentBlock,
   ServerToolBlock,
   StopReason,
@@ -178,6 +180,8 @@ interface LiveStream extends Omit<StreamState, 'toolCalls'> {
   redactedThinking: string[];
   /** Provider-side tool blocks, in the order the provider ran them. */
   serverTools: ServerToolBlock[];
+  /** Sources the provider says it used, de-duplicated as they arrive. */
+  citations: Citation[];
   stopReason: StopReason;
   id?: string;
 }
@@ -219,7 +223,9 @@ function blocksOf(live: LiveStream): ContentBlock[] {
   }
   // Before the text: the model searched and then wrote the answer from what it found.
   blocks.push(...live.serverTools);
-  if (live.text) blocks.push({ type: 'text', text: live.text });
+  if (live.text) {
+    blocks.push({ type: 'text', text: live.text, ...(live.citations.length ? { citations: live.citations } : {}) });
+  }
   for (const call of live.toolIndex.values()) {
     let input: unknown = {};
     try {
@@ -903,6 +909,8 @@ interface ResolvedCall {
   images?: { mediaType: string; data: string }[];
   /** A file this call produced, for the transcript and the files list. */
   file?: { name: string; uri: string; bytes: number };
+  /** True when plan mode refused the call, for the note above the composer. */
+  blocked?: true;
 }
 
 /**
@@ -916,6 +924,7 @@ async function resolveCall(
   call: ToolUseBlock,
   skills: readonly Skill[],
   servers: readonly string[] | undefined,
+  planMode = false,
 ): Promise<ResolvedCall> {
   // A truncated arguments blob never reaches a tool. `blocksOf` keeps it verbatim as
   // evidence the stream was cut off, and forwarding it would send a server
@@ -927,6 +936,9 @@ async function resolveCall(
       isError: true,
     };
   }
+  // Before the routing, not inside each branch: a gate the user switched on has to
+  // hold for every tool, including one added later that nobody thought to gate.
+  if (planMode && blockedInPlanMode(call.name)) return { content: planRefusal(call.name), isError: true, blocked: true };
   if (call.name === INVOKE_SKILL) return resolveSkillCall(call.input, skills);
   if (call.name === WRITE_FILE) return resolveWriteFile(call.input);
   if (call.name === CREATE_PDF) return resolvePdf(call.input);
@@ -1046,6 +1058,8 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
   const model = options.modelOverride ?? conversation.model;
   const capabilities = capabilitiesFor(profile.id, model);
   const wireHints = wireHintsFor(profile.id, model);
+  /** Read once per turn: a toggle flipped mid-stream must not half-apply. */
+  const planMode = conversation.config.planMode === true;
 
   const live: LiveStream = {
     conversationId,
@@ -1057,6 +1071,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     toolIndex: new Map(),
     redactedThinking: [],
     serverTools: [],
+    citations: [],
     usage: {},
     droppedParams: [],
     stopReason: 'unknown',
@@ -1327,7 +1342,8 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       const asks = (call: ToolUseBlock): boolean =>
         call.name.startsWith(`${MCP_TOOL_PREFIX}_`) &&
         useMcp.getState().needsApproval(call.name, conversation.config.servers);
-      const resolve = (call: ToolUseBlock) => resolveCall(call, enabledSkills, conversation.config.servers);
+      const resolve = (call: ToolUseBlock) =>
+        resolveCall(call, enabledSkills, conversation.config.servers, planMode);
 
       const settled = new Map<string, ResolvedCall>();
       await Promise.all(
@@ -1343,6 +1359,11 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       }
       live.phase = 'saving';
       publish(true);
+
+      // Said out loud, because the difference between "the model planned" and "the
+      // model did it" is not visible in a transcript that reads the same either way.
+      const blockedNote = describeBlockedCalls(invocations.filter((i) => i.result.blocked).length);
+      if (blockedNote) setContextNote(set, conversationId, blockedNote);
     }
     const invoked = invocations.map((i) => i.result.name).filter((name): name is string => Boolean(name));
     if (invoked.length) meta.skillsInvoked = invoked;
@@ -1590,6 +1611,13 @@ function applyEvent(live: LiveStream, event: StreamEvent): void {
       break;
     case 'server_tool':
       live.serverTools.push(event.block);
+      break;
+    case 'citation':
+      // Same de-dupe as the transport accumulator: a provider cites one page for
+      // several consecutive sentences, and eight identical rows is not a source list.
+      if (!live.citations.some((existing) => existing.url === event.citation.url)) {
+        live.citations.push(event.citation);
+      }
       break;
     case 'usage':
       live.usage = { ...live.usage, ...event.usage };

@@ -897,6 +897,15 @@ ${text}` : text);
       onPress: openModelControls,
     },
     {
+      // A toggle rather than a screen: it has one state, and burying a safety gate
+      // behind another sheet is how it stops being used.
+      label: conversation.config.planMode ? 'Plan mode: on — turn it off' : 'Plan mode: off — turn it on',
+      subtitle: conversation.config.planMode
+        ? 'The model plans and reads, but writing files and MCP tools are refused.'
+        : 'Ask the model to propose before it acts. Reading still works.',
+      onPress: () => void useChat.getState().setConfig(id, { planMode: !conversation.config.planMode }),
+    },
+    {
       label: 'Skills',
       subtitle:
         (conversation.config.skills ?? []).length > 0

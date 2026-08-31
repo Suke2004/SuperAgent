@@ -27,6 +27,7 @@ import {
   createResultAccumulator,
   type ChatRequest,
   type ChatResult,
+  type Citation,
   type ConnectionTestResult,
   type ConnectionTestStep,
   type ContentBlock,
@@ -178,6 +179,7 @@ export class AnthropicTransport implements Transport {
       switch (block.type) {
         case 'text':
           if (block.text) accumulator.handle({ type: 'text_delta', text: block.text });
+          for (const citation of citationsOf(block)) accumulator.handle({ type: 'citation', citation });
           break;
         case 'thinking':
           if (block.thinking) accumulator.handle({ type: 'thinking_delta', text: block.thinking });
@@ -453,6 +455,30 @@ function serverToolEvent(
   return { type: 'server_tool', block: use ? block : { ...block, raw: [] } };
 }
 
+/**
+ * One {@link Citation} from a provider citation object, or `null`.
+ *
+ * Defensive for the same reason {@link toServerToolBlock} is: this is third-party
+ * JSON reached through the model. A citation with no URL is dropped rather than
+ * rendered as an unopenable row.
+ */
+export function toCitation(value: unknown): Citation | null {
+  if (value === null || typeof value !== 'object') return null;
+  const record = value as { url?: unknown; title?: unknown; cited_text?: unknown };
+  if (typeof record.url !== 'string' || !record.url) return null;
+  return {
+    url: record.url,
+    ...(typeof record.title === 'string' && record.title ? { title: record.title } : {}),
+    ...(typeof record.cited_text === 'string' && record.cited_text ? { citedText: record.cited_text } : {}),
+  };
+}
+
+/** The citations on one non-streamed text block, skipping anything unusable. */
+function citationsOf(block: AnthropicContentBlock): Citation[] {
+  if (!Array.isArray(block.citations)) return [];
+  return block.citations.map(toCitation).filter((citation): citation is Citation => citation !== null);
+}
+
 interface AnthropicContentBlock {
   type?: string;
   text?: string;
@@ -466,6 +492,8 @@ interface AnthropicContentBlock {
   tool_use_id?: string;
   /** `web_search_tool_result` only: the pages found, or an error object. */
   content?: unknown;
+  /** `text` only: sources the model attributed this block to. */
+  citations?: unknown;
 }
 
 interface AnthropicUsage {
@@ -495,6 +523,8 @@ interface AnthropicStreamFrame {
     thinking?: string;
     signature?: string;
     partial_json?: string;
+    /** `citations_delta` only: one citation object. */
+    citation?: unknown;
     stop_reason?: string | null;
     stop_sequence?: string | null;
   };
@@ -868,6 +898,11 @@ export function translateAnthropicEvent(raw: SseEvent, state: AnthropicStreamSta
         case 'signature_delta':
           if (delta.signature) events.push({ type: 'thinking_signature', signature: delta.signature });
           break;
+        case 'citations_delta': {
+          const citation = toCitation(delta.citation);
+          if (citation) events.push({ type: 'citation', citation });
+          break;
+        }
         case 'input_json_delta': {
           const local = state.toolIndexes.get(index);
           if (local !== undefined && delta.partial_json) {

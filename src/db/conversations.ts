@@ -73,6 +73,14 @@ export interface ConversationConfig {
   /** Remembered expand/collapse choice for the reasoning pane. */
   showThinking?: boolean;
   /**
+   * Propose before acting: tools that would change something are refused.
+   *
+   * Per-conversation rather than global because it is a property of the task, not of
+   * the user — the chat where a model is rewriting files wants it on and the one
+   * answering questions has nothing to gate. See `@/chat/plan`.
+   */
+  planMode?: boolean;
+  /**
    * Opt this conversation out of long-term memory.
    *
    * Only `false` does anything: absent and `true` both defer to the global setting.

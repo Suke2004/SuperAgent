@@ -206,19 +206,19 @@ Reference surface: the Claude apps plus Claude Code, since the request is "every
 | Offline queue, app lock, encrypted DB | ✅ (beyond Claude) | — |
 | Image + PDF + text attachments | ✅ | — |
 | Read aloud (TTS) | ✅ | — |
-| **Slash commands** | ❌ | §1 |
-| **File / document generation** | ❌ | §2 |
-| **Voice input** | ❌ | §6 |
-| **Web search** | ✅ v1.1 — Anthropic server-side tool, off by default, source list in the transcript | Citations on text blocks not done; sources come from the result block |
-| **Web fetch (read a URL)** | ❌ | v1.1 — cheapest real tool to add; one `fetch`, a size cap, HTML→text |
+| **Slash commands** | ✅ v1.1 | One list over prompt templates, skills, MCP prompts and app commands (§1) |
+| **File / document generation** | ✅ v1.1 — md/txt/csv/json + PDF | `.docx`/`.xlsx` still open (§2 items 3–4) |
+| **Voice input** | ✅ v1.1 — hold-to-talk into the draft | Full-duplex voice mode still open (§6) |
+| **Web search** | ✅ v1.1 — Anthropic server-side tool, off by default, source list in the transcript | Citations on text blocks done: `citations_delta` → a source list under the answer, quoted in an export |
+| **Web fetch (read a URL)** | ✅ v1.1 — `fetch_url`, off by default, re-checks the address it landed on | — |
 | **Artifacts** (rendered HTML/SVG/code preview) | ❌ | v1.2 — `react-native-webview`, sandboxed, no network |
 | **Analysis tool** (run code) | ❌ | v1.2, see §4 |
 | **Projects** (grouped chats + shared knowledge) | ⚠ tags + pins only | v1.2 — a project is a tag with a system prompt and a document set |
 | **@-mentions** of files, skills, connectors | ✅ v1.1 | Same index and ranking as `/`, one anchored regex apart |
-| **MCP prompts usable, not just listed** | ⚠ list only | §1 |
-| **MCP resources readable by the model** | ⚠ `resources/read` exists, unused by the loop | v1.1 — expose as a built-in tool |
+| **MCP prompts usable, not just listed** | ✅ v1.1 — `prompts/get` ([client.ts:173](src/mcp/client.ts:173)) | — |
+| **MCP resources readable by the model** | ✅ v1.1 — `read_mcp_resource` built-in | — |
 | **Subagents / task delegation** | ❌ | Not v1.1. Two models on one phone battery is a different product. |
-| **Plan mode** | ❌ | v1.2 — a per-conversation "propose before acting" toggle gating tool execution |
+| **Plan mode** | ✅ — per-conversation toggle; writers and every MCP tool refused, reads still allowed ([plan.ts](src/chat/plan.ts)) | — |
 | **Native filesystem / bash** | ❌ | Not possible on device; §4 |
 | **Docx / xlsx / pptx reading** | ❌ | v1.2, same libraries as writing them |
 | **Chat sharing by link** | ❌ | Not building — needs a server, and the app's premise is no server |
