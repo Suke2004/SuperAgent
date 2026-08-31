@@ -67,8 +67,12 @@ jobs:
       #
       # `json-summary` is what the next step reads. `text-summary` goes to stdout
       # only, so asking for it alone would leave nothing on disk to summarise.
+      #
+      # No `--` before the flags: pnpm 10 forwards it to the script verbatim, so jest
+      # saw `--ci` and the rest as positional test-path patterns, matched nothing, and
+      # exited 1 with "No tests found" on a suite that passes locally.
       - name: Test
-        run: pnpm test -- --ci --coverage --coverageReporters=text-summary --coverageReporters=json-summary
+        run: pnpm test --ci --coverage --coverageReporters=text-summary --coverageReporters=json-summary
 
       # The gate the other three cannot be: `testMatch` is `.ts` only, so no screen
       # is ever imported by the suite, and `tsc` resolves types without resolving
