@@ -1,0 +1,51 @@
+# Dependabot, scoped deliberately narrow.
+#
+# An Expo project does not get to upgrade its own dependencies. The SDK pins
+# `expo-*`, `react-native`, `react` and `react-dom` to versions that are tested
+# together, and `expo-doctor` fails when they drift — so a Dependabot PR bumping
+# `expo-sqlite` past the SDK's range is a red build, not a maintenance win. Those
+# move as a set during an SDK upgrade (docs/07_Deployment.md Appendix B.3), by hand.
+#
+# What is left is worth automating: the handful of non-Expo runtime packages, the
+# dev tooling, and the Actions in the workflows — which nothing else watches.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    # Grouped so a month's tooling drift is one PR that runs the gates once,
+    # rather than eight PRs that each cost a full CI run.
+    groups:
+      dev-tooling:
+        dependency-type: development
+        update-types: [minor, patch]
+    ignore:
+      # Owned by the Expo SDK. Upgrade with `npx expo install --fix` during an
+      # SDK bump, never individually.
+      - dependency-name: expo
+      - dependency-name: expo-*
+      - dependency-name: react
+      - dependency-name: react-dom
+      - dependency-name: react-native
+      - dependency-name: react-native-*
+      - dependency-name: '@expo/*'
+      - dependency-name: '@react-native/*'
+      - dependency-name: babel-preset-expo
+      - dependency-name: eslint-config-expo
+      - dependency-name: jest-expo
+      - dependency-name: '@shopify/flash-list'
+      # Majors are a human decision on a V1 client app.
+      - dependency-name: '*'
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels: [ci]
+    groups:
+      actions:
+        patterns: ['*']

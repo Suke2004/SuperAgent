@@ -6,13 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "jarvis",
-    "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#262624"
-    },
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -25,7 +18,6 @@
         "foregroundImage": "./assets/android-icon-foreground.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "softwareKeyboardLayoutMode": "resize"
     },
@@ -34,6 +26,18 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#262624",
+          "dark": {
+            "image": "./assets/splash-icon.png",
+            "backgroundColor": "#262624"
+          }
+        }
+      ],
       [
         "expo-sqlite",
         {

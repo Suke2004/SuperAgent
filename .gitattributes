@@ -1,0 +1,37 @@
+# Normalise line endings in the repository to LF, and let each checkout use the
+# platform's own. The project is developed on Windows and built on ubuntu-latest,
+# which is exactly the split that produces a diff where the whole file changed.
+* text=auto eol=lf
+
+# Never touched: a CRLF here breaks execution on a Linux runner.
+*.sh text eol=lf
+gradlew text eol=lf
+
+# Windows-only scripts stay CRLF.
+*.bat text eol=crlf
+gradlew.bat text eol=crlf
+
+# Binary. Marked explicitly so git never tries a merge or a line-ending pass.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.apk binary
+*.aab binary
+*.keystore binary
+*.jks binary
+*.wasm binary
+*.hbc binary
+
+# Generated, and 400 KB of it. Collapsed in pull-request diffs and excluded from
+# language statistics so the repo does not report itself as mostly YAML.
+pnpm-lock.yaml linguist-generated=true -diff
+
+# Design references, not source. They inflate the language breakdown otherwise.
+mockups/* linguist-documentation=true
+docs/** linguist-documentation=true

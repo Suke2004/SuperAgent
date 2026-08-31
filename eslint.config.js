@@ -7,8 +7,14 @@ module.exports = defineConfig([
     'dist/**',
     'dist-*/**',
     '.tmp-*/**',
+    // Where CI's `expo export` gate writes the throwaway Android bundle.
+    '.expo-export/**',
     'node_modules/**',
     '.expo/**',
+    // Agent scratch space, including git worktrees. Gitignored, and each worktree
+    // carries its own copy of the tree — linting them reports the same file twice
+    // and fails on helper scripts that were never part of the app.
+    '.claude/**',
     'android/**',
     'ios/**',
     'coverage/**',
@@ -54,6 +60,13 @@ module.exports = defineConfig([
   },
   {
     files: ['**/__tests__/**/*.{ts,tsx}', '**/*.test.{ts,tsx}'],
+    rules: {
+      // `jest.mock()` is hoisted above imports, but a factory that closes over a
+      // local has to be declared before the module under test is imported — so the
+      // import lands in the body on purpose. Enforcing import/first here would ask
+      // the suite to break its own mocks.
+      'import/first': 'off',
+    },
     languageOptions: {
       globals: {
         jest: 'readonly',

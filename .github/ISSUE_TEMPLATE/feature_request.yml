@@ -1,0 +1,58 @@
+name: Feature request
+description: Propose a change to what the app does.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the roadmap first: [docs/06_Eng_Plan.md](../blob/main/docs/06_Eng_Plan.md)
+        §2 for what is planned, and [docs/flaws.md](../blob/main/docs/flaws.md) §3 for
+        what is deliberately *not* being done and why. A proposal that contradicts
+        either is welcome — it just needs the reasoning.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do that the app makes hard or impossible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried, or what else would work
+      description: Existing settings, a skill, an MCP server, a different provider profile.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Chat and streaming
+        - Providers, models, transports
+        - MCP and tools
+        - Skills
+        - Memory and prompts
+        - Context and budgeting
+        - Export, backup, usage
+        - Accessibility
+        - Security and privacy
+        - Build, release, docs
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: native
+    attributes:
+      label: Scope
+      options:
+        - label: I understand this may need a native change, which means a new APK rather than a JS update — there is no OTA channel.
