@@ -1,7 +1,6 @@
-# AgentRouter Mobile
+# SuperAgent
 
-An offline-first Android chat client for [AgentRouter](https://agentrouter.org) and
-any other Anthropic- or OpenAI-compatible gateway. Conversations, model settings,
+An offline-first Android chat client for Anthropic- or OpenAI-compatible gateway. Conversations, model settings,
 usage data and diagnostics stay on the device. The API key is stored only in the
 Android Keystore, and the transcript database is encrypted at rest.
 
