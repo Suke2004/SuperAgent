@@ -35,12 +35,12 @@ jobs:
     # resolution has a much wider spread than the test job.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Same ordering constraint as ci.yml: pnpm must exist before setup-node,
       # because `cache: pnpm` shells out to `pnpm store path`. Pinned to the
       # version the project is actually developed and locked against.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.29.1
 
@@ -48,7 +48,7 @@ jobs:
       # import `node:sqlite`, which needs --experimental-sqlite on Node 22, so a
       # Node 22 runner fails the gate below for a reason that has nothing to do
       # with the commit being built.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -57,7 +57,7 @@ jobs:
       # account token — not a signing key. The Android keystore stays in EAS. No
       # gateway API key ever enters CI, because CI has no reason to talk to a
       # gateway; that is a property worth keeping true by not adding secrets here.
-      - uses: expo/expo-github-action@v8
+      - uses: expo/expo-github-action@v9
         with:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
