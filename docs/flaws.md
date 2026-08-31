@@ -1,8 +1,9 @@
 # Flaws, gaps and security findings
 
 Audited at commit `f6db5a5`, 2026-08-30, revised the same day after the second fix
-pass, and again on 2026-08-31 after cross-checking a third-party audit against the
-code. Nothing here is a feature request — the outstanding feature work is in
+pass, again on 2026-08-31 after cross-checking a third-party audit against the code,
+and a fourth time the same day during the V1 release-readiness sweep — §4 items 19–25,
+which is where the findings from actually running the build live. Nothing here is a feature request — the outstanding feature work is in
 [06_Eng_Plan.md](06_Eng_Plan.md) and `progress.md`. This file is the list of things
 that are wrong, missing, or unverified in what already exists.
 
@@ -257,6 +258,56 @@ export paths now says it: *"The clipboard holds it until you copy something else
 The share sheet remains the default, and is what a large export falls back *from*,
 not to.
 
+### 2.10 The network security config permitted cleartext in release builds — ✅ fixed
+
+[`plugins/with-system-ca-only.js`](../plugins/with-system-ca-only.js) wrote one
+`network_security_config.xml` with `cleartextTrafficPermitted="true"`, and the comment
+said why: Metro talks to a debug build over plain HTTP. True, and it also applied to
+the release APK — so "HTTPS enforced, no plaintext origin accepted" was a property of
+the app's own URL validation and not of the platform. Nothing the app sends needs
+cleartext; a config that permits it is a standing allowance for anything else in the
+process, including a dependency added later.
+
+Fixed by writing two files instead of one. `app/src/main/res/xml` gets
+`cleartextTrafficPermitted="false"`; `app/src/debug/res/xml` overrides the same
+resource name with `true`. AGP resolves the debug source set for a debuggable variant,
+so the dev server is unaffected, and the permissive file is absent from a release APK
+entirely. Verified from the generated project after `expo prebuild` and from the
+merged manifest of an `assembleRelease` build.
+
+### 2.11 `userInterfaceStyle: "automatic"` was a config claim with nothing behind it — ✅ fixed
+
+`expo prebuild` warned: *"userInterfaceStyle: Install expo-system-ui in your project
+to enable this feature."* The key was therefore never applied to the native project.
+Removed from [`app.json`](../app.json) rather than adding the module: `automatic`
+already means "follow the system", the theme reads `useColorScheme()` from React
+Native directly ([`src/theme/index.tsx`](../src/theme/index.tsx)), and a dependency
+added to make a no-op key real is a dependency added for nothing. Confirmed by
+prebuilding again: the warning is gone and the generated manifest is otherwise byte-identical.
+
+### 2.12 The `expo-secure-store` backup-rules warning is benign — no change
+
+`expo prebuild` reports *"Expo-secure-store tried to apply Android Auto Backup rules,
+but other backup rules are already present."* The rules it wanted to add are ours:
+`plugins/with-no-backup.js` writes `data_extraction_rules.xml` excluding `root`,
+`database`, `sharedpref`, `file` and `external` from both `cloud-backup` and
+`device-transfer`, and the manifest carries `android:allowBackup="false"` (§2.1).
+Nothing is backup-eligible, so there is nothing for secure-store's narrower rules to
+protect. Recorded here so the warning is not "fixed" by handing backup configuration
+back to a plugin with a smaller exclusion set.
+
+### 2.13 `expo-dev-client` sits in `dependencies` and does not ship in release — no change
+
+A reviewer will read `expo-dev-client` in `dependencies` (not `devDependencies`) as a
+debug menu and a launcher shipping in the production APK. It is not, and moving it
+would break the development build, which is the only way to run this app at all
+(Expo Go cannot load its native modules). `expo-dev-launcher/android/build.gradle`
+wires every dev-menu component through a `debugOnly` helper that adds
+`releaseImplementation` only when `expo.devlauncher.configureInRelease` is `true`; the
+generated `android/gradle.properties` does not set it, so release resolves without
+the launcher, the dev menu, or the network inspector. Verify with a rebuild, not a
+guess, if that gradle property ever appears.
+
 ### What is actually right
 
 No injection or code-execution issues found.
@@ -375,6 +426,31 @@ Full App Audit"), cross-checked finding by finding against the code:
     genuinely missing items from the audit's feature list that were small and
     self-contained. Most of that list was already shipped.
 
+The fourth pass, 2026-08-31 — the pre-release readiness sweep, whose findings came
+from running the checks rather than reading the code:
+
+19. ✅ Cleartext refused in the release network security config, permitted only in the
+    debug source set (§2.10). Found by reading the *generated* project after
+    `expo prebuild`, which is the only place the claim could be checked.
+20. ✅ `userInterfaceStyle` removed — a key `expo prebuild` was silently declining to
+    apply (§2.11).
+21. ✅ `pnpm lint` failed on a file inside `.claude/worktrees/`, agent scratch space that
+    is gitignored but was not in `eslint.config.js`'s `globalIgnores`. A gate that fails
+    for a reason unrelated to the commit is a gate people learn to ignore.
+22. ✅ 45 `import/first` warnings in the suite silenced *at the rule*, scoped to test
+    files, because `jest.mock` hoisting is why those imports are in the module body.
+    Warnings nobody can act on train people to skim past the ones they can.
+23. ✅ `package-lock.json` was tracked despite being gitignored and this being a
+    pnpm-only project; `mockups/` was gitignored despite being tracked. Both are the
+    same class of bug — `.gitignore` disagreeing with the index — and both make
+    `git status` less trustworthy.
+24. ✅ `ARCHITECTURE.md` §7 still said the database was plaintext on disk, three passes
+    after §2.2 encrypted it.
+25. ✅ The open-source surface: `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`,
+    `CODE_OF_CONDUCT.md`, `CHANGELOG.md`, `.gitattributes`, issue and PR templates,
+    Dependabot, and a README that documents what is in the repository rather than what
+    was intended.
+
 Audit findings rejected, with the reason, so they do not come back:
 
 - **Migration 5→6 back-approving memories.** The app is version 1.0.0 / versionCode
@@ -415,3 +491,36 @@ security gain here. Worth re-running each time Expo or React Native is upgraded.
 `js-yaml@5.3.0` was checked by hand because a 5.x line is newer than most tooling
 expects: it is the genuine `nodeca/js-yaml` package (`argparse@^2` dependency, same
 repository field), not a typosquat.
+
+## 6. The local release build could not be completed on this Windows host, 2026-08-31
+
+`assembleRelease` was attempted four times to close §2.2's "unverified on device"
+caveat. It never produced an APK. Every blocker was in the host toolchain, not in the
+repository — recorded here so the next person does not re-derive them.
+
+| Blocker | Evidence | Resolution |
+| --- | --- | --- |
+| Android SDK NDK 27.1.12297006 directory existed but was empty | `[CXX1101] … did not have a source.properties file` | Removed the partial directory; Gradle re-downloaded it, plus NDK 27.0.12077973 for `expo-sqlite` and SDK Platform 36. |
+| Only JDK 24 and 25 installed. AGP 8.x supports 17–21; on JDK 25 every `configureCMake*` task fails on a JVM warning AGP treats as process output | `Execution failed for task ':expo-sqlite:configureCMakeRelWithDebInfo[arm64-v8a]' > WARNING: A restricted method in java.lang.System has been called`. Passing `--enable-native-access=ALL-UNNAMED` through `org.gradle.jvmargs` does not reach the worker. | Used the Adoptium 17 JDK that Gradle had already provisioned under `~/.gradle/jdks/`. CMake configure then succeeded. |
+| The working-tree path contains a space (`D:\claude skills\mobile app`). The React Native bundle task shells out without quoting. | `:app:createBundleReleaseJsAndAssets` — the JS bundle and sourcemap are written successfully, then `'D:\claude' is not recognized as an internal or external command`. | Not fixable in this repo; it is upstream's quoting. A `subst` drive is not enough, because pnpm's symlinks still resolve to the original absolute path. Copied the tree to `C:\arb` and ran `pnpm install --frozen-lockfile` there. |
+| `ninja` loops re-running CMake and gives up, on this host, for four third-party native targets | `ninja: error: manifest 'build.ninja' still dirty after 100 tries` for `react-native-screens`, `react-native-worklets`, `expo-updates`, `expo-sqlite`. Reproduced on the clean `C:\arb` copy, and again with `-PreactNativeArchitectures=arm64-v8a`. CMake's own configure and generate steps report success each time. | Unresolved. No app code is involved — the failing targets are all vendored C++ — and the JS bundle builds. Plausibly the interaction between ninja on Windows and the very long `node_modules/.pnpm/<pkg>@<ver>_<hash>/…/.cxx/…` paths. |
+
+What this does and does not mean:
+
+- **The Android build is unverified, not failing.** Nothing observed points at this
+  repository. The documented release path is EAS Build
+  ([07_Deployment.md](07_Deployment.md)), which runs Linux with JDK 17 on a
+  space-free path, where none of the four blockers exist.
+- **§2.2 stays "unverified on device".** SQLCipher's gradle flag is present in the
+  generated `android/gradle.properties`, and the encrypted-open path is covered by
+  unit tests, but no APK has yet opened a database on hardware.
+- Everything the config plugins are responsible for *was* verified in the generated
+  project: `allowBackup="false"`, the `dataExtractionRules` exclusions,
+  `expo.sqlite.useSQLCipher=true`, and `cleartextTrafficPermitted="false"` in the
+  `main` network security config against `"true"` in `debug`.
+- To reproduce on a Windows host, use JDK 17 and a path without spaces:
+
+  ```
+  set JAVA_HOME=<jdk17>
+  cd android && gradlew assembleRelease
+  ```

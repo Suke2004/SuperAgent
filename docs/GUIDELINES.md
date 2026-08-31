@@ -345,8 +345,14 @@ Run in order, and do not skip a step because the last build was fine:
 5. **Grep the export artefact for the key.** Automated in
    `src/chat/export.test.ts`, worth eyeballing once on a real transcript.
 6. Confirm `allowBackup: false` and the no-backup config plugin are still in the built
-   manifest — they are the reason a restored install cannot carry credentials.
-7. Update [../progress.md](../progress.md): what was verified on hardware, and what
+   manifest — they are the reason a restored install cannot carry credentials. Confirm
+   at the same time that `app/src/main/res/xml/network_security_config.xml` in the
+   *generated* project still says `cleartextTrafficPermitted="false"`; the permissive
+   copy belongs to `src/debug` only.
+7. Update [../CHANGELOG.md](../CHANGELOG.md) — Added / Changed / Fixed / Known issues /
+   Release facts, per [07_Deployment.md](07_Deployment.md) §11.1 — and bump both
+   `expo.version` and `expo.android.versionCode` in `app.json`.
+8. Update [../progress.md](../progress.md): what was verified on hardware, and what
    remains verified only by the gates.
 
 ---
@@ -368,7 +374,9 @@ Reversing one is allowed; doing it without reading why it is there is not.
 - Certificate pinning is **deliberately absent**: users point this app at their own
   gateway origins, so pinning a certificate we do not control turns an operator's
   rotation into what looks like a network outage. The system-CA-only config is the
-  mitigation.
+  mitigation, and **cleartext is refused in the release network security config** with
+  the permissive copy scoped to `src/debug` — do not collapse the two files back into
+  one to silence a dev-server complaint.
 - There is **no request concurrency cap**: a semaphore has its own deadlock and
   starvation modes, against a bound the single-conversation UI already imposes.
 - Components are **structurally untested**, on purpose.

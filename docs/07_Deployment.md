@@ -514,7 +514,7 @@ Before shipping any migration, answer one question in writing in the release not
 
 ### 11.1 `CHANGELOG.md`
 
-Keep-a-Changelog shape, with two additions this project needs — a "what to look for" section, because testers with no telemetry are the monitoring system, and an explicit known-issues list.
+Lives at the repository root ([../CHANGELOG.md](../CHANGELOG.md)). Keep-a-Changelog shape, with two additions this project needs — a "what to look for" section, because testers with no telemetry are the monitoring system, and an explicit known-issues list.
 
 ```markdown
 ## [1.3.0] — 2026-09-26

@@ -1,0 +1,77 @@
+name: Bug report
+description: Something in the app is wrong or crashes.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste an API key.** The Debug screen and both export formats are
+        redacted for this reason — if you hand-edit an export, check it first.
+
+        If this is a security issue, do not file it here: see
+        [SECURITY.md](../blob/main/SECURITY.md) for private reporting.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Settings → Providers → …
+        2. Send a message with …
+        3. …
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Settings → About, or the version of the APK you installed.
+      placeholder: 1.0.0 (versionCode 1)
+    validations:
+      required: true
+
+  - type: input
+    id: android
+    attributes:
+      label: Android version and device
+      placeholder: Android 15, Pixel 7a
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How was it installed
+      options:
+        - APK from a GitHub release
+        - APK built with EAS
+        - Local build (expo run:android)
+        - Dev server (expo start)
+    validations:
+      required: true
+
+  - type: textarea
+    id: debug
+    attributes:
+      label: Debug log
+      description: Settings → Debug → copy. Redacted already; check it anyway.
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before filing
+      options:
+        - label: I checked [docs/flaws.md](../blob/main/docs/flaws.md) — this is not a known open issue.
+          required: true
+        - label: There is no API key or unredacted credential anywhere in this report.
+          required: true

@@ -2,13 +2,15 @@
 
 # dependencies
 node_modules/
-.claude
+# Agent scratch space and git worktrees.
+.claude/
+# This project is pnpm-only (pnpm-lock.yaml is the committed lockfile). A stray
+# package-lock.json means someone ran npm and resolved a different tree.
 package-lock.json
-mockups/
+yarn.lock
 
 # Expo
 .expo/
-dist/
 web-build/
 expo-env.d.ts
 

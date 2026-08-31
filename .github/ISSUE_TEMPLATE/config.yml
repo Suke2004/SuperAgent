@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Suke2004/SuperAgent/security/advisories/new
+    about: Report privately. Never in a public issue.
+  - name: Daily use and setup questions
+    url: https://github.com/Suke2004/SuperAgent/blob/main/docs/USAGE.md
+    about: How to configure a provider, add an MCP server, import a skill.
+  - name: Contributor guidelines
+    url: https://github.com/Suke2004/SuperAgent/blob/main/docs/GUIDELINES.md
+    about: Read before opening a pull request.
