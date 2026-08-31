@@ -102,6 +102,23 @@ export default function SettingsHub() {
       </Section>
 
       <Section
+        title="Built-in tools"
+        note={
+          'Writing files and rendering PDFs are always available — they only touch this app’s own storage. ' +
+          'Fetching a page is not: the address can come from something the model just read, so it stays off ' +
+          'until you say otherwise. Local and private network addresses are refused either way.'
+        }
+      >
+        <SwitchRow
+          first
+          label="Let the model fetch web pages"
+          subtitle="One GET at a time, text only, no cookies and no credentials"
+          value={settings.allowWebFetch}
+          onChange={(next) => settings.set('allowWebFetch', next)}
+        />
+      </Section>
+
+      <Section
         title="Prompts"
         note="Templates with {{variables}} you insert into the composer. Inserted from a conversation's menu."
       >

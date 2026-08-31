@@ -638,7 +638,17 @@ function toAnthropicBlocks(block: ContentBlock): Record<string, unknown>[] {
         {
           type: 'tool_result',
           tool_use_id: block.toolUseId,
-          content: block.content,
+          // A string is the common shape and the cheaper one to read in a log; the
+          // array form is only used when there is an image to carry alongside it.
+          content: block.images?.length
+            ? [
+                { type: 'text', text: block.content },
+                ...block.images.map((image) => ({
+                  type: 'image' as const,
+                  source: { type: 'base64' as const, media_type: image.mediaType, data: image.data },
+                })),
+              ]
+            : block.content,
           ...(block.isError ? { is_error: true } : {}),
         },
       ];

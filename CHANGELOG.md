@@ -5,12 +5,54 @@ All notable changes to this project are documented here. Format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html), interpreted for a client
 app in [docs/07_Deployment.md](docs/07_Deployment.md) §2.1.
 
-Distribution is a direct APK. There is no OTA channel (`updates.enabled: false`), so
-every entry below reaches a device only as a new install.
+Distribution is a direct APK, with EAS Update enabled (`updates.enabled: true`, the
+`preview` and `production` channels in [eas.json](eas.json)). A JavaScript-only entry
+can therefore reach a device as an update; anything touching a native module cannot,
+and is marked **needs a rebuild** below.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Slash commands** — `/` in the composer opens one list over prompt templates,
+  skills, MCP prompts and app commands. Templates with `{{variables}}` open the fill
+  form; MCP prompts are fetched with `prompts/get` and inserted as text.
+- **Built-in tools** — `write_file`, `create_pdf`, `fetch_url` and
+  `read_mcp_resource`, so the model can produce a file and read a page without an MCP
+  server in between. `fetch_url` is off until switched on in Settings.
+- **Document generation** — Markdown, text, CSV and JSON files written to the app's
+  own directory, plus PDF through the platform renderer, each surfaced in the
+  transcript with Share and Open. **Needs a rebuild** (`expo-print`, `expo-sharing`).
+- **Voice input** — hold the microphone to dictate. The transcript lands in the draft
+  as editable text rather than being sent. Declares `RECORD_AUDIO` and the
+  speech-recognition permission strings. **Needs a rebuild**
+  (`expo-speech-recognition`).
+
+### Changed
+
+- The app is now called **SuperAgent** everywhere, from one constant
+  ([src/lib/app.ts](src/lib/app.ts)). The slug, Android package and URL scheme are
+  unchanged on purpose — changing them would orphan installs and OAuth redirects.
+- Tool manifests are now fitted to a token budget, and the transcript says when tools
+  were withheld rather than only the system prompt.
+- Pre-approved tool calls in one turn run concurrently; calls that need an approval
+  sheet stay serial.
+- A turn stopped by the tool-round cap offers **Continue** instead of asking for the
+  message to be sent again.
+
+### Fixed
+
+- Image and audio content returned by an MCP tool reached the model as the sentence
+  "[image: …, not shown]". It is now passed through as a real image block on
+  transports that accept one.
+- A tool call whose arguments were truncated mid-stream is refused with a result that
+  says so, instead of being sent to the server as `{ "__unparsed": … }` — a schema
+  error the model cannot read as "your last call was cut off".
+- Glyph buttons no longer drift out of their discs at large system font sizes.
+- `fetch_url` re-checks the address it *landed* on, so a public host cannot redirect the
+  fetch onto a link-local or private address.
+- A server offering hundreds of resources showed only the first 20 with no sign there
+  were more; the section now counts them and opens in full on request.
 
 ## [1.0.0] — 2026-08-31
 

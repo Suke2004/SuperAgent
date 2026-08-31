@@ -398,7 +398,7 @@ describe('several conversations at once', () => {
 
   it('names the bundle by count, since no one title describes it', () => {
     const out = exportConversations([simple(), simple()], 'json', { now: AT });
-    expect(out.filename).toBe('jarvis-2-conversations-2026-08-30.json');
+    expect(out.filename).toBe('superagent-2-conversations-2026-08-30.json');
   });
 
   it('separates Markdown conversations with a rule and totals the messages', () => {

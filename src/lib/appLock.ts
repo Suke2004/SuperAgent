@@ -18,6 +18,8 @@
 
 import * as LocalAuthentication from 'expo-local-authentication';
 
+import { APP_NAME } from '@/lib/app';
+
 /**
  * Can this device lock at all?
  *
@@ -37,7 +39,7 @@ export async function appLockAvailable(): Promise<boolean> {
 export async function unlockApp(): Promise<boolean> {
   try {
     const result = await LocalAuthentication.authenticateAsync({
-      promptMessage: 'Unlock Jarvis',
+      promptMessage: `Unlock ${APP_NAME}`,
       cancelLabel: 'Cancel',
     });
     return result.success;

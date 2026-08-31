@@ -18,6 +18,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, AppState, Pressable, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { APP_NAME } from '@/lib/app';
 import { useHydrated } from '@/lib/storage';
 import { invalidateTransports } from '@/lib/gateway';
 import { unlockApp } from '@/lib/appLock';
@@ -51,7 +52,7 @@ function Navigator() {
       >
         {/* Home draws its own serif greeting, which *is* the title; a navigator header
             above it would say the app's name twice. */}
-        <Stack.Screen name="index" options={{ title: 'Jarvis', headerShown: false }} />
+        <Stack.Screen name="index" options={{ title: APP_NAME, headerShown: false }} />
         {/* The title comes from the conversation, set by the screen itself. */}
         <Stack.Screen name="chat/[id]" options={{ title: '' }} />
         <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
@@ -98,10 +99,10 @@ function Booting() {
 function Locked({ onUnlock }: { onUnlock: () => void }) {
   return (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#262624', gap: 24 }}>
-      <Text style={{ color: '#f5f4ef', fontSize: 20 }}>Jarvis is locked</Text>
+      <Text style={{ color: '#f5f4ef', fontSize: 20 }}>{APP_NAME} is locked</Text>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel="Unlock Jarvis"
+        accessibilityLabel={`Unlock ${APP_NAME}`}
         onPress={onUnlock}
         style={{ paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10, backgroundColor: '#d97757' }}
       >

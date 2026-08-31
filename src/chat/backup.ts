@@ -22,6 +22,7 @@
  * it does the timid thing.
  */
 
+import { APP_WIRE_NAME } from '@/lib/app';
 import { redactString } from '@/lib/redact';
 
 /** Bump when the shape changes incompatibly. A new optional field is not that. */
@@ -110,7 +111,7 @@ export function buildBackup(
   now = Date.now(),
 ): BackupResult {
   const backup: Backup = {
-    app: 'AgentRouter Mobile',
+    app: APP_WIRE_NAME,
     schema: BACKUP_SCHEMA_VERSION,
     exportedAt: new Date(now).toISOString(),
     settings: input.settings,
@@ -180,7 +181,7 @@ export function parseBackup(text: string): ParsedBackup {
   return {
     ok: true,
     backup: {
-      app: typeof record.app === 'string' ? record.app : 'AgentRouter Mobile',
+      app: typeof record.app === 'string' ? record.app : APP_WIRE_NAME,
       schema: record.schema,
       exportedAt: typeof record.exportedAt === 'string' ? record.exportedAt : '',
       settings: isRecord(record.settings) ? record.settings : {},

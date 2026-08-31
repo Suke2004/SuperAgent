@@ -17,6 +17,7 @@ import {
   describeArguments,
   failedCall,
   initializeParams,
+  MAX_TOOL_IMAGE_BASE64,
   MAX_TOOL_NAME,
   MCP_PROTOCOL_VERSION,
   negotiatedVersion,
@@ -28,6 +29,7 @@ import {
   protectedResourceUrls,
   qualifyToolName,
   renderCallResult,
+  renderPromptMessages,
   resourcesFrom,
   rpcNotification,
   rpcRequest,
@@ -101,7 +103,16 @@ describe('reading what a server advertises', () => {
       { uri: 'file:///a', name: 'file:///a', description: '' },
     ]);
     expect(promptsFrom({ prompts: [{ name: 'review', description: 'Reviews a diff.' }] })).toEqual([
-      { name: 'review', description: 'Reviews a diff.' },
+      { name: 'review', description: 'Reviews a diff.', arguments: [] },
+    ]);
+    // Declared arguments are kept: they are what the composer asks for before
+    // `prompts/get`, and a server that omits them declares none.
+    expect(
+      promptsFrom({
+        prompts: [{ name: 'daily', arguments: [{ name: 'date', required: true }, { description: 'nameless' }] }],
+      }),
+    ).toEqual([
+      { name: 'daily', description: '', arguments: [{ name: 'date', description: '', required: true }] },
     ]);
     expect(nextCursor({ nextCursor: 'page2' })).toBe('page2');
     expect(nextCursor({})).toBeNull();
@@ -145,7 +156,9 @@ describe('bridging tools into a request', () => {
 });
 
 describe('a call result', () => {
-  it('joins text and describes what it will not inline', () => {
+  it('carries an image back rather than describing it away', () => {
+    // The bug this replaces: a screenshot server's result reached the model as the
+    // words "not shown", so it was told the call worked and given nothing to look at.
     expect(
       renderCallResult({
         content: [
@@ -154,7 +167,44 @@ describe('a call result', () => {
           { type: 'text', text: 'second' },
         ],
       }),
-    ).toEqual({ content: 'first\n[image: image/png, not shown]\nsecond' });
+    ).toEqual({
+      content: 'first\n[image: image/png, attached below]\nsecond',
+      images: [{ mediaType: 'image/png', data: 'AAAA' }],
+    });
+  });
+
+  it('still describes what it cannot carry', () => {
+    // Audio has nowhere to go on either transport; an unknown image type and one
+    // over the ceiling would both be sent as bytes no model will accept.
+    expect(renderCallResult({ content: [{ type: 'audio', mimeType: 'audio/wav', data: 'AAAA' }] })).toEqual({
+      content: '[audio: audio/wav, not shown]',
+    });
+    expect(renderCallResult({ content: [{ type: 'image', mimeType: 'image/tiff', data: 'AAAA' }] })).toEqual({
+      content: '[image: image/tiff, not shown]',
+    });
+    expect(
+      renderCallResult({
+        content: [{ type: 'image', mimeType: 'image/png', data: 'A'.repeat(MAX_TOOL_IMAGE_BASE64 + 1) }],
+      }),
+    ).toEqual({ content: '[image: image/png, not shown]' });
+  });
+
+  it('reads a prompt back as one piece of text', () => {
+    expect(
+      renderPromptMessages({ messages: [{ role: 'user', content: { type: 'text', text: 'Review this.' } }] }),
+    ).toBe('Review this.');
+    // More than one message keeps its roles: the draft is a single message, and
+    // without the labels a two-turn prompt reads as one run-on paragraph.
+    expect(
+      renderPromptMessages({
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'Ask' }] },
+          { role: 'assistant', content: [{ type: 'text', text: 'Answer' }] },
+        ],
+      }),
+    ).toBe('user: Ask\n\nassistant: Answer');
+    expect(renderPromptMessages({})).toBe('');
+    expect(renderPromptMessages({ messages: [{ role: 'user', content: [{ type: 'image', data: 'AAAA' }] }] })).toBe('');
   });
 
   it('passes a tool-level failure through as an error result', () => {

@@ -49,6 +49,19 @@ import type {
 } from '@/db/conversations';
 import type { ListCursor } from '@/db/list-query';
 import { buildRequest, composeSystem, validateConfig, hasBlockingIssue } from '@/chat/request';
+import { formatBytes } from '@/chat/attachments';
+import {
+  builtinTools,
+  CREATE_PDF,
+  FETCH_URL,
+  parsePdf,
+  parseWriteFile,
+  READ_RESOURCE,
+  WRITE_FILE,
+} from '@/chat/builtins';
+import { writeGeneratedFile, writePdf } from '@/chat/files';
+import { fetchAsText } from '@/chat/web';
+import { describeWithheldTools, selectTools } from '@/chat/tools';
 import { INVOKE_SKILL, invokeSkillTool, renderSkillCatalogue, resolveSkillCall } from '@/chat/skill';
 import type { Skill } from '@/chat/skill';
 import { MCP_TOOL_PREFIX } from '@/mcp/protocol';
@@ -62,7 +75,8 @@ import { invalidateTransports, resolveTransport } from '@/lib/gateway';
 import { log } from '@/lib/log';
 import { estimateRequestTokens } from '@/lib/tokens';
 import { capabilitiesFor, useModels, wireHintsFor } from '@/stores/models';
-import { useCalibration } from '@/stores/calibration';import { activeProfile, useProviders } from '@/stores/providers';
+import { useCalibration } from '@/stores/calibration';
+import { activeProfile, useProviders } from '@/stores/providers';
 import { useMemory } from '@/stores/memory';
 import { useSkills } from '@/stores/skills';
 import { useMcp } from '@/stores/mcp';
@@ -89,7 +103,14 @@ const COMMIT_INTERVAL = 60;
 /* Stream state                                                                */
 /* -------------------------------------------------------------------------- */
 
-export type StreamPhase = 'preparing' | 'summarising' | 'connecting' | 'retrying' | 'streaming' | 'saving';
+export type StreamPhase =
+  | 'preparing'
+  | 'summarising'
+  | 'connecting'
+  | 'retrying'
+  | 'streaming'
+  | 'tools'
+  | 'saving';
 
 export interface PartialToolCall {
   id: string;
@@ -267,6 +288,15 @@ export interface ChatState {
    */
   contextNotes: Record<string, string>;
 
+  /**
+   * Conversations whose last turn stopped at the tool-round cap.
+   *
+   * Its own map rather than a flag inside the note: every other note describes
+   * something already done and has no action left, and this one is the only case
+   * where there is a button to press.
+   */
+  stalled: Record<string, true>;
+
   loadList(options?: ListOptions): Promise<void>;
   /** Appends the next page. A no-op at the end of the list or while one is loading. */
   loadMore(): Promise<void>;
@@ -344,6 +374,14 @@ export interface ChatState {
    * two call sites that each have to work out what "last" is.
    */
   retryTurn(conversationId: string): Promise<void>;
+  /**
+   * Runs another turn on the history as it stands, with the tool-round count reset.
+   *
+   * What the Continue button next to "this turn was stopped" does. Not `retryTurn`:
+   * the history already ends with the tool results, so there is nothing to rewind —
+   * the model simply has not been asked to look at them yet.
+   */
+  continueTurn(conversationId: string): Promise<void>;
   dismissError(conversationId: string): void;
   /** Clears the last turn's context note once the user has read it. */
   dismissContextNote(conversationId: string): void;
@@ -358,6 +396,7 @@ export const useChat = create<ChatState>()((set, get) => ({
   attachments: {},
   streams: {},
   contextNotes: {},
+  stalled: {},
 
   async loadList(options) {
     set({ listLoading: true, listOptions: options });
@@ -734,12 +773,20 @@ export const useChat = create<ChatState>()((set, get) => ({
     });
   },
 
+  async continueTurn(conversationId) {
+    if (get().streams[conversationId]) return;
+    get().dismissContextNote(conversationId);
+    await runTurn(set, get, conversationId, {});
+  },
+
   dismissContextNote(conversationId) {
     set((state) => {
       if (state.contextNotes[conversationId] === undefined) return {};
       const contextNotes = { ...state.contextNotes };
       delete contextNotes[conversationId];
-      return { contextNotes };
+      const stalled = { ...state.stalled };
+      delete stalled[conversationId];
+      return { contextNotes, stalled };
     });
   },
 }));
@@ -830,12 +877,26 @@ function maxToolRounds(): number {
   return Math.max(1, getSetting('maxToolIterations'));
 }
 
+/**
+ * Share of the context window the tool manifest may take.
+ *
+ * A tenth is enough for the built-ins plus a dozen MCP tools on a small model, and
+ * leaves the window for the conversation — which is what the user is paying for.
+ * Every request carries the whole manifest, so this is a per-round cost, not a
+ * one-off.
+ */
+const TOOL_BUDGET_SHARE = 0.1;
+
 /** What a resolved tool call returns, whichever kind of tool it was. */
 interface ResolvedCall {
   content: string;
   isError?: true;
   /** The skill that was loaded, for the transcript badge. MCP calls have none. */
   name?: string;
+  /** Images the tool returned, for transports that can carry one in a tool result. */
+  images?: { mediaType: string; data: string }[];
+  /** A file this call produced, for the transcript and the files list. */
+  file?: { name: string; uri: string; bytes: number };
 }
 
 /**
@@ -850,9 +911,103 @@ async function resolveCall(
   skills: readonly Skill[],
   servers: readonly string[] | undefined,
 ): Promise<ResolvedCall> {
+  // A truncated arguments blob never reaches a tool. `blocksOf` keeps it verbatim as
+  // evidence the stream was cut off, and forwarding it would send a server
+  // `{"__unparsed": "{\"path\": \"/et"}` — which fails as a schema error the model
+  // cannot read as "your last call was cut off, send it again".
+  if (call.input !== null && typeof call.input === 'object' && '__unparsed' in (call.input as object)) {
+    return {
+      content: `The arguments for ${call.name} arrived incomplete, so it was not run. Call it again.`,
+      isError: true,
+    };
+  }
   if (call.name === INVOKE_SKILL) return resolveSkillCall(call.input, skills);
+  if (call.name === WRITE_FILE) return resolveWriteFile(call.input);
+  if (call.name === CREATE_PDF) return resolvePdf(call.input);
+  if (call.name === FETCH_URL) return resolveFetch(call.input);
+  if (call.name === READ_RESOURCE) return resolveResource(call.input, servers);
   if (call.name.startsWith(`${MCP_TOOL_PREFIX}_`)) return useMcp.getState().invoke(call.name, call.input, servers);
   return { content: `There is no tool called "${call.name}".`, isError: true };
+}
+
+/**
+ * Writes the file the model asked for.
+ *
+ * The result names the file and says where it went, because the model's next sentence
+ * is going to tell the user about it and "saved to your device" with no name is not
+ * something a user can find. The `file` field is what puts a card in the transcript.
+ */
+async function resolveWriteFile(input: unknown): Promise<ResolvedCall> {
+  const request = parseWriteFile(input);
+  if (!request.ok) return { content: request.reason, isError: true };
+  try {
+    const file = await writeGeneratedFile(request.name, request.content);
+    return {
+      content: `Wrote ${file.name} (${formatBytes(file.bytes)}). It is in the app's files, where the user can share or open it.`,
+      file: { name: file.name, uri: file.uri, bytes: file.bytes },
+    };
+  } catch (error) {
+    return { content: `Could not write that file: ${message(error)}`, isError: true };
+  }
+}
+
+/** Renders the PDF. Same shape as {@link resolveWriteFile}, different renderer. */
+async function resolvePdf(input: unknown): Promise<ResolvedCall> {
+  const request = parsePdf(input);
+  if (!request.ok) return { content: request.reason, isError: true };
+  try {
+    const file = await writePdf(request.name, request.title, request.markdown);
+    return {
+      content: `Wrote ${file.name} (${formatBytes(file.bytes)}) as a PDF. It is in the app's files, where the user can share or open it.`,
+      file: { name: file.name, uri: file.uri, bytes: file.bytes },
+    };
+  } catch (error) {
+    return { content: `Could not render that PDF: ${message(error)}`, isError: true };
+  }
+}
+
+/**
+ * Fetches a page, if the user has switched web access on.
+ *
+ * The switch is re-read here rather than trusted from the manifest: the tool was
+ * offered when the turn started, and a user who turned it off mid-turn has said no.
+ */
+async function resolveFetch(input: unknown): Promise<ResolvedCall> {
+  if (!getSetting('allowWebFetch')) {
+    return {
+      content: 'Web access is switched off in this app (Settings → Tools). Ask the user to turn it on if the task needs it.',
+      isError: true,
+    };
+  }
+  const outcome = await fetchAsText(input);
+  return outcome.isError ? { content: outcome.content, isError: true } : { content: outcome.content };
+}
+
+/**
+ * Reads an MCP resource, or lists what there is.
+ *
+ * Calling with no URI lists rather than failing: the enum in the schema can be long
+ * enough to have been trimmed, and a model that cannot see the list would otherwise
+ * guess at URIs.
+ */
+async function resolveResource(input: unknown, servers: readonly string[] | undefined): Promise<ResolvedCall> {
+  const uri =
+    input !== null && typeof input === 'object' && typeof (input as { uri?: unknown }).uri === 'string'
+      ? (input as { uri: string }).uri
+      : '';
+  if (!uri) {
+    const available = useMcp.getState().resources(servers);
+    if (!available.length) return { content: 'No server in this conversation advertises any resources.', isError: true };
+    return {
+      content: ['Available resources:', ...available.map((r) => `- ${r.uri} (${r.serverName}): ${r.description}`)].join('\n'),
+    };
+  }
+  const result = await useMcp.getState().readResource(uri, servers);
+  return result.isError ? { content: result.content, isError: true } : { content: result.content };
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -975,6 +1130,27 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     if (conversation.config.servers?.length && !useMcp.getState().loaded) await useMcp.getState().load();
     const bridged = useMcp.getState().bridge(conversation.config.servers);
 
+    // The manifest, fitted to a budget. `selectTools` existed with tests and no
+    // caller, which was fine while the only tools were one skill loader and whatever
+    // MCP contributed; with the built-ins added, a conversation on a small model with
+    // two chatty servers can spend a third of its window on tool JSON before a word
+    // is sent. `required` keeps the built-ins, which are small and always relevant;
+    // the rest compete for what is left.
+    const offered = [
+      ...(enabledSkills.length ? [invokeSkillTool(enabledSkills)] : []),
+      ...builtinTools({
+        web: getSetting('allowWebFetch'),
+        resources: useMcp.getState().resources(conversation.config.servers).map((resource) => resource.uri),
+      }),
+      ...bridged.map((tool) => tool.definition),
+    ];
+    const selection = selectTools({
+      tools: offered,
+      budget: Math.round(capabilities.contextWindow * TOOL_BUDGET_SHARE),
+      required: [INVOKE_SKILL, WRITE_FILE, CREATE_PDF],
+    });
+    const withheldNote = describeWithheldTools(selection.withheld);
+
     const { messages, summary, changed, trim, summaryFailed } = await applyContextStrategy({
       conversationId,
       conversation,
@@ -1019,16 +1195,9 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       ...(summary ? { summary } : {}),
       ...(memoryBlock.text ? { memory: memoryBlock.text } : {}),
       ...(skillCatalogue ? { skills: skillCatalogue } : {}),
-      ...(enabledSkills.length || bridged.length
-        ? {
-            tools: [
-              ...(enabledSkills.length ? [invokeSkillTool(enabledSkills)] : []),
-              ...bridged.map((tool) => tool.definition),
-            ],
-          }
-        : {}),
+      ...(withheldNote ? { withheld: withheldNote } : {}),
+      ...(selection.tools.length ? { tools: selection.tools } : {}),
     });
-
     // Breakpoints last, over the assembled request, and suppressed when history was
     // rewritten this turn: a rewritten prefix cannot be a cache hit, so asking for
     // a write would pay the 1.25× premium for an entry nothing will read.
@@ -1125,12 +1294,35 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     // its `meta` can name the skills — which is what puts them in the transcript's
     // badges rather than only in the tool result blocks.
     //
-    // One at a time, deliberately: an MCP call can stop to ask the user, and two
-    // approval sheets fighting over the screen is not an interface.
+    // Calls that will stop to ask the user run one at a time: two approval sheets
+    // fighting over the screen is not an interface. Everything already approved runs
+    // together, which is the difference between a five-tool round costing five
+    // sequential network waits and costing one.
     const calls = blocks.filter((block): block is ToolUseBlock => block.type === 'tool_use');
     const invocations: { call: ToolUseBlock; result: ResolvedCall }[] = [];
-    for (const call of calls) {
-      invocations.push({ call, result: await resolveCall(call, enabledSkills, conversation.config.servers) });
+    if (calls.length) {
+      live.phase = 'tools';
+      publish(true);
+
+      const asks = (call: ToolUseBlock): boolean =>
+        call.name.startsWith(`${MCP_TOOL_PREFIX}_`) &&
+        useMcp.getState().needsApproval(call.name, conversation.config.servers);
+      const resolve = (call: ToolUseBlock) => resolveCall(call, enabledSkills, conversation.config.servers);
+
+      const settled = new Map<string, ResolvedCall>();
+      await Promise.all(
+        calls.filter((call) => !asks(call)).map(async (call) => void settled.set(call.id, await resolve(call))),
+      );
+      for (const call of calls.filter(asks)) settled.set(call.id, await resolve(call));
+
+      // Back into the model's own order: a `tool_result` block has to line up with
+      // the `tool_use` it answers.
+      for (const call of calls) {
+        const result = settled.get(call.id);
+        if (result) invocations.push({ call, result });
+      }
+      live.phase = 'saving';
+      publish(true);
     }
     const invoked = invocations.map((i) => i.result.name).filter((name): name is string => Boolean(name));
     if (invoked.length) meta.skillsInvoked = invoked;
@@ -1190,12 +1382,17 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     // unanswered in the history makes every later request invalid, so refusing to
     // continue must not also refuse to close the call.
     if (invocations.length) {
+      // Images ride along only where they can be seen: a text-only model would get a
+      // request rejected for a block it cannot take, and the result text already
+      // names what the tool returned.
+      const carryImages = capabilities.vision === true && profile.kind === 'anthropic';
       const results = await appendMessage(conversationId, {
         role: 'user',
         content: invocations.map(({ call, result }) => ({
           type: 'tool_result' as const,
           toolUseId: call.id,
           content: result.content,
+          ...(carryImages && result.images?.length ? { images: result.images } : {}),
           ...(result.isError ? { isError: true } : {}),
         })),
       });
@@ -1208,7 +1405,8 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
         setContextNote(
           set,
           conversationId,
-          `The model called tools ${done + 1} times without answering, so this turn was stopped. Send again to continue it.`,
+          `The model called tools ${done + 1} times without answering, so this turn was stopped.`,
+          true,
         );
       }
     }
@@ -1226,8 +1424,8 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
         setContextNote(
           set,
           conversationId,
-          `The model paused and was resumed ${done} times without finishing, so this turn was stopped. ` +
-            'Send again to continue it.',
+          `The model paused and was resumed ${done} times without finishing, so this turn was stopped.`,
+          true,
         );
       }
     }
@@ -1329,12 +1527,15 @@ function clearStream(set: Setter, conversationId: string): void {
 }
 
 /** Records (or clears, on an empty string) what the last turn did to the context. */
-function setContextNote(set: Setter, conversationId: string, note: string): void {
+function setContextNote(set: Setter, conversationId: string, note: string, continuable = false): void {
   set((state) => {
     const contextNotes = { ...state.contextNotes };
     if (note) contextNotes[conversationId] = note;
     else delete contextNotes[conversationId];
-    return { contextNotes };
+    const stalled = { ...state.stalled };
+    if (continuable) stalled[conversationId] = true;
+    else delete stalled[conversationId];
+    return { contextNotes, stalled };
   });
 }
 
@@ -1630,6 +1831,11 @@ export function useDraft(conversationId: string): string {
 /** What the last turn's context handling did, if it did anything. */
 export function useContextNote(conversationId: string): string | undefined {
   return useChat((state) => state.contextNotes[conversationId]);
+}
+
+/** Whether the last turn stopped at a cap and can simply be asked to carry on. */
+export function useCanContinue(conversationId: string): boolean {
+  return useChat((state) => state.stalled[conversationId] === true);
 }
 
 const NO_ATTACHMENTS: ContentBlock[] = [];

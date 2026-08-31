@@ -72,6 +72,15 @@ export interface ToolResultBlock {
   toolUseId: string;
   /** Rendered result text. Structured results are JSON-stringified by the caller. */
   content: string;
+  /**
+   * Images the tool returned, base64.
+   *
+   * Set only when the model can see them: a transport that cannot carry an image in
+   * a tool result drops these and sends the text, which already says an image was
+   * returned. A screenshot tool whose picture is thrown away is a tool the model
+   * will keep calling and keep learning nothing from.
+   */
+  images?: { mediaType: string; data: string }[];
   isError?: boolean;
 }
 

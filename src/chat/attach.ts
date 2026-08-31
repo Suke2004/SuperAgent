@@ -45,6 +45,7 @@ import {
   QUALITY_LADDER,
   attachmentSize,
 } from '@/chat/attachments';
+import { APP_NAME } from '@/lib/app';
 import { log } from '@/lib/log';
 import type { ModelCapabilities } from '@/transports/support';
 import type { ContentBlock, DocumentBlock, TransportKind } from '@/transports/types';
@@ -215,7 +216,7 @@ export async function pickImages(existing: readonly ContentBlock[]): Promise<Att
       notes: [
         permission.canAskAgain
           ? 'Photo access is needed to attach an image. Nothing is uploaded until you press send.'
-          : 'Photo access is turned off for Jarvis. Open Settings → Permissions to allow it.',
+          : `Photo access is turned off for ${APP_NAME}. Open Settings → Permissions to allow it.`,
       ],
       ...(permission.canAskAgain ? {} : { needsSettings: true }),
     };
@@ -251,7 +252,7 @@ export async function captureImage(existing: readonly ContentBlock[]): Promise<A
       notes: [
         permission.canAskAgain
           ? 'Camera access is needed to take a photo. Nothing is uploaded until you press send.'
-          : 'Camera access is turned off for Jarvis. Open Settings → Permissions to allow it.',
+          : `Camera access is turned off for ${APP_NAME}. Open Settings → Permissions to allow it.`,
       ],
       ...(permission.canAskAgain ? {} : { needsSettings: true }),
     };

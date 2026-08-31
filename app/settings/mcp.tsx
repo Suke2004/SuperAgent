@@ -45,8 +45,10 @@ import { useTheme } from '@/theme';
 
 const BLANK: McpServerDraft = { name: '', url: '', transport: 'http', authKind: 'none', headers: {} };
 
-/** One header row in the form. A list, not a record, so an empty key can be typed. */
-type HeaderPair = { key: string; value: string };
+/** Resources shown before the "Show all" row. */
+const RESOURCE_PREVIEW = 20;
+
+/** One header row in the form. A list, not a record, so an empty key can be typed. */type HeaderPair = { key: string; value: string };
 
 export default function McpScreen() {
   const t = useTheme();
@@ -63,6 +65,8 @@ export default function McpScreen() {
   const [outcome, setOutcome] = useState<string | null>(null);
   const [detailFor, setDetailFor] = useState<string | null>(null);
   const [menuFor, setMenuFor] = useState<McpServer | null>(null);
+  /** Resource lists run to hundreds on a file server; the first 20 answer "is it working?". */
+  const [allResources, setAllResources] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -148,7 +152,7 @@ export default function McpScreen() {
   };
 
   const menuActions = (server: McpServer): SheetAction[] => [
-    { label: 'Tools and permissions', onPress: () => { setDetailFor(server.id); setMenuFor(null); } },
+    { label: 'Tools and permissions', onPress: () => { setDetailFor(server.id); setAllResources(false); setMenuFor(null); } },
     {
       label: 'Connect and rediscover',
       subtitle: 'Asks the server what it can do now',
@@ -323,9 +327,16 @@ export default function McpScreen() {
 
         {detail.resources.length ? (
           <Section title={`Resources (${detail.resources.length})`} note="Listed for reference; the model reads them through the server's own tools.">
-            {detail.resources.slice(0, 20).map((resource, index) => (
+            {(allResources ? detail.resources : detail.resources.slice(0, RESOURCE_PREVIEW)).map((resource, index) => (
               <Row key={resource.uri} first={index === 0} label={resource.name || resource.uri} subtitle={resource.uri} />
             ))}
+            {!allResources && detail.resources.length > RESOURCE_PREVIEW ? (
+              <Row
+                label={`Show all ${detail.resources.length}`}
+                onPress={() => setAllResources(true)}
+                accessibilityHint="Lists every resource this server offers"
+              />
+            ) : null}
           </Section>
         ) : null}
 

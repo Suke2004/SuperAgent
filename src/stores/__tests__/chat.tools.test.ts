@@ -132,8 +132,37 @@ jest.mock('@/lib/gateway', () => ({
 }));
 
 /* -------------------------------------------------------------------------- */
+/* The file system                                                            */
+/* -------------------------------------------------------------------------- */
+
+// `write_file` and `create_pdf` pull these in through `@/chat/files`. None of the
+// tests below writes a file; the mocks exist only because these three packages ship
+// ESM that this CommonJS suite cannot parse, and importing the store loads them.
+jest.mock('expo-file-system', () => ({
+  Paths: { document: { uri: 'file:///documents/' } },
+  Directory: class {},
+  File: class {},
+}));
+jest.mock('expo-print', () => ({ printToFileAsync: jest.fn() }));
+jest.mock('expo-sharing', () => ({ isAvailableAsync: jest.fn(async () => false), shareAsync: jest.fn() }));
+
+/* -------------------------------------------------------------------------- */
 /* The stores around it                                                       */
 /* -------------------------------------------------------------------------- */
+
+/** Order MCP calls finished in, so "ran concurrently" is observable. */
+const mockFinished: string[] = [];
+
+/**
+ * A fake MCP server. `slow_*` tools finish a tick after `fast_*` ones, so a loop that
+ * awaited each call in turn and one that ran them together produce different
+ * `mockFinished` orders.
+ */
+async function mockInvoke(name: string): Promise<{ content: string }> {
+  if (name.includes('slow')) await new Promise((resolve) => setTimeout(resolve, 20));
+  mockFinished.push(name);
+  return { content: `${name} ran` };
+}
 
 const mockSkill = {
   id: 'skl_1',
@@ -183,7 +212,18 @@ jest.mock('@/stores/skills', () => ({
   useSkills: { getState: () => ({ loaded: true, enabledFor: () => [mockSkill], load: jest.fn() }) },
 }));
 jest.mock('@/stores/mcp', () => ({
-  useMcp: { getState: () => ({ loaded: true, bridge: () => [], invoke: jest.fn(), load: jest.fn() }) },
+  useMcp: {
+    getState: () => ({
+      loaded: true,
+      bridge: () => [],
+      resources: () => [],
+      load: jest.fn(),
+      // Nothing here asks first: the approval sheet is a UI path, and the loop runs
+      // pre-approved calls concurrently, which is what the ordering test is about.
+      needsApproval: () => false,
+      invoke: mockInvoke,
+    }),
+  },
 }));
 jest.mock('@/stores/reachability', () => ({
   useReachability: { getState: () => ({ markReachable: jest.fn(), markUnreachable: jest.fn() }) },
@@ -229,8 +269,9 @@ beforeEach(() => {
   rows.length = 0;
   mockScript.length = 0;
   mockSent.length = 0;
+  mockFinished.length = 0;
   mockMaxToolIterations = 4;
-  useChat.setState({ streams: {}, messages: {}, drafts: {}, attachments: {}, contextNotes: {} });
+  useChat.setState({ streams: {}, messages: {}, drafts: {}, attachments: {}, contextNotes: {}, stalled: {} });
 });
 
 test('a skill invocation runs a second round, and the body reaches it as a tool result', async () => {
@@ -274,7 +315,65 @@ test('the iteration cap stops a model that only calls tools, and still answers t
 
   const note = useChat.getState().contextNotes.c1 ?? '';
   expect(note).toContain('called tools 2 times');
-  expect(note).toContain('Send again');
+  // Continuing is a button now, not an instruction to type something the user did
+  // not want to say.
+  expect(note).not.toContain('Send again');
+  expect(useChat.getState().stalled.c1).toBe(true);
+
+  // And that button starts a fresh turn from the same history, without a new message.
+  mockScript.length = 0; // Drop the round the cap refused; this time the model answers.
+  mockScript.push(answers('Here is what I found.'));
+  await useChat.getState().continueTurn('c1');
+  expect(mockSent).toHaveLength(3);
+  expect(rows[rows.length - 1]?.role).toBe('assistant');
+  expect(useChat.getState().stalled.c1).toBeUndefined();
+});
+
+test('the calls in one round run concurrently, but their results keep the model’s order', async () => {
+  mockScript.push(
+    [
+      { type: 'start', id: 'msg_1' },
+      { type: 'tool_use_start', index: 0, id: 'tu_slow', name: 'mcp_files_slow_read' },
+      { type: 'tool_use_delta', index: 0, partialJson: '{}' },
+      { type: 'tool_use_stop', index: 0 },
+      { type: 'tool_use_start', index: 1, id: 'tu_fast', name: 'mcp_files_fast_read' },
+      { type: 'tool_use_delta', index: 1, partialJson: '{}' },
+      { type: 'tool_use_stop', index: 1 },
+      { type: 'stop', reason: 'tool_use' },
+    ],
+    answers('Both files say the same thing.'),
+  );
+
+  await useChat.getState().send('c1', { text: 'Read both files.' });
+
+  // Concurrent: the second call finished first despite being asked for second.
+  expect(mockFinished).toEqual(['mcp_files_fast_read', 'mcp_files_slow_read']);
+
+  // Ordered: a `tool_result` has to line up with the `tool_use` it answers, so the
+  // stored blocks are back in the model's own order, not completion order.
+  const content = toolResults()[0]?.content ?? [];
+  expect(content.map((block) => (block.type === 'tool_result' ? block.toolUseId : ''))).toEqual(['tu_slow', 'tu_fast']);
+});
+
+test('arguments cut off mid-stream are refused, not forwarded to the server', async () => {
+  mockScript.push(
+    [
+      { type: 'start', id: 'msg_1' },
+      { type: 'tool_use_start', index: 0, id: 'tu_cut', name: 'mcp_files_read' },
+      // Half a JSON object: the stream ended before the closing brace.
+      { type: 'tool_use_delta', index: 0, partialJson: '{"path":"/et' },
+      { type: 'tool_use_stop', index: 0 },
+      { type: 'stop', reason: 'tool_use' },
+    ],
+    answers('Trying that again.'),
+  );
+
+  await useChat.getState().send('c1', { text: 'Read it.' });
+
+  expect(mockFinished).toEqual([]); // The server was never called.
+  const block = toolResults()[0]?.content[0];
+  expect(block?.type === 'tool_result' && block.isError).toBe(true);
+  expect(block?.type === 'tool_result' && block.content).toContain('arrived incomplete');
 });
 
 test('a tool the app does not have is a tool result, not a failed turn', async () => {

@@ -58,11 +58,6 @@ export function fillPrompt(body: string, values: Readonly<Record<string, string>
   });
 }
 
-/** True when every variable has a value. What the Insert button is enabled by. */
-export function isComplete(body: string, values: Readonly<Record<string, string>>): boolean {
-  return variablesIn(body).every((name) => (values[name] ?? '').trim() !== '');
-}
-
 /** Validation for the editor. Same shape as the skill editor's. */
 export function validatePrompt(draft: PromptDraft): string | null {
   if (!draft.title.trim()) return 'Give the prompt a title.';

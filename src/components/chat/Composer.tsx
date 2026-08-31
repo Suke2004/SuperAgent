@@ -1,7 +1,7 @@
 /**
  * The composer.
  *
- * Four things share this bar, and the second is the one that earns its place:
+ * Five things share this bar, and the second is the one that earns its place:
  *
  * 1. The input, which grows with its content up to a clamp and then scrolls.
  * 2. The context-pressure gauge. It is measured against *usable* space —
@@ -16,6 +16,8 @@
  *    size and token cost, because an image is the one thing a user attaches without
  *    any sense of what it costs — and it is ~2,500 tokens each, every turn from here
  *    on, not just this one.
+ * 5. The mic, which dictates into the draft rather than sending. See `@/lib/dictation`
+ *    for why that is not a voice mode.
  *
  * The input and its controls live inside one rounded box: the readout, the model chip
  * and the send disc sit on a row beneath the text, so the whole thing reads as a sheet
@@ -30,6 +32,8 @@ import { useMemo, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { attachmentTokens, describeAttachments } from '@/chat/attachments';
+import { APP_NAME } from '@/lib/app';
+import { useDictation } from '@/lib/dictation';
 import { Body, Button, Note, targetSlop, useFocusRing } from '@/components/ui';
 import { contextPressure, estimateTextTokens, formatTokens } from '@/lib/tokens';
 import type { ContextPressure, PressureLevel } from '@/lib/tokens';
@@ -128,7 +132,20 @@ function SendButton({ onPress, disabled, reason }: { onPress: () => void; disabl
         ring,
       ]}
     >
-      <Text style={{ color: t.colors.accentText, fontSize: t.fontSize.md, fontWeight: '700' }}>↑</Text>
+      {/* Fixed metrics: the disc is a fixed 36dp, so a glyph that grows with the
+          system font scale clips against it or slides off centre. The label the
+          screen reader announces is on the Pressable and scales as text should. */}
+      <Text
+        allowFontScaling={false}
+        style={{
+          color: t.colors.accentText,
+          fontSize: t.fontSize.md,
+          lineHeight: t.fontSize.md + 4,
+          fontWeight: '700',
+        }}
+      >
+        ↑
+      </Text>
     </Pressable>
   );
 }
@@ -219,7 +236,17 @@ function AttachmentChip({
           borderColor: t.colors.borderStrong,
         })}
       >
-        <Text style={{ color: t.colors.text, fontSize: t.fontSize.xs, fontWeight: '700' }}>×</Text>
+        <Text
+          allowFontScaling={false}
+          style={{
+            color: t.colors.text,
+            fontSize: t.fontSize.xs,
+            lineHeight: t.fontSize.xs + 4,
+            fontWeight: '700',
+          }}
+        >
+          ×
+        </Text>
       </Pressable>
     </View>
   );
@@ -255,7 +282,54 @@ function AttachButton({ onPress, disabled, reason }: { onPress: () => void; disa
         ring,
       ]}
     >
-      <Text style={{ color: t.colors.textDim, fontSize: t.fontSize.md }}>+</Text>
+      <Text
+        allowFontScaling={false}
+        style={{ color: t.colors.textDim, fontSize: t.fontSize.md, lineHeight: t.fontSize.md + 4 }}
+      >
+        +
+      </Text>
+    </Pressable>
+  );
+}
+
+/**
+ * The mic. Same disc as Attach, and a filled one while it is listening — a mic that
+ * looks identical whether or not it is recording is the one control on a phone where
+ * the user needs to be certain.
+ */
+function MicButton({ listening, onPress }: { listening: boolean; onPress: () => void }) {
+  const t = useTheme();
+  const { ring, handlers } = useFocusRing();
+  const slop = targetSlop(SEND_SIZE, SEND_SIZE);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={listening ? 'Stop dictating' : 'Dictate a message'}
+      accessibilityState={{ selected: listening }}
+      accessibilityHint={listening ? undefined : 'Speak, and the words appear in the message to edit before sending'}
+      onPress={onPress}
+      {...handlers}
+      {...(slop ? { hitSlop: slop } : {})}
+      style={({ pressed }) => [
+        {
+          width: SEND_SIZE,
+          height: SEND_SIZE,
+          borderRadius: SEND_SIZE / 2,
+          alignItems: 'center',
+          justifyContent: 'center',
+          borderWidth: StyleSheet.hairlineWidth,
+          borderColor: listening ? t.colors.danger : t.colors.border,
+          backgroundColor: listening ? t.colors.dangerSoft : pressed ? t.colors.surfaceActive : 'transparent',
+        },
+        ring,
+      ]}
+    >
+      <Text
+        allowFontScaling={false}
+        style={{ color: listening ? t.colors.danger : t.colors.textDim, fontSize: t.fontSize.md, lineHeight: t.fontSize.md + 4 }}
+      >
+        ●
+      </Text>
     </Pressable>
   );
 }
@@ -315,6 +389,7 @@ export function Composer({
   attachmentCaveat,
   contextNote,
   onDismissContextNote,
+  onContinue,
 }: {
   value: string;
   onChangeText: (text: string) => void;
@@ -355,6 +430,14 @@ export function Composer({
   /** What the last turn's context handling did, if anything. Dismissable. */
   contextNote?: string;
   onDismissContextNote?: () => void;
+  /**
+   * Present ⇒ the note gets a Continue button.
+   *
+   * Only for a turn a cap stopped. "Send again to continue it" was the old
+   * instruction, and it asked the user to type something they did not want to say
+   * in order to press a button that was not there.
+   */
+  onContinue?: () => void;
 }) {
   const t = useTheme();
   const liveCount = useSettings((s) => s.liveTokenCount);
@@ -371,6 +454,10 @@ export function Composer({
    * 100-token steps is exactly where that answer disappears.
    */
   const [exact, setExact] = useState(false);
+
+  // Dictation writes straight into the draft, so it needs nothing from the screen
+  // above: the composer already owns the draft's text.
+  const dictation = useDictation(onChangeText);
 
   const factor = calibration?.factor ?? 1;
   const staged = attachments ?? EMPTY_ATTACHMENTS;
@@ -434,6 +521,7 @@ export function Composer({
               {contextNote}
             </Note>
           </View>
+          {onContinue ? <Button label="Continue" onPress={onContinue} size="sm" /> : null}
           {onDismissContextNote ? (
             <Pressable
               accessibilityRole="button"
@@ -451,6 +539,10 @@ export function Composer({
       {/* Full width rather than under the button: the reason is a sentence, and a
           sentence wrapped into a 90pt column beside the input is unreadable. */}
       {blocked ? <Note tone="danger">{disabledReason}</Note> : null}
+
+      {/* Dictation failures are not send failures, so they get their own line rather
+          than the blocked-send slot. Nothing to dismiss: the next mic press clears it. */}
+      {dictation.error ? <Note tone="warning">{dictation.error}</Note> : null}
 
       {/* The strip sits above the input, not below it: what is about to be sent
           belongs on the same side of the box as the transcript it is joining. */}
@@ -498,7 +590,7 @@ export function Composer({
         <TextInput
           value={value}
           onChangeText={onChangeText}
-          placeholder="Reply to Jarvis…"
+          placeholder={`Reply to ${APP_NAME}…`}
           placeholderTextColor={t.colors.textFaint}
           multiline
           // `submit` makes Enter send; `newline` keeps it as a line break. Without
@@ -536,8 +628,14 @@ export function Composer({
             />
           ) : null}
 
-          {model !== undefined ? <ModelChip model={model} {...(onPressModel ? { onPress: onPressModel } : {})} /> : null}
+          {dictation.available && !streaming ? (
+            <MicButton
+              listening={dictation.listening}
+              onPress={() => (dictation.listening ? dictation.stop() : void dictation.start(value))}
+            />
+          ) : null}
 
+          {model !== undefined ? <ModelChip model={model} {...(onPressModel ? { onPress: onPressModel } : {})} /> : null}
           {liveCount ? (
             <Pressable
               accessibilityRole="button"

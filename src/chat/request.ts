@@ -303,6 +303,8 @@ export interface BuildInput {
   memory?: string;
   /** The skill catalogue — names and descriptions only — from `@/chat/skill`. */
   skills?: string;
+  /** Note from `describeWithheldTools` when the manifest did not fit the budget. */
+  withheld?: string;
   tools?: ChatRequest['tools'];
   /** Overrides the conversation's params for one message. */
   paramOverrides?: Partial<SamplingParams>;
@@ -312,7 +314,7 @@ export function buildRequest(input: BuildInput): ChatRequest {
   const params = mergeParams(input.capabilities, { ...input.config.params, ...input.paramOverrides });
   const reasoning = resolveReasoning(input.transport, input.capabilities, input.config.reasoning);
 
-  const system = composeSystem(input.systemPrompt, input.summary, input.memory, input.skills);
+  const system = composeSystem(input.systemPrompt, input.summary, input.memory, input.skills, input.withheld);
 
   const request: ChatRequest = {
     model: input.model,
@@ -337,17 +339,23 @@ export function buildRequest(input: BuildInput): ChatRequest {
  * list of what is available rather than an instruction, so it belongs below
  * anything that says what to do. The summary comes last, under its own heading, so
  * a model reading it treats it as context rather than as instructions.
+ *
+ * `withheld` sits with the catalogue for the same reason — it is also a statement
+ * about what is available. It is empty on every request whose tool manifest fit,
+ * which keeps the cached prefix byte-identical on the common path.
  */
 export function composeSystem(
   prompt: string | undefined,
   summary: string | undefined,
   memory?: string,
   skills?: string,
+  withheld?: string,
 ): string | undefined {
   const parts: string[] = [];
   if (prompt?.trim()) parts.push(prompt.trim());
   if (memory?.trim()) parts.push(memory.trim());
   if (skills?.trim()) parts.push(skills.trim());
+  if (withheld?.trim()) parts.push(withheld.trim());
   if (summary?.trim()) {
     parts.push(
       `# Summary of earlier conversation\n\nEarlier turns were removed to fit the context window. ` +
