@@ -42,6 +42,7 @@ export default function SettingsHub() {
         <Row
           first
           chevron
+          icon="gateway"
           label="Providers"
           value={active?.name ?? 'None'}
           subtitle="Base URL, API key, transport, connection test"
@@ -49,11 +50,13 @@ export default function SettingsHub() {
         />
         <Row
           chevron
+          icon="models"
           label="Models"
           subtitle="Discover from /v1/models and edit capability flags"
           onPress={() => router.push('/settings/models')}
         />
         <SwitchRow
+          icon="retry"
           label="Automatic failover"
           subtitle="Retry on the backup domain when the primary is unreachable. Never on a 401 or 429 — those mean the primary answered."
           value={settings.autoFailover}
@@ -68,6 +71,7 @@ export default function SettingsHub() {
         <Row
           first
           chevron
+          icon="memory"
           label="Memory"
           value={settings.memoryEnabled ? `${memoryCount} remembered` : 'Off'}
           subtitle="What the app has learned about you, and the switch that stops it"
@@ -82,6 +86,7 @@ export default function SettingsHub() {
         <Row
           first
           chevron
+          icon="skills"
           label="Skills"
           value={skillCount ? `${skillCount}` : 'None'}
           subtitle="Write, import, edit or delete reusable instructions"
@@ -96,6 +101,7 @@ export default function SettingsHub() {
         <Row
           first
           chevron
+          icon="servers"
           label="MCP servers"
           value={serverCount ? `${serverCount}` : 'None'}
           subtitle="Add by URL, sign in, and choose which tools are offered"
@@ -113,18 +119,21 @@ export default function SettingsHub() {
       >
         <SwitchRow
           first
+          icon="external"
           label="Let the model fetch web pages"
           subtitle="One GET at a time, text only, no cookies and no credentials"
           value={settings.allowWebFetch}
           onChange={(next) => settings.set('allowWebFetch', next)}
         />
         <SwitchRow
+          icon="search"
           label="Let the model search the web"
           subtitle="Anthropic profiles only · billed per search, and the results enter the context window"
           value={settings.allowWebSearch}
           onChange={(next) => settings.set('allowWebSearch', next)}
         />
         <SwitchRow
+          icon="tools"
           label="Let the model run code"
           subtitle="JavaScript in a sandbox with no network, no storage and no access to this app. For arithmetic and parsing it would otherwise guess at."
           value={settings.allowRunCode}
@@ -139,6 +148,7 @@ export default function SettingsHub() {
         <Row
           first
           chevron
+          icon="prompts"
           label="Prompt library"
           value={promptCount ? `${promptCount}` : 'None'}
           subtitle="Write, edit or delete reusable prompts"
@@ -153,6 +163,7 @@ export default function SettingsHub() {
         <Row
           first
           chevron
+          icon="projects"
           label="Projects"
           value={projectCount ? `${projectCount}` : 'None'}
           subtitle="Shared instructions and reference documents"
@@ -164,6 +175,7 @@ export default function SettingsHub() {
         <Row
           first
           chevron
+          icon="appearance"
           label="Theme and rendering"
           value={settings.themeMode === 'system' ? 'System' : settings.themeMode === 'dark' ? 'Dark' : 'Light'}
           onPress={() => router.push('/settings/appearance')}
@@ -177,12 +189,14 @@ export default function SettingsHub() {
         <Row
           first
           chevron
+          icon="usage"
           label="Usage"
           subtitle="Tokens and estimated cost, by day and by model"
           onPress={() => router.push('/settings/usage')}
         />
         <Row
           chevron
+          icon="backup"
           label="Backup and restore"
           subtitle="Settings, providers, skills, prompts and servers — never keys or conversations"
           onPress={() => router.push('/settings/backup')}
@@ -195,6 +209,7 @@ export default function SettingsHub() {
       >
         <SwitchRow
           first
+          icon="privacy"
           label="Require unlock to open"
           subtitle={
             lockAvailable === false
@@ -230,16 +245,19 @@ export default function SettingsHub() {
         <Row
           first
           chevron
+          icon="diagnostics"
           label="Debug log"
           subtitle="Requests, status codes, stream events, dropped parameters"
           onPress={() => router.push('/settings/debug')}
         />
         <SwitchRow
+          icon="archive"
           label="Keep the debug log"
           value={settings.debugLogEnabled}
           onChange={(v) => settings.set('debugLogEnabled', v)}
         />
         <SwitchRow
+          icon="external"
           label="Mirror to the Metro console"
           subtitle="Useful when tethered to a dev machine; noisy otherwise."
           value={settings.debugMirrorToConsole}
@@ -248,6 +266,7 @@ export default function SettingsHub() {
           disabledReason="Turn the debug log on first."
         />
         <SwitchRow
+          icon="info"
           label="Developer details on messages"
           subtitle="Adds the raw request, response, tokens and a copy-as-curl button to each reply's ⋯ menu."
           value={settings.devPanelEnabled}

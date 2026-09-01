@@ -66,7 +66,7 @@ export function Sheet({
       <Pressable
         onPress={onClose}
         accessibilityLabel="Close menu"
-        style={{ flex: 1, backgroundColor: '#00000088', justifyContent: 'flex-end' }}
+        style={{ flex: 1, backgroundColor: t.colors.scrim, justifyContent: 'flex-end' }}
       >
         {/* A second Pressable that swallows the press, so a tap inside the sheet
             does not fall through to the backdrop and close it. */}
@@ -217,7 +217,7 @@ function PromptBody({
     <Pressable
       onPress={onCancel}
       accessibilityLabel="Cancel"
-      style={{ flex: 1, backgroundColor: '#00000088', justifyContent: 'flex-end' }}
+      style={{ flex: 1, backgroundColor: t.colors.scrim, justifyContent: 'flex-end' }}
     >
       <Pressable
         ref={trap}

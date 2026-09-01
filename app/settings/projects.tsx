@@ -19,7 +19,7 @@ import { useFocusEffect } from 'expo-router';
 
 import { Sheet } from '@/components/Sheet';
 import type { SheetAction } from '@/components/Sheet';
-import { Body, Button, Empty, Field, Inline, Note, Row, Screen, Section, Spinner } from '@/components/ui';
+import { Body, Button, Empty, Field, Inline, Note, Row, Screen, Section, SkeletonRows } from '@/components/ui';
 import { MAX_KNOWLEDGE_CHARS, MAX_PROJECT_NAME } from '@/chat/project';
 import type { Project, ProjectDraft } from '@/chat/project';
 import { extractOffice, OFFICE_MEDIA_TYPES, officeKind } from '@/chat/office';
@@ -181,7 +181,7 @@ export default function ProjectsScreen() {
         >
           {draft.knowledge.length === 0 ? (
             <View style={{ padding: t.spacing.md }}>
-              <Empty title="No documents" body="Attach the notes, style guide or spec the work keeps referring back to." />
+              <Empty icon="files" title="No documents" body="Attach the notes, style guide or spec the work keeps referring back to." />
             </View>
           ) : (
             draft.knowledge.map((document, index) => (
@@ -222,11 +222,11 @@ export default function ProjectsScreen() {
       >
         {!loaded ? (
           <View style={{ padding: t.spacing.md }}>
-            <Spinner label="Loading" />
+            <SkeletonRows count={3} label="Loading your projects" />
           </View>
         ) : projects.length === 0 ? (
           <View style={{ padding: t.spacing.md }}>
-            <Empty title="No projects yet" body="Make one for anything you come back to across several conversations." />
+            <Empty icon="projects" title="No projects yet" body="Make one for anything you come back to across several conversations." />
           </View>
         ) : (
           projects.map((project, index) => (

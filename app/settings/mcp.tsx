@@ -33,6 +33,7 @@ import {
   Screen,
   Section,
   Segmented,
+  SkeletonRows,
   Spinner,
   SwitchRow,
 } from '@/components/ui';
@@ -288,7 +289,7 @@ export default function McpScreen() {
         >
           {detail.tools.length === 0 ? (
             <View style={{ padding: t.spacing.md }}>
-              <Empty title="Nothing discovered yet" body="Connect to the server to list its tools." />
+              <Empty icon="tools" title="Nothing discovered yet" body="Connect to the server to list its tools." />
             </View>
           ) : (
             detail.tools.map((tool, index) => (
@@ -369,11 +370,11 @@ export default function McpScreen() {
       >
         {!loaded ? (
           <View style={{ padding: t.spacing.md }}>
-            <Spinner label="Loading" />
+            <SkeletonRows count={3} label="Loading your servers" />
           </View>
         ) : servers.length === 0 ? (
           <View style={{ padding: t.spacing.md }}>
-            <Empty title="No servers yet" body="Add one by URL. Streamable HTTP and SSE only." />
+            <Empty icon="servers" title="No servers yet" body="Add one by URL. Streamable HTTP and SSE only." />
           </View>
         ) : (
           servers.map((server, index) => (

@@ -88,7 +88,7 @@ export default function UsageScreen() {
           </>
         ) : (
           <View style={{ padding: t.spacing.md }}>
-            <Empty title="Nothing recorded yet" body="Send a message and this fills in." />
+            <Empty icon="usage" title="Nothing recorded yet" body="Send a message and this fills in." />
           </View>
         )}
       </Section>

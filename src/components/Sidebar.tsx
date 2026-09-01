@@ -35,16 +35,21 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Text,
   useWindowDimensions,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useDialogKeys } from '@/components/dialog';
-import { Badge, Body, Button, Divider, Field, Spinner } from '@/components/ui';
+import { Icon, iconSize } from '@/components/Icon';
+import type { IconName } from '@/components/Icon';
+import { Body, Divider, Field, Heading, SkeletonRows, MIN_TARGET } from '@/components/ui';
 import { filterConversations } from '@/chat/list';
 import type { Conversation } from '@/db/conversations';
+import { APP_NAME } from '@/lib/app';
 import { useChat } from '@/stores/chat';
+import { useProviders } from '@/stores/providers';
 import { useTheme } from '@/theme';
 
 /** Same proportions as Claude's: most of the width, capped so it is not a screen. */
@@ -65,6 +70,8 @@ export interface SidebarLink {
   label: string;
   /** The state of the thing, not an explanation of it. */
   detail?: string;
+  /** Leading icon. Required in spirit: a drawer with some rows iconed reads as broken. */
+  icon: IconName;
   onPress: () => void;
 }
 
@@ -100,6 +107,17 @@ export function Sidebar({
 
   const conversations = useChat((s) => s.conversations);
   const listLoading = useChat((s) => s.listLoading);
+  /**
+   * The active gateway profile, read here rather than passed in.
+   *
+   * This app has no user account, so the footer names the thing that actually
+   * answers the "whose credits am I spending" question the reference app answers
+   * with a person's name. The component already reads the chat store directly; a
+   * prop for this would only be a longer path to the same subscription.
+   */
+  const profiles = useProviders((s) => s.profiles);
+  const activeProfileId = useProviders((s) => s.activeId);
+  const activeProfile = profiles.find((p) => p.id === activeProfileId);
   const [query, setQuery] = useState('');
 
   /**
@@ -219,7 +237,7 @@ export function Sidebar({
   return (
     <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
       <View style={{ flex: 1 }}>
-        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: '#00000088', opacity: backdropOpacity }]}>
+        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: t.colors.scrim, opacity: backdropOpacity }]}>
           <Pressable onPress={onClose} accessibilityLabel="Close the chat list" style={{ flex: 1 }} />
         </Animated.View>
 
@@ -249,21 +267,19 @@ export function Sidebar({
           {/* The trap is on an inner view: `accessibilityViewIsModal` on the animated
               panel would be re-evaluated on every frame of the transform. */}
           <Pressable ref={trap} onPress={() => {}} accessibilityViewIsModal style={{ flex: 1 }}>
-            <View style={{ paddingHorizontal: t.spacing.md, gap: t.spacing.sm }}>
-              <Button label="New chat" variant="primary" full onPress={onNew} />
-              <Field
-                value={query}
-                onChangeText={setQuery}
-                placeholder="Search chats"
-                returnKeyType="search"
-              />
+            {/* The wordmark, in the serif. It is the one place the app says its own
+                name at rest, and it doubles as the drawer's heading — which is why
+                there is no second "Chats" title under it. */}
+            <View
+              accessibilityRole="header"
+              style={{ paddingHorizontal: t.spacing.md, paddingBottom: t.spacing.md }}
+            >
+              <Heading style={{ fontSize: t.fontSize.xxl }}>{APP_NAME}</Heading>
             </View>
-
-            <Divider />
 
             <ScrollView
               // `flex: 1`, or the scroller sizes itself to its content: four hundred
-              // chats then push the footer buttons off the bottom of the screen and
+              // chats then push the account footer off the bottom of the screen and
               // there is nothing left that scrolls. This is the one line that makes the
               // list usable at any length.
               style={{ flex: 1 }}
@@ -273,28 +289,59 @@ export function Sidebar({
               // panel's own horizontal gesture halfway down the list.
               directionalLockEnabled
             >
-              {/* The other places first, because they are a fixed short list and the
-                  history below is unbounded — a nav row at the bottom of 400 chats is
-                  a nav row nobody reaches. Hidden while searching: a filter over the
-                  chats should not leave unrelated rows sitting above the results. */}
-              {links.length > 0 && !query ? (
+              {/* Actions first, because they are a fixed short list and the history
+                  below is unbounded — a nav row under 400 chats is a nav row nobody
+                  reaches. Hidden while searching: a filter over the chats should not
+                  leave unrelated rows sitting above the results. */}
+              {query ? null : (
                 <>
+                  <GroupLabel>Actions</GroupLabel>
+                  {/* The only accent row in the drawer. One coloured row is a
+                      primary action; two are a decorated list. */}
+                  <NavRow icon="newChat" label="New chat" accent onPress={onNew} />
+                  <NavRow icon="chats" label="Chats" onPress={onAllConversations} />
+                  <NavRow icon="quote" label="Bring in a message…" onPress={onReference} />
                   {links.map((link) => (
-                    <LinkRow key={link.label} link={link} />
+                    <NavRow
+                      key={link.label}
+                      icon={link.icon}
+                      label={link.label}
+                      {...(link.detail !== undefined ? { detail: link.detail } : {})}
+                      onPress={link.onPress}
+                    />
                   ))}
                   <Divider />
                 </>
-              ) : null}
+              )}
 
-              <View style={{ paddingHorizontal: t.spacing.md, paddingTop: t.spacing.md, paddingBottom: t.spacing.xs }}>
-                <Body size="xs" tone="faint" weight="600">
-                  {query ? 'Matches' : 'Recents'}
-                </Body>
+              <View style={{ paddingHorizontal: t.spacing.md, paddingTop: t.spacing.md }}>
+                <Field
+                  value={query}
+                  onChangeText={setQuery}
+                  placeholder="Search chats"
+                  returnKeyType="search"
+                  right={
+                    query ? (
+                      <Pressable
+                        onPress={() => setQuery('')}
+                        accessibilityRole="button"
+                        accessibilityLabel="Clear search"
+                        hitSlop={12}
+                      >
+                        <Icon name="close" tone="textFaint" />
+                      </Pressable>
+                    ) : (
+                      <Icon name="search" tone="textFaint" />
+                    )
+                  }
+                />
               </View>
 
+              <GroupLabel>{query ? 'Matches' : 'History'}</GroupLabel>
+
               {listLoading && !conversations.length ? (
-                <View style={{ padding: t.spacing.lg }}>
-                  <Spinner label="Loading" />
+                <View style={{ paddingHorizontal: t.spacing.md, paddingVertical: t.spacing.sm }}>
+                  <SkeletonRows count={6} label="Loading your chats" />
                 </View>
               ) : filtered.length ? (
                 filtered.map((conversation) => (
@@ -314,18 +361,15 @@ export function Sidebar({
               )}
             </ScrollView>
 
+            {/* Account, pinned to the bottom rather than scrolling with the history:
+                it is about the app, not about this list, and it is the row a user
+                goes looking for when they want out of the drawer entirely. */}
             <Divider />
-            <View style={{ paddingHorizontal: t.spacing.md, paddingTop: t.spacing.md, gap: t.spacing.sm }}>
-              <Button label="Bring in a message…" full onPress={onReference} />
-              <View style={{ flexDirection: 'row', gap: t.spacing.sm }}>
-                <View style={{ flex: 1 }}>
-                  <Button label="All chats" size="sm" full onPress={onAllConversations} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Button label="Settings" size="sm" full onPress={onSettings} />
-                </View>
-              </View>
-            </View>
+            <AccountFooter
+              name={activeProfile?.name ?? 'No provider'}
+              {...(activeProfile ? {} : { detail: 'Add one in Settings' })}
+              onPress={onSettings}
+            />
           </Pressable>
         </Animated.View>
       </View>
@@ -333,34 +377,143 @@ export function Sidebar({
   );
 }
 
-/** One of the app's other places. Same row metrics as a chat, so the list reads as one. */
-function LinkRow({ link }: { link: SidebarLink }) {
+/** A section heading in the drawer. The same tier as `Section`'s title on a screen. */
+function GroupLabel({ children }: { children: string }) {
+  const t = useTheme();
+  return (
+    <View
+      accessibilityRole="header"
+      style={{ paddingHorizontal: t.spacing.md, paddingTop: t.spacing.md, paddingBottom: t.spacing.xs }}
+    >
+      <Body size="xs" tone="faint" weight="600" style={{ letterSpacing: 0.9, textTransform: 'uppercase' }}>
+        {children}
+      </Body>
+    </View>
+  );
+}
+
+/**
+ * One icon-and-label row: a place to go, or the action that starts a chat.
+ *
+ * The icon gutter is a fixed width so every label in the drawer starts on the same
+ * vertical line — including the chat titles below, which have no icon and pay the
+ * same left padding instead.
+ */
+function NavRow({
+  icon,
+  label,
+  detail,
+  accent,
+  onPress,
+}: {
+  icon: IconName;
+  label: string;
+  detail?: string;
+  /** The primary action. Exactly one row in the drawer wears this. */
+  accent?: boolean;
+  onPress: () => void;
+}) {
   const t = useTheme();
   return (
     <Pressable
-      onPress={link.onPress}
+      onPress={onPress}
       accessibilityRole="button"
-      {...(link.detail !== undefined ? { accessibilityHint: link.detail } : {})}
+      accessibilityLabel={label}
+      {...(detail !== undefined ? { accessibilityHint: detail } : {})}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
-        gap: t.spacing.sm,
+        gap: t.spacing.md,
         paddingHorizontal: t.spacing.md,
         paddingVertical: t.spacing.sm + 2,
+        minHeight: MIN_TARGET,
         backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
       })}
     >
-      <Body size="sm" weight="600" style={{ flex: 1 }} numberOfLines={1}>
-        {link.label}
+      <View style={{ width: iconSize.lg, alignItems: 'center' }}>
+        <Icon name={icon} size="lg" tone={accent ? 'accent' : 'textDim'} />
+      </View>
+      <Body size="md" tone={accent ? 'accent' : 'normal'} weight={accent ? '600' : '400'} style={{ flex: 1 }} numberOfLines={1}>
+        {label}
       </Body>
-      {link.detail !== undefined ? (
+      {detail !== undefined ? (
         <Body size="xs" tone="faint" numberOfLines={1}>
-          {link.detail}
+          {detail}
         </Body>
       ) : null}
-      <Body size="sm" tone="faint">
-        ›
-      </Body>
+    </Pressable>
+  );
+}
+
+/**
+ * The account row.
+ *
+ * Initials in a disc rather than an icon, because this row identifies *which* of
+ * several things is active — and a generic person glyph would look identical for
+ * every profile, which is the one thing it must not do.
+ */
+function AccountFooter({
+  name,
+  detail,
+  onPress,
+}: {
+  name: string;
+  detail?: string;
+  onPress: () => void;
+}) {
+  const t = useTheme();
+  const initials = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? '')
+    .join('');
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Settings. Active provider: ${name}`}
+      accessibilityHint="Opens Settings"
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: t.spacing.md,
+        paddingHorizontal: t.spacing.md,
+        paddingVertical: t.spacing.sm + 2,
+        minHeight: MIN_TARGET,
+        backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
+      })}
+    >
+      <View
+        style={{
+          width: 32,
+          height: 32,
+          borderRadius: 16,
+          alignItems: 'center',
+          justifyContent: 'center',
+          backgroundColor: t.colors.accentSoft,
+        }}
+      >
+        {/* Fixed metrics: the disc does not grow, so neither may the initials. The
+            row's own accessibility label carries the name at a scalable size. */}
+        <Text
+          allowFontScaling={false}
+          style={{ color: t.colors.accent, fontSize: t.fontSize.xs, fontWeight: '700' }}
+        >
+          {initials || '—'}
+        </Text>
+      </View>
+      <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+        <Body size="sm" weight="600" numberOfLines={1}>
+          {name}
+        </Body>
+        {detail !== undefined ? (
+          <Body size="xs" tone="faint" numberOfLines={1}>
+            {detail}
+          </Body>
+        ) : null}
+      </View>
+      <Icon name="settings" size="lg" tone="textDim" />
     </Pressable>
   );
 }
@@ -383,18 +536,25 @@ function Row({
       accessibilityState={{ selected: current }}
       accessibilityHint={current ? 'This is the chat you are in' : 'Opens this chat'}
       style={({ pressed }) => ({
-        paddingHorizontal: t.spacing.md,
+        // The active row is a soft accent fill with a clay bar down its left edge.
+        // The bar is what makes it findable in a peripheral glance at forty rows;
+        // the fill alone reads as a pressed state that got stuck. Both replaced the
+        // "Here" badge that used to say the same thing in words, twice over — the
+        // announced `selected` state is what a screen reader needs, and it is free.
+        borderLeftWidth: 3,
+        borderLeftColor: current ? t.colors.accentFill : 'transparent',
+        paddingLeft: t.spacing.md - 3,
+        paddingRight: t.spacing.md,
         paddingVertical: t.spacing.sm,
         gap: 2,
-        backgroundColor: pressed ? t.colors.surfaceActive : current ? t.colors.bg : 'transparent',
+        backgroundColor: pressed ? t.colors.surfaceActive : current ? t.colors.accentSoft : 'transparent',
       })}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: t.spacing.sm }}>
-        {conversation.pinned ? <Badge label="Pinned" tone="accent" /> : null}
+        {conversation.pinned ? <Icon name="pin" size="sm" tone="accent" /> : null}
         <Body size="sm" weight="600" numberOfLines={1} style={{ flex: 1 }}>
           {conversation.title}
         </Body>
-        {current ? <Badge label="Here" tone="accent" /> : null}
       </View>
       <Body size="xs" tone="faint" numberOfLines={1}>
         {conversation.preview ?? 'No messages yet'}

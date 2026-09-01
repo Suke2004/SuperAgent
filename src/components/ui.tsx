@@ -22,7 +22,10 @@
 import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
+  AccessibilityInfo,
   ActivityIndicator,
+  Animated,
+  Easing,
   Keyboard,
   Platform,
   Pressable,
@@ -40,6 +43,8 @@ import { useTheme } from '@/theme';
 import type { Palette, Theme } from '@/theme';
 
 import { Glyph } from './Glyph';
+import { Icon, iconSize } from './Icon';
+import type { IconName } from './Icon';
 
 /* -------------------------------------------------------------------------- */
 /* Focus                                                                       */
@@ -572,6 +577,7 @@ export function Row({
   label,
   value,
   subtitle,
+  icon,
   onPress,
   right,
   chevron,
@@ -588,6 +594,14 @@ export function Row({
   label: string;
   value?: string;
   subtitle?: string;
+  /**
+   * Leading icon.
+   *
+   * Optional because a row is legible without one — the label is the row. It is
+   * there for the grouped settings lists, where a column of icons is what lets
+   * the eye find "Privacy" in a list of eleven without reading all eleven.
+   */
+  icon?: IconName;
   onPress?: () => void;
   right?: ReactNode;
   chevron?: boolean;
@@ -631,6 +645,14 @@ export function Row({
         opacity: disabled ? 0.6 : 1,
       }}
     >
+      {/* Fixed-width gutter rather than a bare icon: Feather glyphs are not all the
+          same drawn width, and letting each one size its own slot leaves the labels
+          in a column of rows unaligned by a pixel or two each. */}
+      {icon ? (
+        <View style={{ width: iconSize.lg, alignItems: 'center' }}>
+          <Icon name={icon} tone={destructive ? 'danger' : 'textDim'} />
+        </View>
+      ) : null}
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={{ color: labelColor, fontSize: t.fontSize.md }}>{label}</Text>
         {subtitle ? (
@@ -646,15 +668,7 @@ export function Row({
         </Text>
       ) : null}
       {right}
-      {chevron ? (
-        <Text
-          accessibilityElementsHidden
-          importantForAccessibility="no"
-          style={{ color: t.colors.textFaint, fontSize: t.fontSize.lg }}
-        >
-          ›
-        </Text>
-      ) : null}
+      {chevron ? <Icon name="chevron" tone="textFaint" /> : null}
     </View>
   );
 
@@ -690,6 +704,7 @@ export function Row({
 export function SwitchRow({
   label,
   subtitle,
+  icon,
   value,
   onChange,
   disabled,
@@ -698,6 +713,8 @@ export function SwitchRow({
 }: {
   label: string;
   subtitle?: string;
+  /** Leading icon. Same gutter as {@link Row}, so a mixed group stays one column. */
+  icon?: IconName;
   value: boolean;
   onChange: (next: boolean) => void;
   disabled?: boolean;
@@ -710,6 +727,7 @@ export function SwitchRow({
     <Row
       label={label}
       {...(sub !== undefined ? { subtitle: sub } : {})}
+      {...(icon !== undefined ? { icon } : {})}
       first={first}
       disabled={disabled}
       // The whole row toggles. A bare Switch is ~50×30dp, which is under the 48dp
@@ -1078,10 +1096,17 @@ export function Spinner({ label }: { label?: string }) {
 }
 
 /** Centred message for an empty list or a screen with nothing to show yet. */
-export function Empty({ title, body }: { title: string; body?: string }) {
+export function Empty({ title, body, icon }: { title: string; body?: string; icon?: IconName }) {
   const t = useTheme();
   return (
     <View style={{ alignItems: 'center', gap: t.spacing.sm, paddingVertical: t.spacing.xxl }}>
+      {/* A large, faint outline rather than an illustration. It is the same stroke
+          weight as every other icon in the app, so an empty state stays part of the
+          design instead of becoming a picture bolted into it — and `textFaint` keeps
+          it quieter than the sentence that actually tells the user what to do. */}
+      {icon ? (
+        <Icon name={icon} size="xl" tone="textFaint" />
+      ) : null}
       <Text
         style={{
           color: t.colors.text,
@@ -1097,6 +1122,120 @@ export function Empty({ title, body }: { title: string; body?: string }) {
           {body}
         </Text>
       ) : null}
+    </View>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Loading                                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Whether the OS is asking for reduced motion.
+ *
+ * A local copy rather than a shared hook: the only other consumer is {@link Glyph},
+ * which this module imports, so a hook exported from here for Glyph to use would
+ * close an import cycle.
+ */
+function useReduceMotion(): boolean {
+  const [reduce, setReduce] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    AccessibilityInfo.isReduceMotionEnabled().then((on) => {
+      if (!cancelled) setReduce(on);
+    });
+    const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduce);
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
+  }, []);
+  return reduce;
+}
+
+/** One breath of the skeleton pulse, in ms. Slow: this is a wait, not a heartbeat. */
+const SKELETON_MS = 1100;
+
+/**
+ * A placeholder block, sized like the content that is coming.
+ *
+ * Preferred over a spinner for anything with a known shape — a list of chat rows, a
+ * settings group — because it says *what* is loading and holds the layout still, so
+ * the arriving content does not shove the screen. A spinner is kept only for the
+ * waits whose result has no shape yet: a reachability probe, a database search.
+ *
+ * `surfaceAlt` at a low opacity rather than a shimmer gradient: a travelling
+ * highlight needs a gradient library and draws the eye to the wait itself.
+ */
+export function Skeleton({
+  width = '100%',
+  height = 14,
+  radius: r,
+  style,
+}: {
+  width?: number | `${number}%`;
+  height?: number;
+  radius?: number;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const t = useTheme();
+  const reduce = useReduceMotion();
+  const [pulse] = useState(() => new Animated.Value(0));
+
+  useEffect(() => {
+    if (reduce) return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: SKELETON_MS, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0, duration: SKELETON_MS, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse, reduce]);
+
+  return (
+    <Animated.View
+      // Hidden from the accessibility tree entirely. There is nothing here to read,
+      // and the list or screen around it carries the "Loading" announcement.
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      style={[
+        {
+          width,
+          height,
+          borderRadius: r ?? t.radius.sm,
+          backgroundColor: t.colors.surfaceAlt,
+          opacity: reduce ? 0.7 : pulse.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0.9] }),
+        },
+        style,
+      ]}
+    />
+  );
+}
+
+/**
+ * A run of two-line skeleton rows, at the metrics of a conversation row.
+ *
+ * The widths step down the list rather than all matching, because a column of
+ * identical bars reads as a broken image; uneven ones read as text.
+ */
+export function SkeletonRows({ count = 5, label = 'Loading' }: { count?: number; label?: string }) {
+  const t = useTheme();
+  const widths: readonly `${number}%`[] = ['78%', '64%', '85%', '55%', '72%'];
+  return (
+    <View
+      accessibilityRole="progressbar"
+      accessibilityLabel={label}
+      accessibilityLiveRegion="polite"
+      style={{ gap: t.spacing.lg }}
+    >
+      {Array.from({ length: count }, (_, i) => (
+        <View key={i} style={{ gap: t.spacing.sm }}>
+          <Skeleton width={widths[i % widths.length]} height={15} />
+          <Skeleton width="42%" height={11} />
+        </View>
+      ))}
     </View>
   );
 }

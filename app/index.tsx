@@ -25,6 +25,7 @@ import { PromptSheet, Sheet } from '@/components/Sheet';
 import type { SheetAction } from '@/components/Sheet';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { Glyph } from '@/components/Glyph';
+import { Icon } from '@/components/Icon';
 import {
   Badge,
   Body,
@@ -36,6 +37,7 @@ import {
   Inline,
   MIN_TARGET,
   Note,
+  SkeletonRows,
   Spinner,
   verticalSlop,
 } from '@/components/ui';
@@ -991,20 +993,23 @@ export default function Home() {
       </View>
     ) : (
       <Empty
+        icon="search"
         title="Nothing matched"
         body="No conversation title, preview, model or tag contains that, and no message does either."
       />
     )
   ) : tag ? (
-    <Empty title="No conversations with that tag" body="Tap All to clear the filter." />
+    <Empty icon="tag" title="No conversations with that tag" body="Tap All to clear the filter." />
   ) : projectId ? (
-    <Empty title="Nothing in this project yet" body="Move a conversation into it from its ⋯ menu, or tap All chats." />
+    <Empty icon="projects" title="Nothing in this project yet" body="Move a conversation into it from its ⋯ menu, or tap All chats." />
   ) : listLoading ? (
-    <Spinner label="Loading" />
+    // The list has a known shape, so it holds its own layout while it loads rather
+    // than collapsing to a spinner and shoving the rows in when they arrive.
+    <SkeletonRows count={7} label="Loading your conversations" />
   ) : showArchived ? (
-    <Empty title="Nothing archived" body="Archive a conversation from its ⋯ menu to keep it without keeping it here." />
+    <Empty icon="archive" title="Nothing archived" body="Archive a conversation from its ⋯ menu to keep it without keeping it here." />
   ) : (
-    <Empty title="No conversations yet" body="Start one below." />
+    <Empty icon="chats" title="No conversations yet" body="Start one below." />
   );
 
   // Nothing of the list is shown while the redirect is in flight: it would appear
@@ -1040,7 +1045,7 @@ export default function Home() {
           right={
             query ? (
               <Pressable onPress={() => setQuery('')} accessibilityLabel="Clear search" hitSlop={8}>
-                <Body tone="faint">✕</Body>
+                <Icon name="close" tone="textFaint" />
               </Pressable>
             ) : undefined
           }
@@ -1063,8 +1068,8 @@ export default function Home() {
         ItemSeparatorComponent={() => <Divider />}
         ListFooterComponent={
           listLoadingMore ? (
-            <View style={{ paddingVertical: t.spacing.lg }}>
-              <Spinner label="Loading more" />
+            <View style={{ paddingVertical: t.spacing.lg, paddingHorizontal: t.spacing.md }}>
+              <SkeletonRows count={2} label="Loading more" />
             </View>
           ) : null
         }

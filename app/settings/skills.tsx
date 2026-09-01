@@ -19,7 +19,7 @@ import { useFocusEffect } from 'expo-router';
 
 import { Sheet } from '@/components/Sheet';
 import type { SheetAction } from '@/components/Sheet';
-import { Body, Button, Empty, Field, Inline, Note, Row, Screen, Section, Spinner } from '@/components/ui';
+import { Body, Button, Empty, Field, Inline, Note, Row, Screen, Section, SkeletonRows } from '@/components/ui';
 import {
   MAX_SKILL_BODY_CHARS,
   MAX_SKILL_DESCRIPTION_CHARS,
@@ -232,11 +232,11 @@ export default function SkillsScreen() {
       >
         {!loaded ? (
           <View style={{ padding: t.spacing.md }}>
-            <Spinner label="Loading" />
+            <SkeletonRows count={4} label="Loading your skills" />
           </View>
         ) : skills.length === 0 ? (
           <View style={{ padding: t.spacing.md }}>
-            <Empty title="No skills yet" body="Write one, or import a SKILL.md you already have." />
+            <Empty icon="skills" title="No skills yet" body="Write one, or import a SKILL.md you already have." />
           </View>
         ) : (
           skills.map((skill, index) => (

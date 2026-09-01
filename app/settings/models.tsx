@@ -142,6 +142,7 @@ export default function ModelsScreen() {
       >
         {list.length === 0 ? (
           <Empty
+            icon="models"
             title="Nothing discovered yet"
             body="Refresh from the gateway, or add a model id by hand below. Gateways sometimes serve ids they do not list."
           />
