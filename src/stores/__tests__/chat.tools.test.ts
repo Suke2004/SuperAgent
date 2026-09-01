@@ -79,6 +79,18 @@ jest.mock('@/db/conversations', () => {
     async updateConversation() {},
     async updateMessage() {},
     async deleteMessagesFrom() {},
+    // The variant model, stubbed flat: nothing here regenerates, and a turn with no
+    // alternatives is exactly what an empty set means.
+    async newestTurnVariants() {
+      return { answersId: '', variants: [] };
+    },
+    async dropHiddenMessages() {
+      return 0;
+    },
+    async setTurnAside() {
+      return 'turn_x';
+    },
+    async selectTurn() {},
     deriveTitle: (text: string) => text.slice(0, 20),
     flattenContent: (content: { text?: string }[]) => content.map((block) => block.text ?? '').join(''),
     previewOf: () => '',

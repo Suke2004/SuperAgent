@@ -391,6 +391,7 @@ export class AnthropicTransport implements Transport {
               options.onRetry?.({ attempt: info.attempt, delayMs: info.delayMs, message: info.error.message }),
           }
         : {}),
+      ...(options.onRequest ? { onRequest: options.onRequest } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     };
   }

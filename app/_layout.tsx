@@ -56,6 +56,7 @@ function Navigator() {
         <Stack.Screen name="index" options={{ title: APP_NAME, headerShown: false }} />
         {/* The title comes from the conversation, set by the screen itself. */}
         <Stack.Screen name="chat/[id]" options={{ title: '' }} />
+        <Stack.Screen name="chat/inspect" options={{ title: 'Developer details' }} />
         <Stack.Screen name="settings/index" options={{ title: 'Settings' }} />
         <Stack.Screen name="settings/providers" options={{ title: 'Providers' }} />
         <Stack.Screen name="settings/provider/[id]" options={{ title: 'Provider' }} />

@@ -29,6 +29,15 @@ import type { ListCursor } from '@/db/list-query';
 import { DEFAULT_TITLE, flattenContent, isToolTurn, previewOf } from '@/db/content';
 import { database, localDay } from '@/db/schema';
 import { buildFtsQuery, buildLikePattern, excerpt, LIKE_ESCAPE } from '@/db/search';
+import {
+  ANCHOR_SLOT_SQL,
+  DROP_HIDDEN_SQL,
+  HIDE_TURN_SQL,
+  LIST_TURNS_SQL,
+  NEWEST_SLOT_SQL,
+  SELECT_TURN_SQL,
+  stampTurnSql,
+} from '@/db/variants';
 import { newId } from '@/lib/id';
 import { log } from '@/lib/log';
 import { estimateCost } from '@/lib/tokens';
@@ -132,6 +141,16 @@ export interface MessageMeta {
   aborted?: boolean;
   /** The base URL used, when it differed from the profile's primary. */
   failedOverTo?: string;
+  /**
+   * Debug log ids of the HTTP requests this turn opened, for the developer panel.
+   *
+   * Ids, not payloads: the bodies are large, they are already in `@/lib/log`'s ring
+   * buffer with the key redacted, and copying them into every row would put an
+   * unredacted-by-accident request one schema change away from being on disk
+   * forever. The cost is that the panel has nothing to show after a restart, which
+   * is the right trade for a debugging aid.
+   */
+  requestIds?: string[];
 }
 
 export interface StoredMessage {
@@ -156,6 +175,15 @@ export interface StoredMessage {
   error?: string;
   meta?: MessageMeta;
   excluded: boolean;
+  /**
+   * The generation pass that wrote this row, once the row has been through a
+   * regenerate. Absent means "a turn of its own, with no alternatives" — which is
+   * every row written before migration 8, and every row of a turn nobody has
+   * regenerated.
+   */
+  turnId?: string;
+  /** The user message this row's turn answers. See `@/db/variants`. */
+  answersId?: string;
 }
 
 export interface NewMessage {
@@ -169,6 +197,10 @@ export interface NewMessage {
   /** Overrides the append-at-end default. Used when forking. */
   seq?: number;
   createdAt?: number;
+  /** Groups this row with the rest of the generation pass. See `@/db/variants`. */
+  turnId?: string;
+  /** The user message the pass answers — the slot its variants compete for. */
+  answersId?: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -209,6 +241,9 @@ interface MessageRow {
   error: string | null;
   meta: string | null;
   excluded: number;
+  turn_id: string | null;
+  answers_id: string | null;
+  hidden: number;
 }
 
 /**
@@ -282,6 +317,8 @@ function toMessage(row: MessageRow): StoredMessage {
   if (row.stop_reason !== null) message.stopReason = row.stop_reason as StopReason;
   if (row.error !== null) message.error = row.error;
   if (row.meta !== null) message.meta = parseJson<MessageMeta>(row.meta, {}, 'message meta');
+  if (row.turn_id !== null) message.turnId = row.turn_id;
+  if (row.answers_id !== null) message.answersId = row.answers_id;
   return message;
 }
 
@@ -635,10 +672,18 @@ export async function tagConversations(
 /* Messages                                                                   */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The conversation as it reads: one linear path.
+ *
+ * `hidden = 0` is what makes regenerate non-destructive. An unselected variant of
+ * the newest reply is still a row, but it is not part of the transcript, so nothing
+ * above this — the request builder, the exporters, the token estimate — has to know
+ * variants exist. See `@/db/variants`.
+ */
 export async function listMessages(conversationId: string): Promise<StoredMessage[]> {
   const { db } = await database();
   const rows = await db.getAllAsync<MessageRow>(
-    'SELECT * FROM messages WHERE conversation_id = ? ORDER BY seq ASC',
+    'SELECT * FROM messages WHERE conversation_id = ? AND hidden = 0 ORDER BY seq ASC',
     [conversationId],
   );
   return rows.map(toMessage);
@@ -668,8 +713,9 @@ export async function appendMessage(conversationId: string, input: NewMessage): 
 
   await db.runAsync(
     `INSERT INTO messages
-       (id, conversation_id, seq, role, created_at, content, text, model, usage, stop_reason, error, meta, excluded)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+       (id, conversation_id, seq, role, created_at, content, text, model, usage, stop_reason, error, meta, excluded,
+        turn_id, answers_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
     [
       id,
       conversationId,
@@ -683,6 +729,8 @@ export async function appendMessage(conversationId: string, input: NewMessage): 
       input.stopReason ?? null,
       input.error ?? null,
       input.meta ? JSON.stringify(input.meta) : null,
+      input.turnId ?? null,
+      input.answersId ?? null,
     ],
   );
 
@@ -706,6 +754,8 @@ export async function appendMessage(conversationId: string, input: NewMessage): 
     ...(input.stopReason !== undefined ? { stopReason: input.stopReason } : {}),
     ...(input.error !== undefined ? { error: input.error } : {}),
     ...(input.meta !== undefined ? { meta: input.meta } : {}),
+    ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+    ...(input.answersId !== undefined ? { answersId: input.answersId } : {}),
   };
 }
 
@@ -839,6 +889,88 @@ export async function forkConversation(
   return refreshed ?? fork;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Variants                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/** One alternative reply to the same user message. */
+export interface TurnVariant {
+  turnId: string;
+  /** True for the one currently in the transcript. */
+  selected: boolean;
+}
+
+/**
+ * Sets the reply being regenerated aside instead of deleting it.
+ *
+ * Returns the `turn_id` the old rows now share, so the caller can put the new pass
+ * in the same slot. Stamping happens here rather than at write time because only a
+ * regenerate creates a slot: a turn nobody has re-rolled needs no group, and rows
+ * written before migration 8 have none — both are handled by labelling the range on
+ * the way past.
+ */
+export async function setTurnAside(
+  conversationId: string,
+  seq: number,
+  inclusive: boolean,
+  answersId: string,
+): Promise<string> {
+  const { db } = await database();
+  const turnId = newId('turn_');
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(stampTurnSql(inclusive), [turnId, answersId, conversationId, seq]);
+    await db.runAsync(HIDE_TURN_SQL, [conversationId, turnId]);
+    await db.runAsync(ANCHOR_SLOT_SQL, [answersId, conversationId, answersId]);
+  });
+  await refreshPreview(conversationId);
+  return turnId;
+}
+
+/** Puts one variant back in the transcript and takes the others out. */
+export async function selectTurn(conversationId: string, answersId: string, turnId: string): Promise<void> {
+  const { db } = await database();
+  await db.runAsync(SELECT_TURN_SQL, [turnId, conversationId, answersId]);
+  await refreshPreview(conversationId);
+}
+
+/**
+ * The variants of the reply at the end of the conversation, oldest first.
+ *
+ * Empty unless that reply has actually been regenerated. Only the newest slot is
+ * offered: selecting an older variant would change history that later turns were
+ * written against, and the alternatives are dropped by the next send for exactly
+ * that reason.
+ */
+export async function newestTurnVariants(
+  conversationId: string,
+): Promise<{ answersId: string; variants: TurnVariant[] }> {
+  const { db } = await database();
+  const slot = await db.getFirstAsync<{ answersId: string }>(NEWEST_SLOT_SQL, [conversationId]);
+  if (!slot) return { answersId: '', variants: [] };
+  const rows = await db.getAllAsync<{ turnId: string; hidden: number }>(LIST_TURNS_SQL, [
+    conversationId,
+    slot.answersId,
+  ]);
+  return {
+    answersId: slot.answersId,
+    variants: rows.map((row) => ({ turnId: row.turnId, selected: row.hidden === 0 })),
+  };
+}
+
+/**
+ * Drops the alternatives to the newest reply.
+ *
+ * Called on the way into a send. The conversation is about to move past that turn,
+ * and a variant that is no longer reachable is a row that would otherwise sit in
+ * the database forever — and, worse, could be resurrected by a later regenerate
+ * into a history it was never written for.
+ */
+export async function dropHiddenMessages(conversationId: string): Promise<number> {
+  const { db } = await database();
+  const result = await db.runAsync(DROP_HIDDEN_SQL, [conversationId]);
+  return result.changes;
+}
+
 /** The messages a request should carry, in wire form. */
 export function toUnifiedMessages(messages: readonly StoredMessage[]): UnifiedMessage[] {
   return messages
@@ -875,11 +1007,11 @@ async function touchConversation(conversationId: string, at: number, text: strin
 async function refreshPreview(conversationId: string): Promise<void> {
   const { db } = await database();
   const newest = await db.getFirstAsync<{ created_at: number }>(
-    'SELECT created_at FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1',
+    'SELECT created_at FROM messages WHERE conversation_id = ? AND hidden = 0 ORDER BY seq DESC LIMIT 1',
     [conversationId],
   );
   const withText = await db.getFirstAsync<{ text: string }>(
-    "SELECT text FROM messages WHERE conversation_id = ? AND text <> '' ORDER BY seq DESC LIMIT 1",
+    "SELECT text FROM messages WHERE conversation_id = ? AND hidden = 0 AND text <> '' ORDER BY seq DESC LIMIT 1",
     [conversationId],
   );
   await db.runAsync('UPDATE conversations SET preview = ?, last_message_at = ? WHERE id = ?', [
@@ -945,6 +1077,9 @@ export async function searchMessages(query: string, options: SearchOptions = {})
 
   const select = `SELECT m.id, m.conversation_id, c.title, m.role, m.created_at, m.text
                     FROM messages m JOIN conversations c ON c.id = m.conversation_id`;
+  // A variant the user paged away from is still an indexed row, and a hit on one
+  // would open a conversation that does not contain the text that was highlighted.
+  const visible = ' AND m.hidden = 0';
   // Both passes already join `conversations`, so the tag filter is one predicate
   // against the row that is there anyway. Without it, picking a tag and then
   // typing narrows the list above the results but not the results themselves.
@@ -961,7 +1096,7 @@ export async function searchMessages(query: string, options: SearchOptions = {})
         const rows = await db.getAllAsync<SearchRow>(
           `${select}
              JOIN messages_fts f ON f.rowid = m.rowid
-            WHERE messages_fts MATCH ?${tagFilter}
+            WHERE messages_fts MATCH ?${visible}${tagFilter}
             ORDER BY f.rank, m.created_at DESC
             LIMIT ?`,
           [match, ...tagParams, limit],
@@ -981,7 +1116,7 @@ export async function searchMessages(query: string, options: SearchOptions = {})
   if (!pattern) return [];
   const rows = await db.getAllAsync<SearchRow>(
     `${select}
-      WHERE m.text LIKE ? ESCAPE '${LIKE_ESCAPE}'${tagFilter}
+      WHERE m.text LIKE ? ESCAPE '${LIKE_ESCAPE}'${visible}${tagFilter}
       ORDER BY m.created_at DESC
       LIMIT ?`,
     [pattern, ...tagParams, limit],

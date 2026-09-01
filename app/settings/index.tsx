@@ -247,6 +247,14 @@ export default function SettingsHub() {
           disabled={!settings.debugLogEnabled}
           disabledReason="Turn the debug log on first."
         />
+        <SwitchRow
+          label="Developer details on messages"
+          subtitle="Adds the raw request, response, tokens and a copy-as-curl button to each reply's ⋯ menu."
+          value={settings.devPanelEnabled}
+          onChange={(v) => settings.set('devPanelEnabled', v)}
+          disabled={!settings.debugLogEnabled}
+          disabledReason="The panel reads the debug log, so turn that on first."
+        />
       </Section>
     </Screen>
   );

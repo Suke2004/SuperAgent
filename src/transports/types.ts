@@ -457,6 +457,16 @@ export interface StreamOptions {
    * 8s (attempt 2 of 4)".
    */
   onRetry?: (info: { attempt: number; delayMs: number; message: string }) => void;
+  /**
+   * The debug log id of each HTTP request this stream opened, as it opens.
+   *
+   * More than one per stream is normal: a retry, a dropped parameter and the
+   * `max_tokens` rename each open a new request. The caller keeps the ids so a
+   * message can be traced back to what actually went over the wire — see the
+   * developer panel. Ids only; the entries themselves live in `@/lib/log`, already
+   * redacted.
+   */
+  onRequest?: (id: string) => void;
 }
 
 export interface Transport {
