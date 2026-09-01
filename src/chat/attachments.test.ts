@@ -44,6 +44,8 @@ const chars = (n: number): string => 'A'.repeat(n);
 
 const image = (n: number): ContentBlock => imageBlock('image/jpeg', chars(n));
 
+const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
 describe('planResize', () => {
   it('leaves an image already within the limit alone', () => {
     expect(planResize({ width: 800, height: 600 })).toEqual({
@@ -241,6 +243,21 @@ describe('admitDocument', () => {
     expect(admitDocument([], { mediaType: 'text/markdown', name: 'notes.md' })).toEqual({ ok: true });
   });
 
+  it('gives an Office file its own, larger ceiling — it is compressed', () => {
+    const docx = { mediaType: DOCX, name: 'report.docx' };
+    // Over the text limit, under the Office one.
+    expect(admitDocument([], { ...docx, size: 2_000_000 })).toEqual({ ok: true });
+    const admission = admitDocument([], { ...docx, size: 5_000_000 });
+    if (admission.ok) throw new Error('unreachable');
+    expect(admission.reason).toContain('an Office file');
+  });
+
+  it('accepts an Office file the system typed as a wildcard', () => {
+    expect(admitDocument([], { mediaType: 'application/octet-stream', name: 'Q3.xlsx', size: 10 })).toEqual({
+      ok: true,
+    });
+  });
+
   it('counts a PDF against the per-message byte budget as base64', () => {
     const staged = [image(1_400_000), image(1_400_000)];
     const admission = admitDocument(staged, { mediaType: 'application/pdf', name: 'a.pdf', size: 2_000_000 });
@@ -312,6 +329,16 @@ describe('documentSupport', () => {
     const support = documentSupport('anthropic', caps({ documents: true }), 'application/zip');
     expect(support.supported).toBe(false);
   });
+
+  it('takes an Office file on either transport, never natively', () => {
+    // No API has a `.docx` block, so it is the extracted text or nothing — which is
+    // also why the capability flags do not come into it.
+    expect(documentSupport('openai', caps(), DOCX)).toMatchObject({ supported: true, native: false });
+    expect(documentSupport('anthropic', caps({ documents: true }), DOCX)).toMatchObject({
+      supported: true,
+      native: false,
+    });
+  });
 });
 
 describe('documentCaveat', () => {
@@ -365,6 +392,19 @@ describe('documentCaveat', () => {
         text: 'hello',
       }),
     ).toBeUndefined();
+  });
+
+  it('always names what an Office file loses, on Anthropic too', () => {
+    // The loss is the format's, not the profile's: a spreadsheet arrives as its cells
+    // and nothing else, wherever it is sent.
+    const caveat = documentCaveat('anthropic', caps({ documents: true }), {
+      type: 'document',
+      mediaType: DOCX,
+      name: 'report.docx',
+      text: 'Findings',
+    });
+    expect(caveat).toContain('report.docx');
+    expect(caveat).toMatch(/Layout, styling, images and cell formatting/);
   });
 });
 

@@ -15,6 +15,7 @@
  * and impossible to eyeball — run in Jest.
  */
 
+import { isOfficeDocument, MAX_OFFICE_BYTES } from '@/chat/office';
 import { truncateMiddle } from '@/chat/trim';
 import { estimateBlockTokens } from '@/lib/tokens';
 import type { ModelCapabilities } from '@/transports/support';
@@ -135,6 +136,9 @@ const TYPE_BY_EXTENSION: Record<string, string> = {
   sh: 'text/plain',
   log: 'text/plain',
   pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
   png: 'image/png',
@@ -358,25 +362,26 @@ export function admitDocument(
 
   const mediaType = candidate.mediaType;
   const textual = isTextualDocument(mediaType, candidate.name);
+  const office = isOfficeDocument(mediaType, candidate.name);
   const pdf = mediaType === 'application/pdf';
 
-  if (!pdf && !textual) {
+  if (!pdf && !textual && !office) {
     return {
       ok: false,
       reason:
         `${candidate.name ? `${candidate.name} is` : 'That file is'} a ${mediaType || 'file of unknown type'}, ` +
-        `which cannot be read on device or sent as a document. PDFs and text files can.`,
+        `which cannot be read on device or sent as a document. PDFs, Office files and text files can.`,
     };
   }
 
-  const limit = pdf ? MAX_PDF_BYTES : MAX_TEXT_FILE_BYTES;
+  const limit = pdf ? MAX_PDF_BYTES : office ? MAX_OFFICE_BYTES : MAX_TEXT_FILE_BYTES;
   const size = candidate.size;
   if (size !== undefined && Number.isFinite(size) && size > limit) {
     return {
       ok: false,
       reason:
         `${candidate.name ?? 'That file'} is ${formatBytes(size)}; the limit is ${formatBytes(limit)} for ` +
-        `${pdf ? 'a PDF' : 'a text file'}. Nothing has been read yet — ` +
+        `${pdf ? 'a PDF' : office ? 'an Office file' : 'a text file'}. Nothing has been read yet — ` +
         `${pdf ? 'split it or export the pages you need' : 'attach an extract instead'}.`,
     };
   }
@@ -434,6 +439,10 @@ export function documentSupport(
     return { supported: true, reason: '', native: transport === 'anthropic' && !!capabilities?.documents };
   }
 
+  // An Office file is read on device into text, so it needs nothing from the transport
+  // and is never native — no API takes a `.docx` as a document block.
+  if (isOfficeDocument(mediaType)) return { supported: true, reason: '', native: false };
+
   if (mediaType !== 'application/pdf') {
     return {
       supported: false,
@@ -480,6 +489,13 @@ export function documentCaveat(
   const support = documentSupport(transport, capabilities, block.mediaType);
   if (!support.supported) return support.reason;
   if (support.native) return undefined;
+  // An Office file is always the text this device could pull out of it, on every
+  // transport, so the caveat is not about the profile — it is about the format.
+  if (isOfficeDocument(block.mediaType, block.name)) {
+    return block.text
+      ? `${block.name ?? 'This file'} is sent as the text read from it on this device. Layout, styling, images and cell formatting are not included.`
+      : `No text could be read from ${block.name ?? 'this file'}. The model will only see the file name.`;
+  }
   if (block.text !== undefined) {
     return transport === 'anthropic'
       ? undefined

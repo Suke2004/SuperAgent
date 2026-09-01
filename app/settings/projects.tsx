@@ -22,6 +22,7 @@ import type { SheetAction } from '@/components/Sheet';
 import { Body, Button, Empty, Field, Inline, Note, Row, Screen, Section, Spinner } from '@/components/ui';
 import { MAX_KNOWLEDGE_CHARS, MAX_PROJECT_NAME } from '@/chat/project';
 import type { Project, ProjectDraft } from '@/chat/project';
+import { extractOffice, OFFICE_MEDIA_TYPES, officeKind } from '@/chat/office';
 import { log } from '@/lib/log';
 import { useProjects } from '@/stores/projects';
 import { useTheme } from '@/theme';
@@ -74,16 +75,27 @@ export default function ProjectsScreen() {
    * Attach a text file as a knowledge document.
    *
    * `text/*` for the same reason the skills importer uses it: the documents are read as
-   * text, and offering every file only means refusing most of them a tap later. The
-   * name is the file's, so the model can cite it and the user can recognise it.
+   * text, and offering every file only means refusing most of them a tap later. Word,
+   * Excel and PowerPoint files join it because `extractOffice` reads them into text on
+   * device, which is the same thing a `.md` becomes here. The name is the file's, so
+   * the model can cite it and the user can recognise it.
    */
   const attach = async (): Promise<void> => {
-    const picked = await DocumentPicker.getDocumentAsync({ type: ['text/*'], copyToCacheDirectory: true });
+    const picked = await DocumentPicker.getDocumentAsync({
+      type: ['text/*', ...OFFICE_MEDIA_TYPES],
+      copyToCacheDirectory: true,
+    });
     if (picked.canceled) return;
     const asset = picked.assets[0];
     if (!asset) return;
     try {
-      const text = await new File(asset.uri).text();
+      const file = new File(asset.uri);
+      const office = officeKind(asset.mimeType, asset.name);
+      const text = office ? extractOffice(await file.bytes(), office) : await file.text();
+      if (!text.trim()) {
+        setProblem(`No text could be read from ${asset.name}.`);
+        return;
+      }
       setDraft((d) => ({ ...d, knowledge: [...d.knowledge, { name: asset.name, text }] }));
       setProblem(null);
     } catch (error) {

@@ -66,6 +66,7 @@ let primed = false;
  * is why nothing here retries.
  */
 export async function primeNotifications(): Promise<void> {
+  if (Platform.OS === 'web') return;
   if (primed) return;
   primed = true;
   try {
@@ -126,6 +127,7 @@ export function tappedConversation(response: Notifications.NotificationResponse)
  * a tap from a killed app lands on the home screen instead of the conversation.
  */
 export function onNotificationTap(open: (conversationId: string) => void): () => void {
+  if (Platform.OS === 'web') return () => {};
   const subscription = Notifications.addNotificationResponseReceivedListener((response) => {
     const id = tappedConversation(response);
     if (id) open(id);

@@ -222,7 +222,7 @@ Reference surface: the Claude apps plus Claude Code, since the request is "every
 | **Subagents / task delegation** | ❌ | Not v1.1. Two models on one phone battery is a different product. |
 | **Plan mode** | ✅ — per-conversation toggle; writers and every MCP tool refused, reads still allowed ([plan.ts](src/chat/plan.ts)) | — |
 | **Native filesystem / bash** | ❌ | Not possible on device; §4 |
-| **Docx / xlsx / pptx reading** | ❌ | v1.2, same libraries as writing them |
+| **Docx / xlsx / pptx reading** | ✅ — read on device into text, no new dependency ([office.ts](src/chat/office.ts)) | Writing them is still open: OOXML needs an XML writer, and CSV plus PDF cover the "give me a file" request |
 | **Chat sharing by link** | ❌ | Not building — needs a server, and the app's premise is no server |
 
 ---

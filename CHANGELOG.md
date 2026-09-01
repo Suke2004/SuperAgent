@@ -14,6 +14,12 @@ and is marked **needs a rebuild** below.
 
 ### Added
 
+- **Word, Excel and PowerPoint attachments** — a `.docx`, `.xlsx` or `.pptx` is read
+  on device into text and sent like any other document: paragraphs from a Word file,
+  tab-separated cells per named sheet from a workbook, one section per slide from a
+  deck. Project knowledge documents accept the same three. No new dependency — an
+  Office file is a zip of XML and `fflate` was already here — so no rebuild is needed.
+  The composer says what the format loses: layout, styling, images and cell formats.
 - **Slash commands** — `/` in the composer opens one list over prompt templates,
   skills, MCP prompts and app commands. Templates with `{{variables}}` open the fill
   form; MCP prompts are fetched with `prompts/get` and inserted as text.

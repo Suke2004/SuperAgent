@@ -891,8 +891,8 @@ ${text}` : text);
     {
       label: 'Attach a document',
       subtitle: pdfs.supported
-        ? 'PDFs go as documents; text files are read on device.'
-        : 'Text files are read on device. PDFs are not available here.',
+        ? 'PDFs go as documents; text, Word, Excel and PowerPoint files are read on device.'
+        : 'Text, Word, Excel and PowerPoint files are read on device. PDFs are not available here.',
       onPress: () => void runPick(() => pickDocuments(attachments, transport, caps)),
     },
   ];

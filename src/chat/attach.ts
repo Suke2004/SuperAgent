@@ -46,6 +46,7 @@ import {
   attachmentSize,
 } from '@/chat/attachments';
 import { APP_NAME } from '@/lib/app';
+import { extractOffice, OFFICE_MEDIA_TYPES, officeKind } from '@/chat/office';
 import { log } from '@/lib/log';
 import type { ModelCapabilities } from '@/transports/support';
 import type { ContentBlock, DocumentBlock, TransportKind } from '@/transports/types';
@@ -269,7 +270,7 @@ export async function captureImage(existing: readonly ContentBlock[]): Promise<A
 /* ------------------------------------------------------------------------- */
 
 /** Types offered in the system picker. A wildcard would show files we then refuse. */
-const DOCUMENT_TYPES = ['application/pdf', 'text/*', 'application/json', 'application/xml'];
+const DOCUMENT_TYPES = ['application/pdf', 'text/*', 'application/json', 'application/xml', ...OFFICE_MEDIA_TYPES];
 
 /**
  * Picks documents and reads them in whichever form this profile can send.
@@ -408,9 +409,26 @@ export async function attachExistingFile(
  * the app can then show it, search it and export it, and `flattenContent` indexes
  * its contents rather than only its file name. A PDF has no such option — nothing on
  * device can extract its text — so it goes as base64 or not at all.
+ *
+ * An Office file is a zip of XML, so it is read here too — see `@/chat/office`. What
+ * comes back is text and only text, which is why the composer shows a caveat for it.
  */
 async function readDocument(uri: string, name: string, mediaType: string): Promise<DocumentBlock> {
   const file = new File(uri);
+
+  const office = officeKind(mediaType, name);
+  if (office) {
+    const extracted = extractOffice(await file.bytes(), office);
+    const { text, truncated } = boundExtractedText(extracted);
+    return {
+      type: 'document',
+      mediaType,
+      name: truncated ? `${name} (${formatBytes(extracted.length)}, shortened)` : name,
+      // Empty is a real outcome — a deck of images, a blank workbook — and saying so
+      // in the block beats a read failure the user cannot act on.
+      text: text || `(no text could be read from ${name})`,
+    };
+  }
 
   if (isTextualDocument(mediaType, name)) {
     const raw = await file.text();
