@@ -40,6 +40,7 @@ import { Composer } from '@/components/chat/Composer';
 import { MessageView } from '@/components/chat/MessageView';
 import { ReferenceSheet } from '@/components/chat/ReferenceSheet';
 import { StreamView } from '@/components/chat/StreamView';
+import { VariantPager } from '@/components/chat/VariantPager';
 import {
   Body,
   Button,
@@ -84,6 +85,7 @@ import {
   useDraft,
   useMessages,
   useStream,
+  useVariants,
 } from '@/stores/chat';
 import { useCalibration } from '@/stores/calibration';
 import { capabilitiesFor, entryKey, pickableModelIds, useModels } from '@/stores/models';
@@ -122,6 +124,8 @@ export default function ChatScreen() {
   const stream = useStream(id);
   const draft = useDraft(id);
   const attachments = useAttachments(id);
+  const variants = useVariants(id);
+  const selectVariant = useChat((s) => s.selectVariant);
 
   const open = useChat((s) => s.open);
   const loadList = useChat((s) => s.loadList);
@@ -1504,7 +1508,9 @@ ${result.content}` : result.content);
                     : {})}
                 />
               </View>
-            ) : null
+            ) : (
+              <VariantPager variants={variants} onSelect={(index) => void selectVariant(id, index)} />
+            )
           }
         />
 

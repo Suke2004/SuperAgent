@@ -22,14 +22,18 @@ import {
   deleteMessage as dbDeleteMessage,
   deleteMessagesFrom,
   deriveTitle,
+  dropHiddenMessages,
   flattenContent,
   forkConversation,
   getConversation,
   isToolTurn,
   listConversationPage,
   listMessages,
+  newestTurnVariants,
   previewOf,
   recordUsage,
+  selectTurn,
+  setTurnAside,
   setPinned as dbSetPinned,
   setTags as dbSetTags,
   setArchivedBulk,
@@ -46,6 +50,7 @@ import type {
   MessageMeta,
   StoredMessage,
   TagMode,
+  TurnVariant,
 } from '@/db/conversations';
 import type { ListCursor } from '@/db/list-query';
 import { buildRequest, composeSystem, validateConfig, hasBlockingIssue } from '@/chat/request';
@@ -76,6 +81,7 @@ import type { TrimReport } from '@/chat/trim';
 import { planCacheForRequest } from '@/chat/cache';
 import { projectSystemPrompt } from '@/chat/project';
 import { invalidateTransports, resolveTransport } from '@/lib/gateway';
+import { newId } from '@/lib/id';
 import { log } from '@/lib/log';
 import { estimateRequestTokens } from '@/lib/tokens';
 import { capabilitiesFor, useModels, wireHintsFor } from '@/stores/models';
@@ -313,6 +319,15 @@ export interface ChatState {
    */
   stalled: Record<string, true>;
 
+  /**
+   * Alternative replies to the last user message, per conversation.
+   *
+   * Only ever the newest turn — see `newestTurnVariants`. Kept in the store rather
+   * than derived from `messages`, because the whole point of the model is that the
+   * variants the user is not reading are *not* in the transcript.
+   */
+  variants: Record<string, { answersId: string; variants: TurnVariant[] }>;
+
   loadList(options?: ListOptions): Promise<void>;
   /** Appends the next page. A no-op at the end of the list or while one is loading. */
   loadMore(): Promise<void>;
@@ -378,6 +393,14 @@ export interface ChatState {
 
   send(conversationId: string, options: SendOptions): Promise<void>;
   regenerate(conversationId: string, messageId: string): Promise<void>;
+  /**
+   * Pages between the alternative replies to the last user message.
+   *
+   * By index into {@link ChatState.variants}, not by direction: the pager renders
+   * "2 of 3", so it already knows where it is, and a store that recomputed that from
+   * a direction would be a second place for the numbering to disagree.
+   */
+  selectVariant(conversationId: string, index: number): Promise<void>;
   editAndResend(conversationId: string, messageId: string, text: string): Promise<void>;
   editInPlace(conversationId: string, messageId: string, text: string): Promise<void>;
   setExcluded(conversationId: string, messageId: string, excluded: boolean): Promise<void>;
@@ -415,6 +438,7 @@ export const useChat = create<ChatState>()((set, get) => ({
   streams: {},
   contextNotes: {},
   stalled: {},
+  variants: {},
 
   async loadList(options) {
     set({ listLoading: true, listOptions: options });
@@ -461,7 +485,14 @@ export const useChat = create<ChatState>()((set, get) => ({
 
   async reload(conversationId) {
     const messages = await listMessages(conversationId);
-    set((state) => ({ messages: { ...state.messages, [conversationId]: messages } }));
+    // One extra grouped read per transcript load, and it is the only place the
+    // variant set is refreshed: every path that changes the shape of the
+    // conversation already ends in a `reload`.
+    const variants = await newestTurnVariants(conversationId);
+    set((state) => ({
+      messages: { ...state.messages, [conversationId]: messages },
+      variants: { ...state.variants, [conversationId]: variants },
+    }));
   },
 
   async start(init) {
@@ -557,16 +588,19 @@ export const useChat = create<ChatState>()((set, get) => ({
       const drafts = { ...state.drafts };
       const attachments = { ...state.attachments };
       const streams = { ...state.streams };
+      const variants = { ...state.variants };
       delete messages[conversationId];
       delete drafts[conversationId];
       delete attachments[conversationId];
       delete streams[conversationId];
+      delete variants[conversationId];
       return {
         conversations: state.conversations.filter((c) => c.id !== conversationId),
         messages,
         drafts,
         attachments,
         streams,
+        variants,
       };
     });
   },
@@ -629,11 +663,13 @@ export const useChat = create<ChatState>()((set, get) => ({
       const drafts = { ...state.drafts };
       const attachments = { ...state.attachments };
       const streams = { ...state.streams };
+      const variants = { ...state.variants };
       for (const id of gone) {
         delete messages[id];
         delete drafts[id];
         delete attachments[id];
         delete streams[id];
+        delete variants[id];
       }
       return {
         conversations: state.conversations.filter((c) => !gone.has(c.id)),
@@ -641,6 +677,7 @@ export const useChat = create<ChatState>()((set, get) => ({
         drafts,
         attachments,
         streams,
+        variants,
       };
     });
     return removed;
@@ -664,6 +701,15 @@ export const useChat = create<ChatState>()((set, get) => ({
     if (text) content.push({ type: 'text', text });
     if (options.attachments?.length) content.push(...options.attachments);
     if (!content.length) return;
+
+    // The conversation is moving past the last reply, so its alternatives go now.
+    // Keeping them would leave rows that no longer answer anything, and a later
+    // regenerate could page one of them back into a history it was never written
+    // for.
+    if (get().variants[conversationId]?.variants.length) {
+      await dropHiddenMessages(conversationId);
+      set((state) => ({ variants: { ...state.variants, [conversationId]: { answersId: '', variants: [] } } }));
+    }
 
     const message = await appendMessage(conversationId, { role: 'user', content });
     appendToTranscript(set, conversationId, message);
@@ -700,9 +746,48 @@ export const useChat = create<ChatState>()((set, get) => ({
     // seq for the exclusive case, which expressed the intent but did nothing: one
     // ULP of a seq above 4 is larger than EPSILON, so the addition rounded away.
     const inclusive = target.role === 'assistant';
-    await deleteMessagesFrom(conversationId, target.seq, inclusive);
+    const answersId = inclusive ? slotOf(messages, target.seq) : target.id;
+
+    // Only the reply at the end of the conversation keeps its alternatives. Further
+    // back, the turns after it were written against the answer being replaced, so
+    // there is no history in which both versions make sense — that stays the
+    // destructive rewind it has always been.
+    if (!answersId || slotOf(messages, Number.POSITIVE_INFINITY) !== answersId) {
+      await deleteMessagesFrom(conversationId, target.seq, inclusive);
+      await get().reload(conversationId);
+      await runTurn(set, get, conversationId, { regeneratedFrom: messageId });
+      return;
+    }
+
+    const previous = await setTurnAside(conversationId, target.seq, inclusive, answersId);
+    log.debug('chat', 'Kept the previous reply as a variant', { turnId: previous });
     await get().reload(conversationId);
-    await runTurn(set, get, conversationId, { regeneratedFrom: messageId });
+    await runTurn(set, get, conversationId, { regeneratedFrom: messageId, turnId: newId('turn_'), answersId });
+    // The new pass's rows are in the transcript already, but its `turn_id` only
+    // becomes a *choice* once the variant set is re-read.
+    await get().reload(conversationId);
+
+    // A turn that wrote nothing at all — a connection that failed before the first
+    // token, or a stop pressed on an empty reply — would otherwise leave the slot
+    // with every variant hidden: the old answer still in the database, and no arrow
+    // on screen able to reach it. Put it back. `selectTurn` directly rather than the
+    // action, because a failed turn keeps its stream entry and the action refuses to
+    // run while one exists.
+    const slot = get().variants[conversationId];
+    const newest = slot?.variants[slot.variants.length - 1];
+    if (slot && newest && !slot.variants.some((v) => v.selected)) {
+      await selectTurn(conversationId, slot.answersId, newest.turnId);
+      await get().reload(conversationId);
+    }
+  },
+
+  async selectVariant(conversationId, index) {
+    if (get().streams[conversationId]) return;
+    const slot = get().variants[conversationId];
+    const chosen = slot?.variants[index];
+    if (!slot || !chosen || chosen.selected) return;
+    await selectTurn(conversationId, slot.answersId, chosen.turnId);
+    await get().reload(conversationId);
   },
 
   async editAndResend(conversationId, messageId, text) {
@@ -866,6 +951,37 @@ function appendToTranscript(set: Setter, conversationId: string, message: Stored
   });
 }
 
+/**
+ * The variant grouping for every row one pass writes.
+ *
+ * Spread into all three `appendMessage` calls a turn can reach — the reply, the
+ * tool results, and the partial reply a failure keeps — because a variant that
+ * loses its tool rows leaves a `tool_use` unanswered, and the next request built
+ * from that history is rejected outright.
+ */
+function turnColumns(options: RunOptions): { turnId?: string; answersId?: string } {
+  if (!options.turnId || !options.answersId) return {};
+  return { turnId: options.turnId, answersId: options.answersId };
+}
+
+/**
+ * The last thing the user actually said before `beforeSeq`.
+ *
+ * The slot a regenerated reply answers. `role === 'user'` is not enough on its own:
+ * tool results are stored as user messages — the API's convention — so the newest
+ * `user` row in a tool-using turn is the app's own output, not a question anyone
+ * asked. Empty string when there is none, which the caller reads as "nothing to
+ * group by, rewind the old way".
+ */
+function slotOf(messages: readonly StoredMessage[], beforeSeq: number): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!message || message.seq >= beforeSeq) continue;
+    if (message.role === 'user' && !isToolTurn(message.content)) return message.id;
+  }
+  return '';
+}
+
 /* -------------------------------------------------------------------------- */
 /* The turn                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -873,6 +989,13 @@ function appendToTranscript(set: Setter, conversationId: string, message: Stored
 interface RunOptions {
   modelOverride?: string;
   regeneratedFrom?: string;
+  /**
+   * Groups every row this pass writes, so paging away from the reply takes the tool
+   * rows with it. Set only by `regenerate`; a first attempt needs no group.
+   */
+  turnId?: string;
+  /** The user message this pass answers. Set with {@link RunOptions.turnId}. */
+  answersId?: string;
   /**
    * How many times this turn has already been resumed after a `pause_turn`.
    *
@@ -1423,6 +1546,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       usage,
       stopReason: live.stopReason,
       ...(Object.keys(meta).length ? { meta } : {}),
+      ...turnColumns(options),
     });
     appendToTranscript(set, conversationId, message);
 
@@ -1483,6 +1607,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
           ...(carryImages && result.images?.length ? { images: result.images } : {}),
           ...(result.isError ? { isError: true } : {}),
         })),
+        ...turnColumns(options),
       });
       appendToTranscript(set, conversationId, results);
 
@@ -1574,6 +1699,7 @@ async function handleTurnFailure(
       stopReason: aborted ? 'aborted' : live.stopReason,
       ...(aborted ? {} : { error: detail }),
       ...(Object.keys(meta).length ? { meta } : {}),
+      ...turnColumns(options),
     });
     appendToTranscript(set, conversationId, message);
   }
@@ -1956,6 +2082,19 @@ export function useContextNote(conversationId: string): string | undefined {
 /** Whether the last turn stopped at a cap and can simply be asked to carry on. */
 export function useCanContinue(conversationId: string): boolean {
   return useChat((state) => state.stalled[conversationId] === true);
+}
+
+const NO_VARIANTS: TurnVariant[] = [];
+
+/**
+ * The alternative replies to the last user message, oldest attempt first.
+ *
+ * Empty until that reply has been regenerated, which is what the pager keys off:
+ * one answer is not a set of choices, and an arrow with nowhere to go is worse than
+ * no arrow.
+ */
+export function useVariants(conversationId: string): TurnVariant[] {
+  return useChat((state) => state.variants[conversationId]?.variants ?? NO_VARIANTS);
 }
 
 const NO_ATTACHMENTS: ContentBlock[] = [];

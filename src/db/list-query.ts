@@ -56,7 +56,7 @@ export interface SqlQuery {
 /** The projection is shared with {@link buildListQuery} so a test can assert on either. */
 const SELECT_LIST = `SELECT c.*,
        (SELECT group_concat(tag, char(1)) FROM conversation_tags WHERE conversation_id = c.id) AS tags,
-       (SELECT count(*) FROM messages WHERE conversation_id = c.id) AS message_count
+       (SELECT count(*) FROM messages WHERE conversation_id = c.id AND hidden = 0) AS message_count
   FROM conversations c`;
 
 /** The one true ordering. Every clause that pages over this list has to agree with it. */

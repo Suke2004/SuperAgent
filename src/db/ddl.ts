@@ -10,7 +10,7 @@
  */
 
 /** Bumped whenever {@link MIGRATIONS} grows. Stored in SQLite's `user_version`. */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 /**
  * The FTS index and the three triggers that keep it in step with `messages`.
@@ -311,5 +311,34 @@ export const MIGRATIONS: readonly string[] = [
     -- The project's own conversation list: newest first, same shape as the main list.
     CREATE INDEX IF NOT EXISTS conversations_project
       ON conversations (project_id, updated_at DESC, id DESC);
+  `,
+  /* 7 → 8 */ `
+    -- Regenerating a reply keeps the old one instead of deleting it.
+    --
+    -- Three columns rather than the parent-pointer tree this would be if the app
+    -- branched everywhere: the transcript stays one linear path, and only the
+    -- newest reply has alternatives. That keeps the request builder, the trim
+    -- ladder and the exporters reading a flat list, which is where a subtle bug
+    -- would cost money.
+    --
+    -- Every existing row keeps NULLs and \`hidden = 0\`, which reads as "a turn of
+    -- its own, with no siblings" — so nothing has to be rewritten to migrate.
+
+    -- All the rows one generation pass wrote. A turn that called tools writes an
+    -- assistant row *and* a \`tool_result\` row per round, and paging away from that
+    -- reply has to take all of them, so the group is keyed by the pass rather than
+    -- by a message id.
+    ALTER TABLE messages ADD COLUMN turn_id TEXT;
+
+    -- The user message this turn answers: the slot the variants compete for.
+    ALTER TABLE messages ADD COLUMN answers_id TEXT;
+
+    -- An unselected variant. Filtered out of the transcript, the preview and
+    -- search, and dropped outright by the next send — the invariant is that hidden
+    -- rows only ever exist for the turn at the end of the conversation.
+    ALTER TABLE messages ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+
+    CREATE INDEX IF NOT EXISTS messages_variants
+      ON messages (conversation_id, answers_id, turn_id);
   `,
 ];
