@@ -29,3 +29,25 @@ export function launchTarget(conversations: readonly Conversation[]): string | u
   }
   return best?.id;
 }
+
+/**
+ * Longest prompt a `jarvis://new?q=…` link may carry.
+ *
+ * Generous enough for a pasted paragraph and far short of anything that would make the
+ * composer unusable. Truncated rather than refused: a clipped prompt the user can see
+ * and edit beats an error screen.
+ */
+const MAX_QUERY = 4000;
+
+/**
+ * The prompt a deep link asked for, out of whatever the URL actually contained.
+ *
+ * A URL is untrusted input — it can come from a web page, a QR code or another app —
+ * and expo-router hands a repeated query parameter over as an array, so neither the
+ * shape nor the size of `q` can be assumed. Carriage returns come out because a `\r`
+ * pasted into a `TextInput` is an invisible character that changes what gets sent.
+ */
+export function linkedPrompt(value: string | readonly string[] | undefined): string {
+  const raw = Array.isArray(value) ? value.join(' ') : ((value as string | undefined) ?? '');
+  return raw.replace(/\r/g, '').trim().slice(0, MAX_QUERY);
+}
