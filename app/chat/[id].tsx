@@ -74,6 +74,7 @@ import { plural } from '@/chat/selection';
 import { speakOrStop } from '@/chat/speech';
 import { toUnifiedMessages } from '@/db/conversations';
 import type { SearchHit, StoredMessage } from '@/db/conversations';
+import * as haptics from '@/lib/haptics';
 import { estimateMessagesTokens, estimateTextTokens, formatCost, formatTokens, estimateCost } from '@/lib/tokens';
 import type { ContextPressure } from '@/lib/tokens';
 import {
@@ -629,6 +630,7 @@ export default function ChatScreen() {
    * at `over`, the one strategy that neither trims nor blocks.
    */
   const submit = (pressure: ContextPressure): void => {
+    haptics.tap();
     const payload = { text: draft, ...(attachments.length ? { attachments: [...attachments] } : {}) };
     const ask = sendConfirmation(pressure, contextStrategy);
     if (!ask) {
@@ -715,7 +717,10 @@ ${text}` : text);
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: () => void useChat.getState().deleteMessage(id, message.id),
+        onPress: () => {
+          haptics.warn();
+          void useChat.getState().deleteMessage(id, message.id);
+        },
       },
     ]);
   };
@@ -743,7 +748,10 @@ ${text}` : text);
         subtitle: message.text ? undefined : 'This message has no text to copy.',
         disabled: !message.text,
         ...(message.text ? {} : { disabledReason: 'This message has no text to copy.' }),
-        onPress: () => void Clipboard.setStringAsync(message.text),
+        onPress: () => {
+          haptics.confirm();
+          void Clipboard.setStringAsync(message.text);
+        },
       },
       {
         label: 'Read aloud',
@@ -773,7 +781,10 @@ ${text}` : text);
         subtitle: 'Asks again from this point.',
         disabled: busy,
         ...(busy ? { disabledReason: reason } : {}),
-        onPress: () => void useChat.getState().regenerate(id, message.id),
+        onPress: () => {
+          haptics.tap();
+          void useChat.getState().regenerate(id, message.id);
+        },
       },
       {
         label: 'Fork from here',

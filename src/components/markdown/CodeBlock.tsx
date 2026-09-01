@@ -22,6 +22,7 @@ import { resolveLanguage, shouldHighlight } from '@/components/markdown/lang';
 import { SYNTAX_ITALIC, syntaxColors } from '@/components/markdown/syntax';
 import { ArtifactPreview } from '@/components/ArtifactPreview';
 import { artifactKind } from '@/chat/artifact';
+import * as haptics from '@/lib/haptics';
 import { useTheme } from '@/theme';
 
 const COPIED_MS = 1600;
@@ -67,6 +68,7 @@ export function CodeBlock({ code, lang }: { code: string; lang?: string }) {
 
   const onCopy = useCallback(() => {
     void Clipboard.setStringAsync(code);
+    haptics.confirm();
     setCopied(true);
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => setCopied(false), COPIED_MS);
