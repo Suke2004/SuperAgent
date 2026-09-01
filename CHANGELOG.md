@@ -96,6 +96,12 @@ and is marked **needs a rebuild** below.
   strip at the screen edge is a thumb's width instead of a hairline.
 - The chat header's ☰ and ⋯ are fixed, centred targets rather than bare text that grew
   out of the row at large system font sizes.
+- The chat header carried three things in the strip between two 44dp buttons — the
+  title, the model on a second line, and an "Unreachable" pill wedged beside it. It
+  is now just the title: the model is already the tappable chip on the composer, and
+  the unreachable state is already a whole sentence pinned above it.
+- The first React frame after the splash replaced the app's mark with a stock
+  spinner. It is the mark now, on the same colour, turning.
 - Opening a conversation showed a bare spinner under whatever title the previous screen
   had left; it now shows the app's mark on an empty header, and an empty chat opens on
   the mark and a question rather than a bordered "nothing here yet" card.

@@ -28,7 +28,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Modal, PanResponder, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { OfflineBadge, OfflineBanner } from '@/components/OfflineBanner';
+import { OfflineBanner } from '@/components/OfflineBanner';
 import { CodeSandbox } from '@/components/CodeSandbox';
 import { Glyph } from '@/components/Glyph';
 import { useDialogKeys } from '@/components/dialog';
@@ -1444,25 +1444,13 @@ ${result.content}` : result.content);
     <View style={{ flex: 1 }}>
       <NavStack.Screen
         options={{
+          // Just the title, in the navigator's own serif, centred and truncated by
+          // the header itself. It used to carry the model on a second line with the
+          // unreachable badge beside it — three things competing for the strip
+          // between two 44dp buttons, which is why the badge looked wedged in. Both
+          // are already on screen and better placed: the model is the tappable chip
+          // on the composer, and "unreachable" is a whole sentence directly above it.
           title: conversation.title,
-          // The model is the single most consequential thing about a conversation and
-          // it was only visible two taps deep, in the ⋯ menu. Sending a long prompt
-          // to the wrong one costs real money, so it is on screen.
-          headerTitle: () => (
-            // `minWidth: 0` so the two lines actually truncate instead of pushing the
-            // header's own row wider than the ☰ and ⋯ leave room for.
-            <View style={{ gap: 1, flexShrink: 1, minWidth: 0 }}>
-              <Body size="md" weight="400" numberOfLines={1} style={{ fontFamily: t.serifFont }}>
-                {conversation.title}
-              </Body>
-              <Inline gap="xs">
-                <Body size="xs" tone="faint" numberOfLines={1} accessibilityLabel={`Model ${conversation.model}`}>
-                  {conversation.model}
-                </Body>
-                <OfflineBadge />
-              </Inline>
-            </View>
-          ),
           // Where the back arrow was. The app launches straight into a chat, so on
           // most launches there is nothing to go back to and the slot was empty;
           // when there is, the gesture and the hardware button still go back, and
