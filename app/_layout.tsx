@@ -10,6 +10,17 @@
  *    the first request can contain a key — including a key belonging to a profile
  *    that hasn't been used yet.
  * 3. Provide the theme and the navigation stack.
+ *
+ * `GestureHandlerRootView` is the outermost element, and it has to be: every gesture
+ * the library recognises is dispatched by that view, so a `Gesture.Pan()` mounted
+ * outside one does not error — it silently never fires. That failure mode has no crash
+ * and no stack trace, which is why the wrapper goes in before anything depends on it
+ * rather than alongside the first gesture.
+ *
+ * {@link Booting}, {@link Locked} and {@link ErrorBoundary} return *before* it, and stay
+ * that way deliberately. None of them has a gesture, all three are the app's floor when
+ * something has gone wrong or has not started yet, and the less mounted above them the
+ * fewer ways they have to fail.
  */
 
 import { Stack, useRouter } from 'expo-router';
@@ -17,9 +28,12 @@ import type { ErrorBoundaryProps } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { AppState, Pressable, Text, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { Glyph } from '@/components/Glyph';
+import { useReducedMotion } from '@/components/motion';
+import { duration } from '@/constants/animations';
 import { APP_NAME } from '@/lib/app';
 import { useHydrated } from '@/lib/storage';
 import { invalidateTransports } from '@/lib/gateway';
@@ -39,6 +53,7 @@ import { ThemeProvider, useTheme } from '@/theme';
 function Navigator() {
   const t = useTheme();
   const router = useRouter();
+  const reduced = useReducedMotion();
 
   // A tapped "reply is ready" notification opens the conversation it came from,
   // including the tap that started the process — see `onNotificationTap`. Pushed, not
@@ -61,6 +76,26 @@ function Navigator() {
           headerTitleStyle: { fontFamily: t.serifFont, fontSize: t.fontSize.lg, fontWeight: '400' },
           headerShadowVisible: false,
           contentStyle: { backgroundColor: t.colors.bg },
+          /**
+           * One push animation on both platforms.
+           *
+           * Android's native-stack default is a fade-with-scale from the centre, which
+           * says "a new thing appeared" — but every screen in this app is a level down
+           * from the one before it, and the horizontal slide is what carries that. iOS
+           * already does this; naming it explicitly is what makes Android agree.
+           *
+           * Reduce Motion gets a cross-fade rather than nothing at all: a screen change
+           * with no transition whatsoever loses the only cue that the *screen* changed
+           * rather than its contents, and a fade has no travel to trigger the vestibular
+           * problem the setting exists for.
+           */
+          animation: reduced ? 'fade' : 'slide_from_right',
+          animationDuration: duration.panel,
+          // The iOS back-swipe, asked for on Android too. On Android this is honoured by
+          // the predictive-back implementation in `react-native-screens`; where the OS
+          // does not support it the hardware button is still the way back, so the worst
+          // case is the behaviour we already had.
+          gestureEnabled: true,
         }}
       >
         {/* Home draws its own serif greeting, which *is* the title; a navigator header
@@ -274,10 +309,12 @@ export default function RootLayout() {
     );
 
   return (
-    <SafeAreaProvider>
-      <ThemeProvider mode={themeMode}>
-        <Navigator />
-      </ThemeProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <ThemeProvider mode={themeMode}>
+          <Navigator />
+        </ThemeProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

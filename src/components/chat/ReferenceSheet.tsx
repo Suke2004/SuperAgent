@@ -13,9 +13,10 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Modal, Pressable, ScrollView, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 
 import { useDialogKeys } from '@/components/dialog';
+import { SheetShell } from '@/components/Sheet';
 import { Badge, Body, Button, Divider, Field, Inline, Spinner, useKeyboardHeight } from '@/components/ui';
 import { searchMessages } from '@/db/conversations';
 import type { SearchHit } from '@/db/conversations';
@@ -39,14 +40,20 @@ export function ReferenceSheet({
   onPick: (hit: SearchHit) => void;
   onClose: () => void;
 }) {
+  // The field autofocuses, so this sheet is always over a keyboard. Lifted on the shell's
+  // panel rather than inside the body, for the same reason as `PromptSheet`: the surface
+  // has to stop above the keys, not merely its contents.
+  const keyboardHeight = useKeyboardHeight();
+
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+    <SheetShell visible={visible} onClose={onClose} label="Cancel" lift={keyboardHeight}>
       {/* Mounted only while open, so the query is not still sitting there next
-          time — the same reason `PromptSheet` does this. */}
+          time — the same reason `PromptSheet` does this. The shell deliberately keeps
+          its own panel mounted for one exit animation, so this gate is what resets. */}
       {visible ? (
         <ReferenceBody excludeConversationId={excludeConversationId} busy={busy} onPick={onPick} onClose={onClose} />
       ) : null}
-    </Modal>
+    </SheetShell>
   );
 }
 
@@ -63,7 +70,6 @@ function ReferenceBody({
 }) {
   const t = useTheme();
   const trap = useDialogKeys(true, onClose);
-  const keyboardHeight = useKeyboardHeight();
 
   const [query, setQuery] = useState('');
   const [found, setFound] = useState<{ query: string; hits: SearchHit[] } | null>(null);
@@ -94,39 +100,21 @@ function ReferenceBody({
   }, [trimmed, searchable]);
 
   return (
-    <Pressable
-      onPress={onClose}
-      accessibilityLabel="Cancel"
-      style={{ flex: 1, backgroundColor: t.colors.scrim, justifyContent: 'flex-end' }}
-    >
-      <Pressable
-        ref={trap}
-        onPress={() => {}}
-        accessibilityViewIsModal
-        style={{
-          backgroundColor: t.colors.surface,
-          borderTopLeftRadius: t.radius.lg,
-          borderTopRightRadius: t.radius.lg,
-          paddingTop: t.spacing.md,
-          paddingBottom: t.spacing.xl,
-          marginBottom: keyboardHeight,
-          maxHeight: '80%',
-        }}
-      >
-        <View style={{ paddingHorizontal: t.spacing.md, gap: t.spacing.sm }}>
-          <Body weight="700">Bring in a message</Body>
-          <Field
-            value={query}
-            onChangeText={setQuery}
-            autoFocus
-            autoCapitalize="sentences"
-            placeholder="Search your other chats"
-            returnKeyType="search"
-            hint="The message you pick is quoted into this chat's draft, where you can edit or delete it before sending."
-          />
-        </View>
-        <Divider />
-        <ScrollView keyboardShouldPersistTaps="handled">
+    <View ref={trap} style={{ paddingBottom: t.spacing.xl }}>
+      <View style={{ paddingHorizontal: t.spacing.md, gap: t.spacing.sm }}>
+        <Body weight="700">Bring in a message</Body>
+        <Field
+          value={query}
+          onChangeText={setQuery}
+          autoFocus
+          autoCapitalize="sentences"
+          placeholder="Search your other chats"
+          returnKeyType="search"
+          hint="The message you pick is quoted into this chat's draft, where you can edit or delete it before sending."
+        />
+      </View>
+      <Divider />
+      <ScrollView keyboardShouldPersistTaps="handled">
           {busy ? (
             <View style={{ padding: t.spacing.lg }}>
               <Spinner label="Reading the message" />
@@ -174,11 +162,10 @@ function ReferenceBody({
               </Body>
             </View>
           )}
-        </ScrollView>
-        <View style={{ paddingHorizontal: t.spacing.md, paddingTop: t.spacing.md }}>
-          <Button label="Cancel" variant="ghost" full onPress={onClose} />
-        </View>
-      </Pressable>
-    </Pressable>
+      </ScrollView>
+      <View style={{ paddingHorizontal: t.spacing.md, paddingTop: t.spacing.md }}>
+        <Button label="Cancel" variant="ghost" full onPress={onClose} />
+      </View>
+    </View>
   );
 }

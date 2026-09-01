@@ -104,7 +104,7 @@ Contrast ratios were computed from the palette in [theme/index.tsx](src/theme/in
 
 Two problems, one colour and one size.
 
-Errors are also **not** colour-only — `Note tone="danger"` and `disabledReason` both render actual sentences, so a failure is legible without perceiving red. And no animation approaches the 3-second threshold: sheets use `animationType="fade"` and nothing else animates for longer than a transition.
+Errors are also **not** colour-only — `Note tone="danger"` and `disabledReason` both render actual sentences, so a failure is legible without perceiving red. And no animation approaches the 3-second threshold: sheets slide up over their own height in roughly a quarter of a second, honour Reduce Motion by dropping the spring for a short timing curve, and nothing in the app animates for longer than a transition. The one thing that repeats — the thinking pulse — is a slow opacity breath with no travel, which is not a flash at any rate.
 
 ### MORGAN-06 · `textFaint` fails WCAG AA on every surface in light mode and on the raised surface in dark
 

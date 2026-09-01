@@ -16,11 +16,14 @@
 
 import { useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
+import Reanimated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
 import { CodeBlock } from '@/components/markdown/CodeBlock';
 import { Markdown } from '@/components/markdown/Markdown';
 import { Glyph } from '@/components/Glyph';
+import { ThinkingDots } from '@/components/chat/ThinkingDots';
 import { Badge, Body, Button, Inline, Note } from '@/components/ui';
+import { duration } from '@/constants/animations';
 import { APP_NAME } from '@/lib/app';
 import { estimateTextTokens } from '@/lib/tokens';
 import { formatDuration, formatRate } from '@/lib/when';
@@ -178,6 +181,16 @@ export function StreamView({
   const phase = stream.aborting ? 'Stopping' : PHASE_LABEL[stream.phase];
   const shownRate = rate ? (reported === undefined ? `~${rate}` : rate) : undefined;
 
+  /**
+   * Nothing has arrived yet.
+   *
+   * Not `phase === 'connecting'`: a turn can sit in `tools` or `summarising` for just as
+   * long with an equally empty screen, and the question the dots answer — "is anything
+   * still happening?" — is the same in all of them. Thinking text counts as arrival,
+   * because it is already visibly filling the space.
+   */
+  const waiting = !failed && stream.text.length === 0 && stream.thinking.length === 0;
+
   return (
     // Same gutter as a stored assistant turn, so the live reply does not shift
     // sideways the moment it is saved. The mark in the gutter is the only moving
@@ -227,7 +240,26 @@ export function StreamView({
         ) : null}
 
         {stream.thinking && showThinking ? <LiveThinking text={stream.thinking} /> : null}
-        {stream.text ? <Markdown source={stream.text} /> : null}
+
+        {/* The dots stand in for the reply and are replaced by it, so the two are
+            mutually exclusive and share a crossfade. `FadeIn`/`FadeOut` rather than a
+            hand-rolled opacity: the dots have to finish leaving *after* they have been
+            removed from the tree, which is the one thing a mounted animation cannot do
+            and the entire reason Reanimated's layout animations exist. */}
+        {waiting ? (
+          <Reanimated.View
+            entering={FadeIn.duration(duration.quick)}
+            exiting={FadeOut.duration(duration.exit)}
+            style={{ paddingVertical: t.spacing.xs }}
+          >
+            <ThinkingDots label={phase} />
+          </Reanimated.View>
+        ) : null}
+        {stream.text ? (
+          <Reanimated.View entering={FadeIn.duration(duration.quick)}>
+            <Markdown source={stream.text} />
+          </Reanimated.View>
+        ) : null}
 
         {stream.toolCalls.map((call) => (
           <PartialTool key={call.id} name={call.name} partialJson={call.partialJson} />

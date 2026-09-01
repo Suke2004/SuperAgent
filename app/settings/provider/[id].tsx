@@ -29,6 +29,7 @@ import {
 } from '@/components/ui';
 import { countConversationsForProfile, reassignProfile } from '@/db/conversations';
 import { invalidateTransports } from '@/lib/gateway';
+import * as haptics from '@/lib/haptics';
 import { isForbiddenHeaderName } from '@/lib/redact';
 import { verifyProfile } from '@/lib/verify';
 import { useChat } from '@/stores/chat';
@@ -192,7 +193,16 @@ export default function ProviderDetail() {
           },
         });
       }
-      buttons.push({ text: count > 0 ? 'Delete anyway' : 'Delete', style: 'destructive', onPress: done });
+      buttons.push({
+        text: count > 0 ? 'Delete anyway' : 'Delete',
+        style: 'destructive',
+        // Wrapped rather than moved into `done`: the "Move to" button above shares that
+        // function and moving a conversation is not a destruction to warn about.
+        onPress: () => {
+          haptics.warn();
+          done();
+        },
+      });
 
       Alert.alert('Delete profile', detail, buttons);
     });
@@ -319,6 +329,7 @@ export default function ProviderDetail() {
                       text: 'Remove',
                       style: 'destructive',
                       onPress: () => {
+                        haptics.warn();
                         void clearKey(profile.id);
                         invalidateTransports(profile.id);
                       },

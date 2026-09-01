@@ -22,6 +22,7 @@ import type { SheetAction } from '@/components/Sheet';
 import { Badge, Button, Empty, Inline, Note, Row, Screen, Section, SkeletonRows, Spinner, SwitchRow } from '@/components/ui';
 import { MEMORY_BUDGET_CHARS, MEMORY_KINDS, approvedOnly, renderMemoryBlock } from '@/chat/memory';
 import type { Memory, MemoryKind } from '@/chat/memory';
+import * as haptics from '@/lib/haptics';
 import { useMemory } from '@/stores/memory';
 import { useSettings } from '@/stores/settings';
 import { useTheme } from '@/theme';
@@ -132,6 +133,7 @@ export default function MemoryScreen() {
           text: 'Forget everything',
           style: 'destructive',
           onPress: () => {
+            haptics.warn();
             void useMemory
               .getState()
               .forgetEverything()

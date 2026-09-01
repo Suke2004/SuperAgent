@@ -17,6 +17,7 @@ import type { SheetAction } from '@/components/Sheet';
 import { Body, Button, Empty, Field, Inline, Note, Row, Screen, Section, SkeletonRows } from '@/components/ui';
 import { MAX_PROMPT_CHARS, variablesIn } from '@/chat/prompts';
 import type { Prompt, PromptDraft } from '@/chat/prompts';
+import * as haptics from '@/lib/haptics';
 import { usePrompts } from '@/stores/prompts';
 import { useSettings } from '@/stores/settings';
 import { useTheme } from '@/theme';
@@ -67,7 +68,14 @@ export default function PromptsScreen() {
   const remove = (prompt: Prompt): void => {
     Alert.alert('Delete prompt', `Delete “${prompt.title}”?`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => void usePrompts.getState().remove(prompt.id) },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          haptics.warn();
+          void usePrompts.getState().remove(prompt.id);
+        },
+      },
     ]);
   };
 

@@ -30,11 +30,14 @@
 
 import { useMemo, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import Reanimated, { interpolateColor, useAnimatedStyle } from 'react-native-reanimated';
 
 import { attachmentTokens, describeAttachments } from '@/chat/attachments';
 import { APP_NAME } from '@/lib/app';
 import { useDictation } from '@/lib/dictation';
+import * as haptics from '@/lib/haptics';
 import { Icon } from '@/components/Icon';
+import { useBreath, usePressFeedback, useTransition } from '@/components/motion';
 import { Body, Button, Note, targetSlop, useFocusRing } from '@/components/ui';
 import { contextPressure, estimateTextTokens, formatTokens } from '@/lib/tokens';
 import type { ContextPressure, PressureLevel } from '@/lib/tokens';
@@ -105,39 +108,82 @@ function Gauge({ ratio, level }: { ratio: number; level: PressureLevel }) {
  * needs no explanation, and giving it the accent puts the only saturated colour on
  * the screen exactly where the user's thumb goes. When it *is* unavailable the reason
  * is spelled out above the box, not hidden in a dimmed label.
+ *
+ * ## The fill follows the draft
+ *
+ * Empty draft ⇒ a grey disc with a faint mark; the first character ⇒ it fills with clay
+ * over {@link duration.quick}. This is the composer's whole tactile story: the button
+ * *becomes* available rather than being permanently lit and rejecting you. It also means
+ * the accent appears on screen exactly when there is something to send, so the eye is
+ * pulled to the send target at the moment it matters and not before.
+ *
+ * The disc deliberately stays mounted and stays a target when empty. Hiding it, or
+ * swapping it for the mic the way some chat apps do, would take the `disabledReason`
+ * with it — and "why can I not send this?" is a question this app answers in words.
+ *
+ * Two icons are stacked and crossfaded rather than one icon changing colour, because
+ * `color` on a font glyph is a prop and props do not interpolate. Both are the same
+ * glyph at the same size, so the crossfade reads as a single mark changing tone.
  */
 function SendButton({ onPress, disabled, reason }: { onPress: () => void; disabled: boolean; reason?: string }) {
   const t = useTheme();
   const { ring, handlers } = useFocusRing();
+  // `haptic: false` — the send's own `confirm()` fires from the screen's send handler.
+  // Two buzzes 40ms apart is not twice the feedback, it is one mushy buzz.
+  const { pressStyle, pressHandlers } = usePressFeedback({ disabled, haptic: false });
   const slop = targetSlop(SEND_SIZE, SEND_SIZE);
+
+  const live = useTransition(!disabled);
+
+  const fill = useAnimatedStyle(() => ({
+    backgroundColor: interpolateColor(live.value, [0, 1], [t.colors.surfaceActive, t.colors.accent]),
+  }));
+  const liveIcon = useAnimatedStyle(() => ({ opacity: live.value }));
+  const idleIcon = useAnimatedStyle(() => ({ opacity: 1 - live.value }));
+
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel="Send"
-      accessibilityState={{ disabled }}
-      {...(disabled && reason !== undefined ? { accessibilityHint: reason } : {})}
-      disabled={disabled}
-      onPress={onPress}
-      {...handlers}
-      {...(slop ? { hitSlop: slop } : {})}
-      style={({ pressed }) => [
+    <Reanimated.View
+      style={[
         {
           width: SEND_SIZE,
           height: SEND_SIZE,
           borderRadius: SEND_SIZE / 2,
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: t.colors.accent,
-          opacity: disabled ? 0.45 : pressed ? 0.8 : 1,
         },
-        ring,
+        fill,
+        pressStyle,
       ]}
     >
-      {/* Fixed metrics: the disc is a fixed 36dp, so a mark that grows with the
-          system font scale clips against it or slides off centre. The label the
-          screen reader announces is on the Pressable and scales as text should. */}
-      <Icon name="send" size="lg" color={t.colors.accentText} />
-    </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Send"
+        accessibilityState={{ disabled }}
+        {...(disabled && reason !== undefined ? { accessibilityHint: reason } : {})}
+        disabled={disabled}
+        onPress={onPress}
+        {...handlers}
+        {...pressHandlers}
+        {...(slop ? { hitSlop: slop } : {})}
+        style={[
+          {
+            flex: 1,
+            borderRadius: SEND_SIZE / 2,
+            alignItems: 'center',
+            justifyContent: 'center',
+          },
+          ring,
+        ]}
+      >
+        {/* Fixed metrics: the disc is a fixed 36dp, so a mark that grows with the
+            system font scale clips against it or slides off centre. The label the
+            screen reader announces is on the Pressable and scales as text should. */}
+        <Reanimated.View style={liveIcon}>
+          <Icon name="send" size="lg" color={t.colors.accentText} />
+        </Reanimated.View>
+        <Reanimated.View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }, idleIcon]}>
+          <Icon name="send" size="lg" color={t.colors.textFaint} />
+        </Reanimated.View>
+      </Pressable>
+    </Reanimated.View>
   );
 }
 
@@ -178,6 +224,7 @@ function AttachmentChip({
   label: string;
 }) {
   const t = useTheme();
+  const { pressStyle, pressHandlers } = usePressFeedback({ haptic: false });
   const tile = {
     width: THUMB_SIZE,
     height: THUMB_SIZE,
@@ -208,27 +255,37 @@ function AttachmentChip({
         )}
       </View>
 
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`Remove ${label}`}
-        onPress={onRemove}
-        hitSlop={12}
-        style={({ pressed }) => ({
-          position: 'absolute',
-          top: -6,
-          right: -6,
-          width: 22,
-          height: 22,
-          borderRadius: 11,
-          alignItems: 'center',
-          justifyContent: 'center',
-          backgroundColor: pressed ? t.colors.danger : t.colors.surfaceActive,
-          borderWidth: StyleSheet.hairlineWidth,
-          borderColor: t.colors.borderStrong,
-        })}
-      >
-        <Icon name="close" size={12} tone="text" />
-      </Pressable>
+      {/* The badge is absolutely positioned, so the animated wrapper has to carry the
+          position and the badge itself fill it: a transform on a statically-positioned
+          child of a `width: THUMB_SIZE` box would scale it about the wrong origin and
+          drag it back inside the tile. */}
+      <Reanimated.View style={[{ position: 'absolute', top: -6, right: -6 }, pressStyle]}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Remove ${label}`}
+          onPress={() => {
+            // `warn`, not `tap`: removing a staged attachment is the one press in the
+            // composer that destroys something, and the photo is gone from the strip
+            // with no undo.
+            haptics.warn();
+            onRemove();
+          }}
+          hitSlop={12}
+          {...pressHandlers}
+          style={({ pressed }) => ({
+            width: 22,
+            height: 22,
+            borderRadius: 11,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: pressed ? t.colors.danger : t.colors.surfaceActive,
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: t.colors.borderStrong,
+          })}
+        >
+          <Icon name="close" size={12} tone="text" />
+        </Pressable>
+      </Reanimated.View>
     </View>
   );
 }
@@ -237,34 +294,41 @@ function AttachmentChip({
 function AttachButton({ onPress, disabled, reason }: { onPress: () => void; disabled: boolean; reason?: string }) {
   const t = useTheme();
   const { ring, handlers } = useFocusRing();
+  const { pressStyle, pressHandlers, onPressHaptic } = usePressFeedback({ disabled });
   const slop = targetSlop(SEND_SIZE, SEND_SIZE);
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel="Attach"
-      accessibilityState={{ disabled }}
-      {...(disabled && reason !== undefined ? { accessibilityHint: reason } : {})}
-      disabled={disabled}
-      onPress={onPress}
-      {...handlers}
-      {...(slop ? { hitSlop: slop } : {})}
-      style={({ pressed }) => [
-        {
-          width: SEND_SIZE,
-          height: SEND_SIZE,
-          borderRadius: SEND_SIZE / 2,
-          alignItems: 'center',
-          justifyContent: 'center',
-          borderWidth: StyleSheet.hairlineWidth,
-          borderColor: t.colors.border,
-          backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
-          opacity: disabled ? 0.45 : 1,
-        },
-        ring,
-      ]}
-    >
-      <Icon name="attach" size="lg" tone="textDim" />
-    </Pressable>
+    <Reanimated.View style={pressStyle}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Attach"
+        accessibilityState={{ disabled }}
+        {...(disabled && reason !== undefined ? { accessibilityHint: reason } : {})}
+        disabled={disabled}
+        onPress={() => {
+          onPressHaptic();
+          onPress();
+        }}
+        {...handlers}
+        {...pressHandlers}
+        {...(slop ? { hitSlop: slop } : {})}
+        style={({ pressed }) => [
+          {
+            width: SEND_SIZE,
+            height: SEND_SIZE,
+            borderRadius: SEND_SIZE / 2,
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: t.colors.border,
+            backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
+            opacity: disabled ? 0.45 : 1,
+          },
+          ring,
+        ]}
+      >
+        <Icon name="attach" size="lg" tone="textDim" />
+      </Pressable>
+    </Reanimated.View>
   );
 }
 
@@ -272,36 +336,49 @@ function AttachButton({ onPress, disabled, reason }: { onPress: () => void; disa
  * The mic. Same disc as Attach, and a filled one while it is listening — a mic that
  * looks identical whether or not it is recording is the one control on a phone where
  * the user needs to be certain.
+ *
+ * While it listens the disc breathes: a slow opacity pulse on the danger fill, which is
+ * the one place in the app where a *continuous* animation is the correct answer. A
+ * static red ring cannot distinguish "armed" from "frozen", and a dictation session that
+ * has silently died looks exactly like one that is working.
  */
 function MicButton({ listening, onPress }: { listening: boolean; onPress: () => void }) {
   const t = useTheme();
   const { ring, handlers } = useFocusRing();
+  const { pressStyle, pressHandlers, onPressHaptic } = usePressFeedback();
+  const breath = useBreath(listening);
   const slop = targetSlop(SEND_SIZE, SEND_SIZE);
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={listening ? 'Stop dictating' : 'Dictate a message'}
-      accessibilityState={{ selected: listening }}
-      accessibilityHint={listening ? undefined : 'Speak, and the words appear in the message to edit before sending'}
-      onPress={onPress}
-      {...handlers}
-      {...(slop ? { hitSlop: slop } : {})}
-      style={({ pressed }) => [
-        {
-          width: SEND_SIZE,
-          height: SEND_SIZE,
-          borderRadius: SEND_SIZE / 2,
-          alignItems: 'center',
-          justifyContent: 'center',
-          borderWidth: StyleSheet.hairlineWidth,
-          borderColor: listening ? t.colors.danger : t.colors.border,
-          backgroundColor: listening ? t.colors.dangerSoft : pressed ? t.colors.surfaceActive : 'transparent',
-        },
-        ring,
-      ]}
-    >
-      <Icon name="mic" tone={listening ? 'danger' : 'textDim'} />
-    </Pressable>
+    <Reanimated.View style={[pressStyle, breath]}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={listening ? 'Stop dictating' : 'Dictate a message'}
+        accessibilityState={{ selected: listening }}
+        accessibilityHint={listening ? undefined : 'Speak, and the words appear in the message to edit before sending'}
+        onPress={() => {
+          onPressHaptic();
+          onPress();
+        }}
+        {...handlers}
+        {...pressHandlers}
+        {...(slop ? { hitSlop: slop } : {})}
+        style={({ pressed }) => [
+          {
+            width: SEND_SIZE,
+            height: SEND_SIZE,
+            borderRadius: SEND_SIZE / 2,
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: listening ? t.colors.danger : t.colors.border,
+            backgroundColor: listening ? t.colors.dangerSoft : pressed ? t.colors.surfaceActive : 'transparent',
+          },
+          ring,
+        ]}
+      >
+        <Icon name="mic" tone={listening ? 'danger' : 'textDim'} />
+      </Pressable>
+    </Reanimated.View>
   );
 }
 
@@ -309,6 +386,7 @@ function MicButton({ listening, onPress }: { listening: boolean; onPress: () => 
 function ModelChip({ model, onPress }: { model: string; onPress?: () => void }) {
   const t = useTheme();
   const { ring, handlers } = useFocusRing();
+  const { pressStyle, pressHandlers, onPressHaptic } = usePressFeedback();
   const body = (
     // `flexShrink` and no fixed width: a long model id gives up its room to the send
     // button rather than pushing it past the right edge. See the row below.
@@ -330,20 +408,29 @@ function ModelChip({ model, onPress }: { model: string; onPress?: () => void }) 
   };
   if (!onPress) return <View style={box}>{body}</View>;
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`Model: ${model}`}
-      accessibilityHint="Change the model for this conversation"
-      onPress={onPress}
-      {...handlers}
-      hitSlop={{ top: 12, bottom: 12, left: 4, right: 4 }}
-      style={({ pressed }) => [box, { backgroundColor: pressed ? t.colors.surfaceActive : 'transparent' }, ring]}
-    >
-      {body}
-      {/* The chevron is what makes the chip look like a control rather than a
-          read-out; it is only drawn when there is somewhere to go. */}
-      <Icon name="expand" size="sm" tone="textFaint" />
-    </Pressable>
+    // `flexShrink` has to be on the animated wrapper as well as the box inside it: the
+    // wrapper is now the child the row measures, and a rigid wrapper around a shrinkable
+    // box is what pushes Send off the right edge on a long model id.
+    <Reanimated.View style={[{ flexShrink: 1, minWidth: 0 }, pressStyle]}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Model: ${model}`}
+        accessibilityHint="Change the model for this conversation"
+        onPress={() => {
+          onPressHaptic();
+          onPress();
+        }}
+        {...handlers}
+        {...pressHandlers}
+        hitSlop={{ top: 12, bottom: 12, left: 4, right: 4 }}
+        style={({ pressed }) => [box, { backgroundColor: pressed ? t.colors.surfaceActive : 'transparent' }, ring]}
+      >
+        {body}
+        {/* The chevron is what makes the chip look like a control rather than a
+            read-out; it is only drawn when there is somewhere to go. */}
+        <Icon name="expand" size="sm" tone="textFaint" />
+      </Pressable>
+    </Reanimated.View>
   );
 }
 
@@ -433,6 +520,25 @@ export function Composer({
    * 100-token steps is exactly where that answer disappears.
    */
   const [exact, setExact] = useState(false);
+
+  /**
+   * Whether the input holds the keyboard.
+   *
+   * Drives a border that warms from `borderStrong` to the accent while the user is
+   * typing, which is the composer's one piece of ambient state: on a phone the keyboard
+   * covers half the screen and the box's own edge is the only thing left that can say
+   * *this* is where the next keystroke lands.
+   *
+   * The background deliberately does not move with it. In the light palette the box is
+   * already pure white — every other surface in the theme is darker than it — so a
+   * "lift" on focus can only be rendered as a dim, and a text field that greys out the
+   * moment you tap it says the opposite of what focus means.
+   */
+  const [focused, setFocused] = useState(false);
+  const focus = useTransition(focused);
+  const boxFocus = useAnimatedStyle(() => ({
+    borderColor: interpolateColor(focus.value, [0, 1], [t.colors.borderStrong, t.colors.accentFill]),
+  }));
 
   // Dictation writes straight into the draft, so it needs nothing from the screen
   // above: the composer already owns the draft's text.
@@ -555,16 +661,18 @@ export function Composer({
 
       {/* One rounded box holds the input and its controls, so the composer reads as a
           single object the user is writing inside rather than a toolbar. */}
-      <View
-        style={{
-          borderWidth: StyleSheet.hairlineWidth,
-          borderColor: t.colors.borderStrong,
-          borderRadius: t.radius.xl,
-          backgroundColor: t.colors.surface,
-          paddingHorizontal: t.spacing.md,
-          paddingTop: t.spacing.sm + 2,
-          paddingBottom: t.spacing.sm,
-        }}
+      <Reanimated.View
+        style={[
+          {
+            borderWidth: StyleSheet.hairlineWidth,
+            borderRadius: t.radius.xl,
+            backgroundColor: t.colors.surface,
+            paddingHorizontal: t.spacing.md,
+            paddingTop: t.spacing.sm + 2,
+            paddingBottom: t.spacing.sm,
+          },
+          boxFocus,
+        ]}
       >
         <TextInput
           value={value}
@@ -572,6 +680,8 @@ export function Composer({
           placeholder={`Reply to ${APP_NAME}…`}
           placeholderTextColor={t.colors.textFaint}
           multiline
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
           // `submit` makes Enter send; `newline` keeps it as a line break. Without
           // an explicit value a multiline input on Android does neither reliably.
           submitBehavior={sendOnEnter ? 'submit' : 'newline'}
@@ -688,7 +798,7 @@ export function Composer({
             )}
           </View>
         </View>
-      </View>
+      </Reanimated.View>
 
       {/* The pressure sentence sits under the box: it is prose, and prose on the
           control row would push the token readout out of the line. */}

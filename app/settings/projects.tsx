@@ -23,6 +23,7 @@ import { Body, Button, Empty, Field, Inline, Note, Row, Screen, Section, Skeleto
 import { MAX_KNOWLEDGE_CHARS, MAX_PROJECT_NAME } from '@/chat/project';
 import type { Project, ProjectDraft } from '@/chat/project';
 import { extractOffice, OFFICE_MEDIA_TYPES, officeKind } from '@/chat/office';
+import * as haptics from '@/lib/haptics';
 import { log } from '@/lib/log';
 import { useProjects } from '@/stores/projects';
 import { useTheme } from '@/theme';
@@ -120,7 +121,10 @@ export default function ProjectsScreen() {
         {
           text: 'Delete',
           style: 'destructive',
-          onPress: () => void useProjects.getState().remove(project.id),
+          onPress: () => {
+            haptics.warn();
+            void useProjects.getState().remove(project.id);
+          },
         },
       ],
     );

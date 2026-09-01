@@ -22,7 +22,6 @@
 import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
-  AccessibilityInfo,
   ActivityIndicator,
   Animated,
   Easing,
@@ -37,14 +36,20 @@ import {
   View,
 } from 'react-native';
 import type { StyleProp, TextInputProps, TextStyle, ViewProps, ViewStyle } from 'react-native';
+// Aliased, because RN's own `Animated` is still in this file for {@link Skeleton}'s
+// looping pulse. Two libraries called Animated in one module is exactly the kind of
+// thing that produces a bug nobody can see in review.
+import Reanimated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useTheme } from '@/theme';
 import type { Palette, Theme } from '@/theme';
 
+import { REDUCED_MS, spring } from '@/constants/animations';
 import { Glyph } from './Glyph';
 import { Icon, iconSize } from './Icon';
 import type { IconName } from './Icon';
+import { useReducedMotion, usePressFeedback } from './motion';
 
 /* -------------------------------------------------------------------------- */
 /* Focus                                                                       */
@@ -510,6 +515,10 @@ export function Button({
   const t = useTheme();
   const off = Boolean(disabled) || Boolean(busy);
   const { ring, handlers } = useFocusRing();
+  // `haptic` is left on: `Button` is the generic action, and the few presses that carry
+  // their own heavier feedback (a send, a delete) fire it from their own handler and
+  // pass `haptic: false` where they use this hook directly.
+  const { pressStyle, pressHandlers, onPressHaptic } = usePressFeedback({ disabled: off });
 
   const palette: Record<ButtonVariant, { bg: string; fg: string; border: string }> = {
     primary: { bg: t.colors.accent, fg: t.colors.accentText, border: t.colors.accent },
@@ -528,38 +537,50 @@ export function Button({
 
   return (
     <View style={[full ? { alignSelf: 'stretch' } : { alignSelf: 'flex-start' }, style]}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ disabled: off, busy: Boolean(busy) }}
-        accessibilityHint={off ? disabledReason : undefined}
-        disabled={off}
-        onPress={onPress}
-        {...handlers}
-        {...(slop ? { hitSlop: slop } : {})}
-        style={({ pressed }) => [
-          {
-            backgroundColor: c.bg,
-            borderColor: c.border,
-            borderWidth: variant === 'ghost' ? 0 : StyleSheet.hairlineWidth,
-            // Pill, per the design language: actions are rounded, containers are not.
-            borderRadius: t.radius.pill,
-            paddingVertical: vPad,
-            paddingHorizontal: hPad,
-            minHeight,
-            // 0.6, not 0.45: a disabled control still has to be readable, because
-            // the label is how the user works out what they are missing.
-            opacity: off ? 0.6 : pressed ? 0.75 : 1,
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: t.spacing.sm,
-          },
-          ring,
-        ]}
-      >
-        {busy ? <ActivityIndicator size="small" color={c.fg} /> : null}
-        <Text style={{ color: c.fg, fontSize: t.fontSize.md, fontWeight: '600' }}>{label}</Text>
-      </Pressable>
+      {/* The transform sits on a view wrapping the pressable, not on the outer box:
+          the `disabledReason` text below is a sibling of the button, and a press must
+          not shrink the sentence explaining why the press did nothing. */}
+      <Reanimated.View style={pressStyle}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ disabled: off, busy: Boolean(busy) }}
+          accessibilityHint={off ? disabledReason : undefined}
+          disabled={off}
+          onPress={() => {
+            onPressHaptic();
+            onPress();
+          }}
+          {...handlers}
+          {...pressHandlers}
+          {...(slop ? { hitSlop: slop } : {})}
+          style={[
+            {
+              backgroundColor: c.bg,
+              borderColor: c.border,
+              borderWidth: variant === 'ghost' ? 0 : StyleSheet.hairlineWidth,
+              // Pill, per the design language: actions are rounded, containers are not.
+              borderRadius: t.radius.pill,
+              paddingVertical: vPad,
+              paddingHorizontal: hPad,
+              minHeight,
+              // 0.6, not 0.45: a disabled control still has to be readable, because
+              // the label is how the user works out what they are missing.
+              // The `pressed` dip is gone — `usePressFeedback` owns that now, and two
+              // opacity sources on one control multiply into a much deeper dip than
+              // either intended.
+              opacity: off ? 0.6 : 1,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: t.spacing.sm,
+            },
+            ring,
+          ]}
+        >
+          {busy ? <ActivityIndicator size="small" color={c.fg} /> : null}
+          <Text style={{ color: c.fg, fontSize: t.fontSize.md, fontWeight: '600' }}>{label}</Text>
+        </Pressable>
+      </Reanimated.View>
       {off && disabledReason ? (
         <Text
           accessibilityLiveRegion="polite"
@@ -778,15 +799,49 @@ export function Segmented<T extends string>({
   label?: string;
 }) {
   const t = useTheme();
+  const reduced = useReducedMotion();
   const active = options.find((o) => o.value === value);
   const minHeight = size === 'sm' ? 40 : MIN_TARGET;
   const slop = verticalSlop(minHeight);
+
+  /**
+   * The selected segment's index, as a position rather than a state.
+   *
+   * The white pill used to be each segment's own `backgroundColor`, which meant the
+   * selection teleported: one segment lost its fill and another gained it on the same
+   * frame, and nothing on screen connected the two. Sliding one pill between them says
+   * "this is the same selection, moved", which is the whole point of a segmented control
+   * as opposed to a column of radio buttons.
+   *
+   * `-1` for a `value` that is not in `options` — a real case while a model list is still
+   * loading — and the pill is simply not rendered rather than parked over segment zero
+   * claiming a selection that does not exist.
+   */
+  const index = options.findIndex((o) => o.value === value);
+  /** The track's inner width, i.e. minus its 2dp padding on each side. */
+  const [trackWidth, setTrackWidth] = useState(0);
+  const segmentWidth = options.length > 0 ? trackWidth / options.length : 0;
+
+  const slide = useSharedValue(index);
+  useEffect(() => {
+    if (index < 0) return;
+    // A spring, because the pill is a physical object being moved; Reduce Motion cuts it
+    // to a single frame, since a pill that jumps is exactly the old behaviour and the
+    // colour change alone still reports the selection.
+    slide.value = reduced ? withTiming(index, { duration: REDUCED_MS }) : withSpring(index, spring.snappy);
+  }, [index, reduced, slide]);
+
+  const pill = useAnimatedStyle(() => ({ transform: [{ translateX: slide.value * segmentWidth }] }));
 
   return (
     <View style={{ gap: t.spacing.xs }}>
       <View
         accessibilityRole="radiogroup"
         {...(label !== undefined ? { accessibilityLabel: label } : {})}
+        onLayout={(event) => {
+          const next = event.nativeEvent.layout.width - 4;
+          setTrackWidth((was) => (Math.abs(was - next) < 0.5 ? was : next));
+        }}
         style={{
           flexDirection: 'row',
           backgroundColor: t.colors.surfaceAlt,
@@ -796,6 +851,27 @@ export function Segmented<T extends string>({
           borderColor: t.colors.border,
         }}
       >
+        {/* Behind the segments, and outside the accessibility tree: it is the *drawing*
+            of a selection each segment already announces through `accessibilityState`. */}
+        {index >= 0 && segmentWidth > 0 ? (
+          <Reanimated.View
+            pointerEvents="none"
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            style={[
+              {
+                position: 'absolute',
+                left: 2,
+                top: 2,
+                bottom: 2,
+                width: segmentWidth,
+                borderRadius: t.radius.md,
+                backgroundColor: t.colors.surface,
+              },
+              pill,
+            ]}
+          />
+        ) : null}
         {options.map((option) => (
           <Segment
             key={option.value}
@@ -858,7 +934,8 @@ function Segment<T extends string>({
           paddingVertical: size === 'sm' ? t.spacing.sm : t.spacing.md,
           minHeight,
           borderRadius: t.radius.md,
-          backgroundColor: selected ? t.colors.surface : 'transparent',
+          // No fill: the sliding pill behind the row draws the selection now, and a
+          // second opaque background here would hide it as it arrived.
           opacity: off ? 0.6 : 1,
           alignItems: 'center',
           justifyContent: 'center',
@@ -1130,29 +1207,6 @@ export function Empty({ title, body, icon }: { title: string; body?: string; ico
 /* Loading                                                                     */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Whether the OS is asking for reduced motion.
- *
- * A local copy rather than a shared hook: the only other consumer is {@link Glyph},
- * which this module imports, so a hook exported from here for Glyph to use would
- * close an import cycle.
- */
-function useReduceMotion(): boolean {
-  const [reduce, setReduce] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    AccessibilityInfo.isReduceMotionEnabled().then((on) => {
-      if (!cancelled) setReduce(on);
-    });
-    const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduce);
-    return () => {
-      cancelled = true;
-      sub.remove();
-    };
-  }, []);
-  return reduce;
-}
-
 /** One breath of the skeleton pulse, in ms. Slow: this is a wait, not a heartbeat. */
 const SKELETON_MS = 1100;
 
@@ -1179,7 +1233,7 @@ export function Skeleton({
   style?: StyleProp<ViewStyle>;
 }) {
   const t = useTheme();
-  const reduce = useReduceMotion();
+  const reduce = useReducedMotion();
   const [pulse] = useState(() => new Animated.Value(0));
 
   useEffect(() => {

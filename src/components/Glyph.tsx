@@ -9,16 +9,19 @@
  *  - it rotates *clockwise* only, never anticlockwise;
  *  - it stays upright, never on the 45° diagonal.
  *
- * Motion uses RN's built-in `Animated`. `react-native-reanimated` is listed in
- * package.json but unused and its babel plugin is not configured, so reaching for it
- * here would mean a build-config change for one spinner.
+ * Motion uses RN's built-in `Animated` with the native driver, not Reanimated. Both are
+ * available, but everything animated here is opacity and `rotate` on a fixed set of
+ * views — which the native driver hands to the platform wholesale, off the JS thread.
+ * Reanimated would buy nothing for a mark with no gesture attached to it.
  */
 
 import { memo, useEffect, useState } from 'react';
-import { AccessibilityInfo, Animated, Easing, StyleSheet, View } from 'react-native';
+import { Animated, Easing, StyleSheet, View } from 'react-native';
 import type { StyleProp, ViewStyle } from 'react-native';
 
 import { useTheme } from '@/theme';
+
+import { useReducedMotion } from './motion';
 
 export type GlyphState = 'idle' | 'thinking' | 'writing' | 'error';
 
@@ -117,24 +120,8 @@ function GlyphInner({ size = 22, state = 'idle', color, style, label }: GlyphPro
   // the interpolations, and a ref read in render is exactly what it is not for.
   const [spin] = useState(() => new Animated.Value(0));
   const [pulse] = useState(() => new Animated.Value(0));
-  // State, not a ref, because it decides what gets rendered *and* which animation runs;
-  // as a ref, flipping the system setting mid-session would not restart the loop.
-  const [reduceMotion, setReduceMotion] = useState(false);
+  const reduceMotion = useReducedMotion();
   const animating = state === 'thinking';
-
-  useEffect(() => {
-    let cancelled = false;
-    AccessibilityInfo.isReduceMotionEnabled().then((on) => {
-      if (!cancelled) setReduceMotion(on);
-    });
-    const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', (on) => {
-      setReduceMotion(on);
-    });
-    return () => {
-      cancelled = true;
-      sub.remove();
-    };
-  }, []);
 
   useEffect(() => {
     if (!animating) {
