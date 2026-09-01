@@ -22,7 +22,6 @@ import { CodeBlock } from '@/components/markdown/CodeBlock';
 import { safeHref } from '@/components/markdown/href';
 import { Markdown } from '@/components/markdown/Markdown';
 import { Badge, Body, Inline, Note, verticalSlop } from '@/components/ui';
-import { useSettings } from '@/stores/settings';
 import { useTheme } from '@/theme';
 import type { Citation, ContentBlock } from '@/transports/types';
 
@@ -367,24 +366,15 @@ function Citations({ citations }: { citations: readonly Citation[] }) {
 
 export function BlockView({
   block,
-  markdown,
   thinkingExpanded,
 }: {
   block: ContentBlock;
-  /** When false, text renders verbatim in a monospaced run. */
-  markdown: boolean;
   thinkingExpanded: boolean;
 }) {
   switch (block.type) {
     case 'text': {
       if (!block.text) return null;
-      const body = markdown ? (
-        <Markdown source={block.text} />
-      ) : (
-        <Body mono selectable>
-          {block.text}
-        </Body>
-      );
+      const body = <Markdown source={block.text} />;
       if (!block.citations?.length) return body;
       return (
         <View>
@@ -452,7 +442,6 @@ export function ContentBlocks({
   thinkingExpanded?: boolean;
 }) {
   const t = useTheme();
-  const markdown = useSettings((s) => s.renderMarkdown);
 
   if (blocks.length === 0) {
     return (
@@ -463,7 +452,7 @@ export function ContentBlocks({
   return (
     <View style={{ gap: t.spacing.sm }}>
       {blocks.map((block, index) => (
-        <BlockView key={index} block={block} markdown={markdown} thinkingExpanded={thinkingExpanded} />
+        <BlockView key={index} block={block} thinkingExpanded={thinkingExpanded} />
       ))}
     </View>
   );

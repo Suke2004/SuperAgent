@@ -67,6 +67,10 @@ describe('the runner document', () => {
     expect(SANDBOX_HTML).toContain("script-src 'unsafe-inline'");
     expect(SANDBOX_HTML).not.toMatch(/https?:\/\//);
   });
+
+  it("permits eval, because the runner is one — without it every run failed with EvalError", () => {
+    expect(SANDBOX_HTML).toContain("'unsafe-eval'");
+  });
 });
 
 describe('runInSandbox', () => {
@@ -92,6 +96,31 @@ describe('runInSandbox', () => {
     const result = await runInSandbox('while (true) {}', 5);
     expect(result.ok).toBe(false);
     expect(result.output).toContain('did not finish');
+  });
+
+  it('throws the engine away when a run times out, because it is still looping', async () => {
+    let reloads = 0;
+    registerSandbox(
+      () => {},
+      () => {
+        reloads += 1;
+      },
+    );
+    await runInSandbox('while (true) {}', 5);
+    expect(reloads).toBe(1);
+  });
+
+  it('forgets the reload once the host is gone', async () => {
+    let reloads = 0;
+    registerSandbox(
+      () => {},
+      () => {
+        reloads += 1;
+      },
+    );
+    registerSandbox(null);
+    await runInSandbox('2 + 2', 5);
+    expect(reloads).toBe(0);
   });
 
   it('fails waiting runs when the sandbox goes away', async () => {

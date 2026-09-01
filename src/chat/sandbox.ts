@@ -96,10 +96,17 @@ export function parseSandboxMessage(raw: string): SandboxResult | null {
  * The policy is the same shape as an artifact's and for the same reason: with no source
  * permitted for anything, there is no channel out of the page. `postMessage` back to
  * the app is not a network request and is unaffected.
+ *
+ * `'unsafe-eval'` is in the policy because the runner *is* an `eval`, and without it
+ * every single call failed with `EvalError: Evaluating a string as JavaScript violates
+ * the following Content Security Policy directive` — the tool was dead on arrival. It
+ * grants nothing a page with `script-src 'unsafe-inline'` did not already have: inline
+ * script can already write whatever it likes. What keeps this safe is `default-src
+ * 'none'`, which leaves the code with nowhere to send anything.
  */
 export const SANDBOX_HTML = `<!DOCTYPE html><html><head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'">
 <script>
 (function () {
   function send(message) {
@@ -153,6 +160,8 @@ interface Pending {
 
 const pending = new Map<string, Pending>();
 let post: ((message: string) => void) | null = null;
+/** Asks the host to throw the engine away and load a fresh one. */
+let reload: (() => void) | null = null;
 let counter = 0;
 
 /**
@@ -161,9 +170,16 @@ let counter = 0;
  * Runs waiting on a host that has just unmounted are failed rather than left hanging:
  * a tool result that never arrives stalls the turn forever, and "the sandbox closed" is
  * something the model can report.
+ *
+ * `onReload` is how a wedged engine gets replaced. A program that loops forever cannot
+ * be interrupted from outside the WebView, so once a run has timed out that renderer is
+ * spinning at 100% until something tears it down — which on Android ends with the
+ * system killing the renderer process and taking the app with it. The host hands over a
+ * remount so the timeout can do that deliberately instead.
  */
-export function registerSandbox(next: ((message: string) => void) | null): void {
+export function registerSandbox(next: ((message: string) => void) | null, onReload?: () => void): void {
   post = next;
+  reload = next ? (onReload ?? null) : null;
   if (next) return;
   for (const [id, entry] of pending) {
     clearTimeout(entry.timer);
@@ -201,6 +217,9 @@ export function runInSandbox(code: string, timeoutMs = RUN_TIMEOUT_MS): Promise<
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       pending.delete(id);
+      // The engine is still running that loop. Replace it, or every later run queues
+      // behind a spinning renderer and Android eventually kills the process.
+      reload?.();
       resolve({
         ok: false,
         output: `The code did not finish within ${Math.round(timeoutMs / 1000)} seconds. It may be looping.`,

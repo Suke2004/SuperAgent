@@ -19,8 +19,6 @@ export interface SettingsState {
   themeMode: ThemeMode;
   /** Collapsed state of the reasoning pane is remembered, per the spec. */
   showThinkingByDefault: boolean;
-  /** Render markdown, or show the raw text the model actually produced. */
-  renderMarkdown: boolean;
   /** Live token counting in the composer. Off is cheaper on very long chats. */
   liveTokenCount: boolean;
   contextStrategy: ContextStrategy;
@@ -131,7 +129,6 @@ export interface SettingsState {
 const DEFAULTS = {
   themeMode: 'system' as ThemeMode,
   showThinkingByDefault: false,
-  renderMarkdown: true,
   liveTokenCount: true,
   contextStrategy: 'warn' as ContextStrategy,
   contextWarnAt: 0.8,

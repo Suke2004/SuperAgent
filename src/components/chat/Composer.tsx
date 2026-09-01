@@ -339,13 +339,17 @@ function ModelChip({ model, onPress }: { model: string; onPress?: () => void }) 
   const t = useTheme();
   const { ring, handlers } = useFocusRing();
   const body = (
-    <Text numberOfLines={1} style={{ color: t.colors.textDim, fontSize: t.fontSize.xs, maxWidth: 150 }}>
+    // `flexShrink` and no fixed width: a long model id gives up its room to the send
+    // button rather than pushing it past the right edge. See the row below.
+    <Text numberOfLines={1} style={{ color: t.colors.textDim, fontSize: t.fontSize.xs, flexShrink: 1 }}>
       {onPress ? `${model} ⌄` : model}
     </Text>
   );
   const box = {
     flexDirection: 'row' as const,
     alignItems: 'center' as const,
+    flexShrink: 1,
+    minWidth: 0,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: t.colors.border,
     borderRadius: t.radius.pill,
@@ -620,74 +624,94 @@ export function Composer({
             minHeight: SEND_SIZE,
           }}
         >
-          {onAttach ? (
-            <AttachButton
-              onPress={onAttach}
-              disabled={attachDisabledReason !== undefined}
-              {...(attachDisabledReason !== undefined ? { reason: attachDisabledReason } : {})}
-            />
-          ) : null}
+          {/* Everything left of the send button lives in one shrinking group.
+              Without it, a long model id and an exact token readout pushed Send
+              off the right edge of the screen — the one control in the app that
+              must never be unreachable. `minWidth: 0` is what actually lets a row
+              of Texts shrink; `flexShrink` alone does nothing to them. */}
+          <View
+            style={{
+              flex: 1,
+              minWidth: 0,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: t.spacing.sm,
+              overflow: 'hidden',
+            }}
+          >
+            {onAttach ? (
+              <AttachButton
+                onPress={onAttach}
+                disabled={attachDisabledReason !== undefined}
+                {...(attachDisabledReason !== undefined ? { reason: attachDisabledReason } : {})}
+              />
+            ) : null}
 
-          {dictation.available && !streaming ? (
-            <MicButton
-              listening={dictation.listening}
-              onPress={() => (dictation.listening ? dictation.stop() : void dictation.start(value))}
-            />
-          ) : null}
+            {dictation.available && !streaming ? (
+              <MicButton
+                listening={dictation.listening}
+                onPress={() => (dictation.listening ? dictation.stop() : void dictation.start(value))}
+              />
+            ) : null}
 
-          {model !== undefined ? <ModelChip model={model} {...(onPressModel ? { onPress: onPressModel } : {})} /> : null}
-          {liveCount ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setExact((on) => !on)}
-              hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
-              accessibilityLabel={
-                calibration && calibration.samples > 0
-                  ? `About ${formatTokens(pressure.used)} of ${formatTokens(pressure.window)} usable context, calibrated against ${calibration.samples} reported ${calibration.samples === 1 ? 'turn' : 'turns'}`
-                  : `About ${formatTokens(pressure.used)} of ${formatTokens(pressure.window)} usable context, estimated`
-              }
-              accessibilityHint={exact ? 'Show rounded token counts' : 'Show exact token counts'}
-            >
-              {/* The `~` is doing real work: this is an estimate, and the gauge above is
-                  only as good as it. Once the model's own reported counts have corrected
-                  it, say so — an uncalibrated 70% and a calibrated 70% deserve different
-                  amounts of trust, and the user is the one who has to decide how much. */}
-              <Body size="xs" tone="faint" mono>
-                {exact
-                  ? `~${pressure.used.toLocaleString()} / ${(pressure.window - pressure.reserved).toLocaleString()} usable · ${pressure.reserved.toLocaleString()} reserved`
-                  : `~${formatTokens(pressure.used)} / ${formatTokens(pressure.window)}`}
+            {model !== undefined ? (
+              <ModelChip model={model} {...(onPressModel ? { onPress: onPressModel } : {})} />
+            ) : null}
+            {liveCount ? (
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setExact((on) => !on)}
+                hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+                style={{ flexShrink: 1, minWidth: 0 }}
+                accessibilityLabel={
+                  calibration && calibration.samples > 0
+                    ? `About ${formatTokens(pressure.used)} of ${formatTokens(pressure.window)} usable context, calibrated against ${calibration.samples} reported ${calibration.samples === 1 ? 'turn' : 'turns'}`
+                    : `About ${formatTokens(pressure.used)} of ${formatTokens(pressure.window)} usable context, estimated`
+                }
+                accessibilityHint={exact ? 'Show rounded token counts' : 'Show exact token counts'}
+              >
+                {/* The `~` is doing real work: this is an estimate, and the gauge above is
+                    only as good as it. Once the model's own reported counts have corrected
+                    it, say so — an uncalibrated 70% and a calibrated 70% deserve different
+                    amounts of trust, and the user is the one who has to decide how much. */}
+                <Body size="xs" tone="faint" mono numberOfLines={1}>
+                  {exact
+                    ? `~${pressure.used.toLocaleString()} / ${(pressure.window - pressure.reserved).toLocaleString()} usable · ${pressure.reserved.toLocaleString()} reserved`
+                    : `~${formatTokens(pressure.used)} / ${formatTokens(pressure.window)}`}
+                </Body>
+              </Pressable>
+            ) : null}
+            {liveCount && calibration && calibration.samples > 0 ? (
+              <Body size="xs" tone="faint" numberOfLines={1}>
+                {`×${calibration.factor.toFixed(2)}`}
               </Body>
-            </Pressable>
-          ) : null}
-          {liveCount && calibration && calibration.samples > 0 ? (
-            <Body size="xs" tone="faint">
-              {`×${calibration.factor.toFixed(2)}`}
-            </Body>
-          ) : null}
-          {liveCount && draftTokens > 0 ? (
-            <Body size="xs" tone="faint" mono>
-              {`+${formatTokens(draftTokens)}`}
-            </Body>
-          ) : null}
+            ) : null}
+            {liveCount && draftTokens > 0 ? (
+              <Body size="xs" tone="faint" mono numberOfLines={1}>
+                {`+${formatTokens(draftTokens)}`}
+              </Body>
+            ) : null}
+          </View>
 
-          <View style={{ flex: 1 }} />
-
-          {streaming ? (
-            <Button
-              label={aborting ? 'Stopping…' : 'Stop'}
-              onPress={onStop}
-              variant="danger"
-              size="sm"
-              disabled={aborting}
-              {...(aborting ? { disabledReason: 'Waiting for the connection to close.' } : {})}
-            />
-          ) : (
-            <SendButton
-              onPress={() => onSend(pressure)}
-              disabled={empty || blocked}
-              {...(blocked ? { reason: disabledReason } : empty ? { reason: 'Write a message first.' } : {})}
-            />
-          )}
+          {/* Never shrinks, never wraps, always on screen. */}
+          <View style={{ flexShrink: 0, flexGrow: 0 }}>
+            {streaming ? (
+              <Button
+                label={aborting ? 'Stopping…' : 'Stop'}
+                onPress={onStop}
+                variant="danger"
+                size="sm"
+                disabled={aborting}
+                {...(aborting ? { disabledReason: 'Waiting for the connection to close.' } : {})}
+              />
+            ) : (
+              <SendButton
+                onPress={() => onSend(pressure)}
+                disabled={empty || blocked}
+                {...(blocked ? { reason: disabledReason } : empty ? { reason: 'Write a message first.' } : {})}
+              />
+            )}
+          </View>
         </View>
       </View>
 
