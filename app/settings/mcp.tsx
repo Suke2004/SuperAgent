@@ -41,6 +41,7 @@ import { qualifyToolName, slugFromHost } from '@/mcp/protocol';
 import type { ApprovalMode } from '@/mcp/protocol';
 import type { McpAuthKind, McpServer, McpServerDraft } from '@/db/mcp';
 import { redirectUri } from '@/mcp/oauth';
+import * as haptics from '@/lib/haptics';
 import { saveBearerToken, useMcp } from '@/stores/mcp';
 import { useTheme } from '@/theme';
 
@@ -144,6 +145,7 @@ export default function McpScreen() {
           text: 'Remove',
           style: 'destructive',
           onPress: () => {
+            haptics.warn();
             setDetailFor(null);
             void useMcp.getState().remove(server.id);
           },

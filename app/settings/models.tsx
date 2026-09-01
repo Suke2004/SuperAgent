@@ -13,6 +13,7 @@ import { Alert } from 'react-native';
 
 import { Badge, Body, Button, Empty, Field, Inline, Note, Row, Screen, Section, Stack } from '@/components/ui';
 import { invalidateTransports, resolveTransport } from '@/lib/gateway';
+import * as haptics from '@/lib/haptics';
 import { entryKey, useModels } from '@/stores/models';
 import { adoptDiscoveredModel, useProviders } from '@/stores/providers';
 import { useReachability } from '@/stores/reachability';
@@ -121,7 +122,14 @@ export default function ModelsScreen() {
               onPress={() =>
                 Alert.alert('Forget models', `Remove all ${list.length} entries and their capability flags?`, [
                   { text: 'Cancel', style: 'cancel' },
-                  { text: 'Forget', style: 'destructive', onPress: () => clearProfile(profile.id) },
+                  {
+                    text: 'Forget',
+                    style: 'destructive',
+                    onPress: () => {
+                      haptics.warn();
+                      clearProfile(profile.id);
+                    },
+                  },
                 ])
               }
             />

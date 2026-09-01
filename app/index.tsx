@@ -18,11 +18,13 @@
 import { FlashList } from '@shopify/flash-list';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, Text, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { PromptSheet, Sheet } from '@/components/Sheet';
 import type { SheetAction } from '@/components/Sheet';
+import { SwipeRow } from '@/components/SwipeRow';
+import type { SwipeAction } from '@/components/SwipeRow';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { Glyph } from '@/components/Glyph';
 import { Icon } from '@/components/Icon';
@@ -60,6 +62,7 @@ import { searchMessages } from '@/db/conversations';
 import type { Conversation, SearchHit, TagMode } from '@/db/conversations';
 import { splitOnMatches } from '@/db/search';
 import { streamingAvailable } from '@/lib/gateway';
+import * as haptics from '@/lib/haptics';
 import { whenBucket } from '@/lib/when';
 import { useChat } from '@/stores/chat';
 import { useProjects } from '@/stores/projects';
@@ -160,6 +163,7 @@ function ConversationRow({
   selected,
   onOpen,
   onMenu,
+  actions,
 }: {
   conversation: Conversation;
   now: number;
@@ -168,11 +172,14 @@ function ConversationRow({
   selected: boolean;
   onOpen: () => void;
   onMenu: () => void;
+  /** Uncovered by a leftward swipe. The same actions the long-press menu offers. */
+  actions: readonly SwipeAction[];
 }) {
   const t = useTheme();
   const preview = conversation.preview ?? '';
 
   return (
+    <SwipeRow actions={actions} enabled={!selecting}>
     <Pressable
       onPress={onOpen}
       onLongPress={onMenu}
@@ -253,6 +260,7 @@ function ConversationRow({
         </Inline>
       </View>
     </Pressable>
+    </SwipeRow>
   );
 }
 
@@ -476,40 +484,13 @@ export default function Home() {
   }, [router]);
 
   /**
-   * Delete, but only after offering the reversible version of the same wish.
-   *
-   * Deleting a conversation destroys every message in it and there is no undo, so
-   * the first thing the dialog offers is archiving — which is what "get this out of
-   * my list" actually means most of the time. Delete stays, one tap further away and
-   * still marked destructive.
-   */
-  const confirmDelete = (conversation: Conversation): void => {
-    Alert.alert(
-      'Delete this conversation?',
-      `"${conversation.title}" and every message in it. This cannot be undone — archiving keeps it and takes it out of the list.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Archive instead',
-          onPress: () => void archive(conversation, true),
-        },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => void useChat.getState().remove(conversation.id),
-        },
-      ],
-    );
-  };
-
-  /**
    * Archive or restore, with the reverse offered straight away.
    *
    * The undo is a toast-shaped `Alert` rather than a real snackbar because that is
    * the confirmation mechanism this app already has; it is honest about what
    * happened and one tap from putting it back.
    */
-  const archive = async (conversation: Conversation, archived: boolean): Promise<void> => {
+  const archive = useCallback(async (conversation: Conversation, archived: boolean): Promise<void> => {
     await useChat.getState().setArchived(conversation.id, archived);
     Alert.alert(
       archived ? 'Archived' : 'Restored',
@@ -521,7 +502,48 @@ export default function Home() {
         { text: 'Undo', onPress: () => void useChat.getState().setArchived(conversation.id, !archived) },
       ],
     );
-  };
+  }, []);
+
+  /**
+   * Delete, but only after offering the reversible version of the same wish.
+   *
+   * Deleting a conversation destroys every message in it and there is no undo, so
+   * the first thing the dialog offers is archiving — which is what "get this out of
+   * my list" actually means most of the time. Delete stays, one tap further away and
+   * still marked destructive.
+   *
+   * Memoised, along with `archive`, only because `renderItem` now calls it: an
+   * unmemoised handler in that dependency list would give the list a new `renderItem`
+   * on every render of this screen.
+   */
+  const confirmDelete = useCallback(
+    (conversation: Conversation): void => {
+      Alert.alert(
+        'Delete this conversation?',
+        `"${conversation.title}" and every message in it. This cannot be undone — archiving keeps it and takes it out of the list.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Archive instead',
+            onPress: () => void archive(conversation, true),
+          },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () => {
+              // The one haptic in the app that is a *warning* rather than an
+              // acknowledgement, and it fires on the confirmation rather than on the
+              // menu item: the tap that opens this dialog is reversible and the tap
+              // that dismisses it is not. See `haptics.warn`.
+              haptics.warn();
+              void useChat.getState().remove(conversation.id);
+            },
+          },
+        ],
+      );
+    },
+    [archive],
+  );
 
   const menuActions = (conversation: Conversation): SheetAction[] => [
     { label: 'Open', onPress: () => openConversation(conversation.id) },
@@ -615,7 +637,10 @@ export default function Home() {
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: () => void runBulk('Deleted', () => useChat.getState().removeMany(ids)),
+        onPress: () => {
+          haptics.warn();
+          void runBulk('Deleted', () => useChat.getState().removeMany(ids));
+        },
       },
     ]);
   };
@@ -814,6 +839,29 @@ export default function Home() {
           query={query}
           selecting={selecting}
           selected={picked?.has(item.conversation.id) ?? false}
+          // The three the swipe uncovers, out of the nine in the menu: the two that are
+          // performed constantly and reversibly, plus the one that is worth reaching
+          // fast even though it asks first. Everything else stays behind the long press,
+          // where it has room for a subtitle explaining what it does.
+          actions={[
+            {
+              icon: 'pin',
+              label: item.conversation.pinned ? 'Unpin' : 'Pin',
+              onPress: () =>
+                void useChat.getState().setPinned(item.conversation.id, !item.conversation.pinned),
+            },
+            {
+              icon: 'edit',
+              label: 'Rename',
+              onPress: () => setPrompt({ kind: 'rename', conversation: item.conversation }),
+            },
+            {
+              icon: 'trash',
+              label: 'Delete',
+              destructive: true,
+              onPress: () => confirmDelete(item.conversation),
+            },
+          ]}
           // While selecting, a tap toggles instead of opening. Long press *enters*
           // selection with that row already picked, which is the gesture every
           // list on this platform uses and the reason there is no permanent
@@ -831,7 +879,7 @@ export default function Home() {
         />
       );
     },
-    [t, now, query, openConversation, selecting, picked],
+    [t, now, query, openConversation, selecting, picked, confirmDelete],
   );
 
   const banner = (
@@ -1078,6 +1126,24 @@ export default function Home() {
         // the filter immediately hides and make the spinner look stuck.
         onEndReached={query.trim() ? undefined : () => void loadMore()}
         onEndReachedThreshold={0.5}
+        // Pull to refresh, in clay. The list is a cache of a local database that four
+        // other things write to — a background send, a queued retry, a rename from the
+        // chat screen — so "I think this is stale" is a real thought a user has here, and
+        // until now the only cure was leaving the screen and coming back.
+        //
+        // `rows.length` gates the spinner, not the refresh: while the list is genuinely
+        // empty the skeleton already occupies the screen, and a second indicator spinning
+        // above it is two answers to one question.
+        refreshControl={
+          <RefreshControl
+            refreshing={listLoading && rows.length > 0}
+            onRefresh={() => void loadList({ archived: showArchived, ...(projectId ? { projectId } : {}) })}
+            // iOS takes one colour, Android takes a list plus the disc behind it.
+            tintColor={t.colors.accent}
+            colors={[t.colors.accent]}
+            progressBackgroundColor={t.colors.surface}
+          />
+        }
         contentContainerStyle={{ paddingBottom: t.spacing.lg }}
         keyboardShouldPersistTaps="handled"
       />

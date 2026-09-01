@@ -22,11 +22,14 @@
  */
 
 import { FlashList } from '@shopify/flash-list';
+import type { FlashListRef } from '@shopify/flash-list';
 import * as Clipboard from 'expo-clipboard';
 import { Stack as NavStack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Modal, PanResponder, Pressable, ScrollView, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, PanResponder, Pressable, ScrollView, View } from 'react-native';
+import type { NativeScrollEvent, NativeSyntheticEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Reanimated, { FadeInDown, ReduceMotion } from 'react-native-reanimated';
 
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { CodeSandbox } from '@/components/CodeSandbox';
@@ -34,14 +37,15 @@ import { Glyph } from '@/components/Glyph';
 import { Icon } from '@/components/Icon';
 import type { IconName } from '@/components/Icon';
 import { useDialogKeys } from '@/components/dialog';
-import { PromptSheet, Sheet } from '@/components/Sheet';
-import { Sidebar } from '@/components/Sidebar';
+import { PromptSheet, Sheet, SheetShell } from '@/components/Sheet';
+import { Sidebar, useDrawerScene } from '@/components/Sidebar';
 import type { SidebarLink } from '@/components/Sidebar';
 import type { SheetAction } from '@/components/Sheet';
 import { CommandBar } from '@/components/chat/CommandBar';
 import { Composer } from '@/components/chat/Composer';
 import { MessageView } from '@/components/chat/MessageView';
 import { ReferenceSheet } from '@/components/chat/ReferenceSheet';
+import { ScrollDownButton } from '@/components/chat/ScrollDownButton';
 import { StreamView } from '@/components/chat/StreamView';
 import { VariantPager } from '@/components/chat/VariantPager';
 import {
@@ -57,6 +61,7 @@ import {
   SwitchRow,
   useKeyboardHeight,
 } from '@/components/ui';
+import { duration } from '@/constants/animations';
 import { formatStopSequences, hasBlockingIssue, mergeParams, parseStopSequences, validateConfig } from '@/chat/request';
 import { replyReservation, sendConfirmation } from '@/chat/budget';
 import { buildCommandIndex, buildMentionIndex, commandQuery, mentionQuery, rankCommands, replaceMention } from '@/chat/commands';
@@ -158,6 +163,19 @@ export default function ChatScreen() {
 
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  /**
+   * When this screen opened, frozen.
+   *
+   * `now` cannot serve: it is refreshed on focus, and a row's entry animation has to be
+   * decided against the moment the transcript appeared, not against the clock. A message
+   * older than this was already part of the conversation when the user arrived and must
+   * simply be there; a message newer than this was written *while they watched*, and is
+   * the one thing worth animating. This is also the cheapest possible test — a number
+   * comparison on data the row already carries — which matters because `FlashList`
+   * recycles cells, so anything that remembered *which* rows it had already animated
+   * would be wrong the moment a cell was reused.
+   */
+  const [mountedAt] = useState(() => Date.now());
   const [menuFor, setMenuFor] = useState<StoredMessage | null>(null);
   const [prompt, setPrompt] = useState<Prompt | null>(null);
   const [convMenu, setConvMenu] = useState(false);
@@ -192,6 +210,35 @@ export default function ChatScreen() {
   const [attachMenu, setAttachMenu] = useState(false);
   /** The collapsible history drawer. Collapsed is unmounted — see `Sidebar`. */
   const [sidebar, setSidebar] = useState(false);
+  /** What this page does while that drawer is coming in. */
+  const drawerScene = useDrawerScene();
+
+  /**
+   * The transcript, so the jump-to-latest disc has something to jump with.
+   */
+  const listRef = useRef<FlashListRef<StoredMessage>>(null);
+
+  /**
+   * Whether the user has scrolled away from the newest message.
+   *
+   * A boolean rather than a scroll offset, and updated only when it flips: this is React
+   * state driving a re-render of a screen with a thousand-message list in it, and
+   * storing the offset would re-render all of it several times a second for the whole of
+   * every scroll.
+   */
+  const [scrolledUp, setScrolledUp] = useState(false);
+
+  const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    // One screen-height of slack. Tighter than that and the disc flickers in during the
+    // rubber-band at the end of a flick; looser and it is still showing when the newest
+    // message is plainly on screen.
+    const fromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    setScrolledUp((was) => {
+      const now = fromBottom > layoutMeasurement.height * 0.5;
+      return now === was ? was : now;
+    });
+  }, []);
 
   /**
    * Swipe in from the left edge to open the drawer.
@@ -489,7 +536,7 @@ export default function ChatScreen() {
 
   const renderItem = useCallback(    ({ item }: { item: StoredMessage }) => {
       const pricing = entries[entryKey(conversation?.profileId ?? '', item.model ?? model)]?.pricing;
-      return (
+      const row = (
         <MessageView
           message={item}
           now={now}
@@ -499,8 +546,20 @@ export default function ChatScreen() {
           {...(pricing ? { pricing } : {})}
         />
       );
+      // Written while the user was here, so it arrives rather than appearing: a short
+      // rise and fade, in the direction the composer sits. `ReduceMotion.System` is
+      // Reanimated's own opt-out — with Reduce Motion on, the row is simply there,
+      // which is the correct reading of a decorative entrance.
+      if (item.createdAt <= mountedAt) return row;
+      return (
+        <Reanimated.View
+          entering={FadeInDown.duration(duration.quick).reduceMotion(ReduceMotion.System)}
+        >
+          {row}
+        </Reanimated.View>
+      );
     },
-    [entries, conversation?.profileId, model, now, thinkingExpanded, onAction, onExplainCost],
+    [entries, conversation?.profileId, model, now, thinkingExpanded, onAction, onExplainCost, mountedAt],
   );
 
   // FlashList only re-renders rows when `data` or `extraData` changes identity, and
@@ -727,7 +786,8 @@ ${text}` : text);
     }
   };
 
-  const confirmDelete = (message: StoredMessage): void => {    Alert.alert('Delete this message?', 'It is removed from the transcript and from the database.', [
+  const confirmDelete = (message: StoredMessage): void => {
+    Alert.alert('Delete this message?', 'It is removed from the transcript and from the database.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
@@ -747,6 +807,7 @@ ${text}` : text);
         text: 'Delete',
         style: 'destructive',
         onPress: () => {
+          haptics.warn();
           void useChat.getState().remove(id);
           router.back();
         },
@@ -1449,7 +1510,14 @@ ${result.content}` : result.content);
     // the header's height, which is the second half of "it moves, but not above
     // the keyboard". The composer's own `paddingBottom` below does the whole job
     // from the one number that is actually authoritative: `useKeyboardHeight()`.
-    <View style={{ flex: 1 }}>
+    //
+    // Animated, because the drawer shrinks and shifts this page as it slides in —
+    // see `useDrawerScene`. `overflow: 'hidden'` is what lets the corner radius that
+    // comes with it actually clip the transcript. The navigator's header is drawn
+    // above this view and outside it, so it stays put while the page moves; on one
+    // flat background that reads as the page sliding under the header rather than as
+    // two things disagreeing, and reaching the header would mean drawing our own.
+    <Reanimated.View style={[{ flex: 1, overflow: 'hidden' }, drawerScene]}>
       <NavStack.Screen
         options={{
           // Just the title, in the navigator's own serif, centred and truncated by
@@ -1479,6 +1547,7 @@ ${result.content}` : result.content);
 
       <View style={{ flex: 1 }}>
         <FlashList
+          ref={listRef}
           data={messages}
           extraData={extraData}
           keyExtractor={(item) => item.id}
@@ -1497,6 +1566,11 @@ ${result.content}` : result.content);
           // than being swallowed by the dismiss.
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
+          onScroll={onScroll}
+          // 16ms would be one event per frame on the JS thread for the whole of a
+          // flick. 100ms is four or five events across a typical scroll, which is
+          // plenty to decide a single boolean.
+          scrollEventThrottle={100}
           ItemSeparatorComponent={() => <View style={{ height: t.spacing.lg }} />}
           ListEmptyComponent={
             stream ? null : (
@@ -1538,6 +1612,13 @@ ${result.content}` : result.content);
               <VariantPager variants={variants} onSelect={(index) => void selectVariant(id, index)} />
             )
           }
+        />
+
+        {/* Over the transcript, above the composer. Between the list and the edge strip
+            so the drawer's gesture still wins along the left edge. */}
+        <ScrollDownButton
+          visible={scrolledUp}
+          onPress={() => listRef.current?.scrollToEnd({ animated: true })}
         />
 
         {/* The drawer's edge. Last child, so it is above the list; a thumb's width
@@ -1660,6 +1741,7 @@ ${result.content}` : result.content);
                         text: 'Delete',
                         style: 'destructive',
                         onPress: () => {
+                          haptics.warn();
                           deleteGeneratedFile(target.uri);
                           setFileFor(null);
                           void listGeneratedFiles().then(setFiles);
@@ -1877,54 +1959,41 @@ ${result.content}` : result.content);
 
       {/* The fill-in form. One field per variable, in the order they appear in the
           template, so the fields read in the order of the sentence they complete. */}
-      <Modal
+      <SheetShell
         visible={filling !== null}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setFilling(null)}
+        onClose={() => setFilling(null)}
+        label="Cancel"
+        lift={keyboardHeight}
       >
-        <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.45)' }}>
-          <View
-            accessibilityViewIsModal
-            style={{
-              maxHeight: '90%',
-              backgroundColor: t.colors.bg,
-              borderTopLeftRadius: t.radius.lg,
-              borderTopRightRadius: t.radius.lg,
-              padding: t.spacing.lg,
-            }}
-          >
-            {filling ? (
+        {filling ? (
+          <Stack gap="md" style={{ padding: t.spacing.lg, paddingTop: t.spacing.sm }}>
+            <Body size="lg" weight="700">
+              {filling.title}
+            </Body>
+            <ScrollView keyboardShouldPersistTaps="handled">
               <Stack gap="md">
-                <Body size="lg" weight="700">
-                  {filling.title}
-                </Body>
-                <ScrollView keyboardShouldPersistTaps="handled">
-                  <Stack gap="md">
-                    {filling.fields.map((name) => (
-                      <Field
-                        key={name}
-                        label={name}
-                        value={values[name] ?? ''}
-                        onChangeText={(text) => setValues((current) => ({ ...current, [name]: text }))}
-                        rows={2}
-                      />
-                    ))}
-                  </Stack>
-                </ScrollView>
-                <Inline gap="md">
-                  <Button
-                    label="Insert"
-                    disabled={(filling.required ?? filling.fields).some((name) => !values[name]?.trim())}
-                    onPress={() => filling.insert(values)}
+                {filling.fields.map((name) => (
+                  <Field
+                    key={name}
+                    label={name}
+                    value={values[name] ?? ''}
+                    onChangeText={(text) => setValues((current) => ({ ...current, [name]: text }))}
+                    rows={2}
                   />
-                  <Button label="Cancel" variant="ghost" onPress={() => setFilling(null)} />
-                </Inline>
+                ))}
               </Stack>
-            ) : null}
-          </View>
-        </View>
-      </Modal>
+            </ScrollView>
+            <Inline gap="md">
+              <Button
+                label="Insert"
+                disabled={(filling.required ?? filling.fields).some((name) => !values[name]?.trim())}
+                onPress={() => filling.insert(values)}
+              />
+              <Button label="Cancel" variant="ghost" onPress={() => setFilling(null)} />
+            </Inline>
+          </Stack>
+        ) : null}
+      </SheetShell>
 
       {/* Mounted only while open, so the draft is seeded from the stored value
           every time rather than surviving a cancel. */}
@@ -1945,16 +2014,17 @@ ${result.content}` : result.content);
         />
       ) : null}
 
-      <Modal visible={configOpen && configDraft !== null} animationType="slide" transparent onRequestClose={closeConfig}>
-        <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.45)' }}>
-          <View
-            ref={configTrap}
-            accessibilityViewIsModal
-            style={{ maxHeight: '90%', backgroundColor: t.colors.bg, borderTopLeftRadius: t.radius.lg, borderTopRightRadius: t.radius.lg, padding: t.spacing.lg }}
-          >
-            {configDraft ? (
-              <Stack gap="md">
-                <Body size="lg" weight="700">Model controls</Body>
+      <SheetShell
+        visible={configOpen && configDraft !== null}
+        onClose={closeConfig}
+        label="Close the model controls"
+        lift={keyboardHeight}
+        panelRef={configTrap}
+      >
+        {configDraft ? (
+          <ScrollView keyboardShouldPersistTaps="handled">
+            <Stack gap="md" style={{ padding: t.spacing.lg, paddingTop: t.spacing.sm }}>
+              <Body size="lg" weight="700">Model controls</Body>
                 <Field
                   label="Max output tokens"
                   value={configDraft.maxTokens}
@@ -2086,17 +2156,16 @@ ${result.content}` : result.content);
                   <Button label="Cancel" variant="ghost" full onPress={() => setConfigOpen(false)} />
                 </Stack>
               </Stack>
-            ) : null}
-          </View>
-        </View>
-      </Modal>
+          </ScrollView>
+        ) : null}
+      </SheetShell>
 
       {/* One host per screen, not one per message: the queue in `@/chat/sandbox` is
           keyed by run id, so a second WebView would just be a second engine nobody
           routes to. Mounted only while the tool is switched on — an idle WebView is
           a process. */}
       {allowRunCode ? <CodeSandbox /> : null}
-    </View>
+    </Reanimated.View>
   );
 }
 

@@ -25,6 +25,7 @@ import {
   Stepper,
   SwitchRow,
 } from '@/components/ui';
+import * as haptics from '@/lib/haptics';
 import { useModels } from '@/stores/models';
 import { useProviders } from '@/stores/providers';
 import { useTheme } from '@/theme';
@@ -243,6 +244,7 @@ export default function ModelDetail() {
                   text: 'Remove',
                   style: 'destructive',
                   onPress: () => {
+                    haptics.warn();
                     remove(key);
                     router.back();
                   },

@@ -19,32 +19,38 @@
  * off-screen intercepting nothing.
  *
  * The panel slides and the backdrop fades because the drawer is a place that is
- * *beside* this one — a cross-fade would say it replaced the screen. Both run on
- * the native driver off one `Animated.Value` so a drag can take over the same
- * value the animation was driving, and the modal stays mounted through the exit so
- * the panel is visible on the way out. Dragging it away is the gesture people try
- * first, and a drawer that only closes by tapping the backdrop feels stuck.
+ * *beside* this one — a cross-fade would say it replaced the screen. Both run off one
+ * shared value on the UI thread so a drag can take over the same value the animation
+ * was driving, and the modal stays mounted through the exit so the panel is visible on
+ * the way out. Dragging it away is the gesture people try first, and a drawer that only
+ * closes by tapping the backdrop feels stuck.
+ *
+ * That one value is `drawerProgress`, and it is a *module* value rather than local
+ * state: the screen underneath scales down and shifts right as the panel comes in, and
+ * being in another native window it cannot be handed anything through React. See
+ * {@link drawerProgress}.
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import {
-  Animated,
+import { Modal, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
+import Reanimated, {
   Easing,
-  Modal,
-  PanResponder,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  useWindowDimensions,
-  View,
-} from 'react-native';
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
+import type { SharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useDialogKeys } from '@/components/dialog';
 import { Icon, iconSize } from '@/components/Icon';
 import type { IconName } from '@/components/Icon';
+import { drawerProgress, useReducedMotion } from '@/components/motion';
 import { Body, Divider, Field, Heading, SkeletonRows, MIN_TARGET } from '@/components/ui';
+import { curve, duration, spring } from '@/constants/animations';
 import { filterConversations } from '@/chat/list';
 import type { Conversation } from '@/db/conversations';
 import { APP_NAME } from '@/lib/app';
@@ -56,14 +62,90 @@ import { useTheme } from '@/theme';
 const WIDTH_FRACTION = 0.86;
 const MAX_WIDTH = 360;
 
-/** Opening is the gesture that wants to feel unhurried; closing wants to get out of the way. */
-const OPEN_MS = 240;
-const CLOSE_MS = 180;
+/**
+ * Opening is the gesture that wants to feel unhurried; closing wants to get out of the
+ * way. Both come from `@/constants/animations` — `duration.panel` is the drawer's old
+ * hand-tuned 240 rounded into the 250–300ms band the brief asks for, and `duration.exit`
+ * is the same 170-odd it always closed in.
+ */
+const OPEN_MS = duration.panel;
+const CLOSE_MS = duration.exit;
 
 /** Past this much of the panel dragged away, releasing closes it rather than snapping back. */
 const CLOSE_FRACTION = 0.35;
-/** A flick closes it regardless of distance. dp per millisecond. */
-const CLOSE_VELOCITY = 0.5;
+/** A flick closes it regardless of distance. dp per second, which is what the gesture reports. */
+const CLOSE_VELOCITY = 500;
+
+/**
+ * What the screen behind the drawer does while it is open.
+ *
+ * Shrunk 6% and pushed 14dp right, so the page reads as a card the drawer has slid in
+ * front of rather than as a wall the drawer is stuck to. Small numbers on purpose: the
+ * effect is depth, and a page that visibly shrinks to 0.85 is a page that has become a
+ * thumbnail of itself.
+ */
+const SCENE_SCALE = 0.06;
+const SCENE_SHIFT = 14;
+
+/**
+ * Drag-to-close.
+ *
+ * The predecessor here was a **capture-phase** `PanResponder`, and the reason is worth
+ * keeping: the list inside the panel is a scroller, and in the bubbling phase the child
+ * already under the finger wins the responder — so a horizontal drag over the chat rows
+ * went to a vertical scroller that had nothing to do with it and the panel never moved.
+ *
+ * Gesture Handler solves the same problem properly instead of racing it. The list is
+ * *its* `ScrollView`, so both handlers are in one arbitration: `activeOffsetX` means this
+ * pan does not begin until the finger has committed sideways, and `failOffsetY` means
+ * that once it has gone vertical instead, the pan is out for the rest of the drag and
+ * the scroller keeps it. No capture, and nothing to refuse to hand back.
+ *
+ * Rightward drag is clamped away — the panel is already fully open, and letting it
+ * rubber-band right would only invent a state to animate back from.
+ *
+ * A module-level factory rather than three lines in the component, because
+ * {@link drawerProgress} lives outside React and the React Compiler will not allow a
+ * component body to write to it — reasonably, since from inside a component that is
+ * indistinguishable from smuggling state out of the render. Here there is no component
+ * to be confused about it.
+ *
+ * @param grabbed Scratch space for where a drag started, so a second drag continues the
+ *   first instead of jumping the panel to the finger.
+ */
+function drawerPan(width: number, grabbed: SharedValue<number>, onClose: () => void) {
+  const settle = () => {
+    'worklet';
+    drawerProgress.value = withSpring(1, spring.panel);
+  };
+
+  return (
+    Gesture.Pan()
+      .activeOffsetX([-12, 12])
+      .failOffsetY([-16, 16])
+      .onBegin(() => {
+        grabbed.value = drawerProgress.value;
+      })
+      .onChange((event) => {
+        drawerProgress.value = Math.min(1, Math.max(0, grabbed.value + event.translationX / width));
+      })
+      .onEnd((event) => {
+        if (drawerProgress.value < 1 - CLOSE_FRACTION || event.velocityX < -CLOSE_VELOCITY) {
+          // Handed to `onClose`, so the screen's state changes and the effect in the
+          // component runs the exit — the gesture and a backdrop tap then close the
+          // drawer by exactly the same path.
+          runOnJS(onClose)();
+          return;
+        }
+        settle();
+      })
+      // A cancelled gesture — a call arriving, a system pan taking over — must not leave
+      // the panel parked half-open with nothing running.
+      .onFinalize((_event, success) => {
+        if (!success) settle();
+      })
+  );
+}
 
 /** One entry in the drawer's list of other places. */
 export interface SidebarLink {
@@ -102,6 +184,7 @@ export function Sidebar({
   const t = useTheme();
   const insets = useSafeAreaInsets();
   const trap = useDialogKeys(visible, onClose);
+  const reduced = useReducedMotion();
   const { width: screenWidth } = useWindowDimensions();
   const width = Math.min(MAX_WIDTH, Math.round(screenWidth * WIDTH_FRACTION));
 
@@ -139,131 +222,75 @@ export function Sidebar({
   }
 
   /**
-   * How far the panel is pushed off to the left, in dp. 0 is fully open.
-   *
-   * Lazy `useState` rather than a ref: this is read during render, by the transform
-   * and the backdrop's interpolation, which is exactly what a ref is not for.
+   * Where the drag started, as a fraction. Held so a second drag continues the first
+   * rather than jumping the panel to wherever the finger happens to be.
    */
-  const [offset] = useState(() => new Animated.Value(-width));
+  const grabbed = useSharedValue(0);
+  const pan = drawerPan(width, grabbed, onClose);
 
   useEffect(() => {
     if (visible) {
-      Animated.timing(offset, {
-        toValue: 0,
-        duration: OPEN_MS,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start();
+      // Reduce Motion shortens the slide and keeps its direction: this move is what says
+      // the drawer came from the left edge and belongs back there, which an instant
+      // appearance throws away. See `scaleDuration`'s note on positional motion.
+      drawerProgress.value = withTiming(1, {
+        duration: reduced ? duration.quick : OPEN_MS,
+        easing: Easing.bezier(...curve.enter),
+      });
       return;
     }
-    Animated.timing(offset, {
-      toValue: -width,
-      duration: CLOSE_MS,
-      easing: Easing.in(Easing.cubic),
-      useNativeDriver: true,
-    }).start(({ finished }) => {
-      if (finished) setMounted(false);
-    });
-  }, [visible, width, offset]);
-
-  /**
-   * A rotation while the drawer is closed leaves the panel parked at the *old*
-   * width, which is a sliver of it visible down the edge on the wider screen. Nothing
-   * animates here — there is nothing on screen to animate.
-   */
-  useEffect(() => {
-    if (!visible) offset.setValue(-width);
-  }, [width, visible, offset]);
-
-  /**
-   * Drag-to-close.
-   *
-   * **Capture phase**, which is the whole reason this works: the list inside the panel
-   * is a `ScrollView`, and in the bubbling phase the child that is already under the
-   * finger wins the responder — so a horizontal drag anywhere over the chat rows was
-   * being handed to a vertical scroller that had nothing to do with it, and the panel
-   * never moved. Capturing lets the panel claim the gesture first, and only for a
-   * gesture that is unambiguously horizontal and leftward: a vertical one still
-   * belongs to the list, and a tap still belongs to the row under the finger.
-   *
-   * Rightward drag is ignored — the panel is already fully open, and letting it
-   * rubber-band right would only invent a state to animate back from.
-   */
-  const pan = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
-          gesture.dx < -6 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
-        // Once the drag is ours, the scroller may not ask for it back mid-gesture.
-        onPanResponderTerminationRequest: () => false,
-        onPanResponderMove: (_event, gesture) => {
-          offset.setValue(Math.max(-width, Math.min(0, gesture.dx)));
-        },
-        onPanResponderRelease: (_event, gesture) => {
-          const far = gesture.dx < -width * CLOSE_FRACTION;
-          const flicked = gesture.vx < -CLOSE_VELOCITY;
-          if (far || flicked) {
-            // Hand it to `onClose` and let the effect above run the exit, so the
-            // gesture and the backdrop tap close it exactly the same way.
-            onClose();
-            return;
-          }
-          Animated.spring(offset, {
-            toValue: 0,
-            useNativeDriver: true,
-            damping: 20,
-            stiffness: 220,
-            mass: 0.6,
-          }).start();
-        },
-        onPanResponderTerminate: () => {
-          Animated.spring(offset, { toValue: 0, useNativeDriver: true, damping: 20, stiffness: 220, mass: 0.6 }).start();
-        },
-      }),
-    [offset, width, onClose],
-  );
+    drawerProgress.value = withTiming(
+      0,
+      { duration: reduced ? duration.press : CLOSE_MS, easing: Easing.bezier(...curve.exit) },
+      (finished) => {
+        // Timing rather than a spring on the way out for the same reason as `SheetShell`:
+        // this callback unmounts the modal, and a spring's tail would hold an invisible
+        // panel mounted for a hundred milliseconds after it had gone.
+        if (finished) runOnJS(setMounted)(false);
+      },
+    );
+  }, [visible, reduced]);
 
   // Titles, previews, models and tags — the fast pass only. Message text is what
   // `onReference` is for, and mixing "open this chat" and "quote this line" into
   // one result list is how you paste a paragraph when you meant to navigate.
   const filtered = useMemo(() => filterConversations(conversations, { query }), [conversations, query]);
 
-  const backdropOpacity = offset.interpolate({
-    inputRange: [-width, 0],
-    outputRange: [0, 1],
-    extrapolate: 'clamp',
-  });
+  const backdrop = useAnimatedStyle(() => ({ opacity: drawerProgress.value }));
+  const slide = useAnimatedStyle(() => ({ transform: [{ translateX: -width * (1 - drawerProgress.value) }] }));
 
   return (
     <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
       <View style={{ flex: 1 }}>
-        <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: t.colors.scrim, opacity: backdropOpacity }]}>
+        <Reanimated.View style={[StyleSheet.absoluteFill, { backgroundColor: t.colors.scrim }, backdrop]}>
           <Pressable onPress={onClose} accessibilityLabel="Close the chat list" style={{ flex: 1 }} />
-        </Animated.View>
+        </Reanimated.View>
 
-        <Animated.View
-          {...pan.panHandlers}
-          style={{
-            // Absolute rather than a flex child: the panel is a layer over the screen,
-            // and as a laid-out sibling of the backdrop its height depended on the
-            // parent's flex direction — which is how it ended up a sliver on one screen
-            // size and full height on another.
-            position: 'absolute',
-            left: 0,
-            top: 0,
-            bottom: 0,
-            width,
-            transform: [{ translateX: offset }],
-            backgroundColor: t.colors.surface,
-            borderTopRightRadius: t.radius.lg,
-            borderBottomRightRadius: t.radius.lg,
-            // The rounded corners have to clip the rows, or a row's pressed background
-            // squares them off again.
-            overflow: 'hidden',
-            paddingTop: insets.top + t.spacing.md,
-            paddingBottom: Math.max(t.spacing.md, insets.bottom),
-          }}
-        >
+        <GestureDetector gesture={pan}>
+          <Reanimated.View
+            style={[
+              {
+                // Absolute rather than a flex child: the panel is a layer over the screen,
+                // and as a laid-out sibling of the backdrop its height depended on the
+                // parent's flex direction — which is how it ended up a sliver on one screen
+                // size and full height on another.
+                position: 'absolute',
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width,
+                backgroundColor: t.colors.surface,
+                borderTopRightRadius: t.radius.lg,
+                borderBottomRightRadius: t.radius.lg,
+                // The rounded corners have to clip the rows, or a row's pressed background
+                // squares them off again.
+                overflow: 'hidden',
+                paddingTop: insets.top + t.spacing.md,
+                paddingBottom: Math.max(t.spacing.md, insets.bottom),
+              },
+              slide,
+            ]}
+          >
           {/* The trap is on an inner view: `accessibilityViewIsModal` on the animated
               panel would be re-evaluated on every frame of the transform. */}
           <Pressable ref={trap} onPress={() => {}} accessibilityViewIsModal style={{ flex: 1 }}>
@@ -371,10 +398,40 @@ export function Sidebar({
               onPress={onSettings}
             />
           </Pressable>
-        </Animated.View>
+          </Reanimated.View>
+        </GestureDetector>
       </View>
     </Modal>
   );
+}
+
+/**
+ * The style for the screen the drawer slides over: shrink a little, shift right a
+ * little, round the corners as it goes.
+ *
+ * Lives here rather than on the screen because it is the other half of one animation —
+ * the numbers and the value driving them belong together, and a screen that opened a
+ * drawer would otherwise have to know how the drawer's spring is configured to keep up
+ * with it. Wrap the screen's root in a `Reanimated.View` carrying this and
+ * `overflow: 'hidden'`, so the corner radius actually clips.
+ *
+ * Reduce Motion drops it entirely rather than shortening it, and this is the one place
+ * in the pair where that is right: unlike the panel's slide, the scale says nothing the
+ * user needs — the drawer arriving is already unmistakable — and it is a large-area
+ * transform, which is exactly the kind of movement the setting is asking about.
+ */
+export function useDrawerScene() {
+  const reduced = useReducedMotion();
+  const t = useTheme();
+
+  return useAnimatedStyle(() => {
+    if (reduced) return {};
+    const p = drawerProgress.value;
+    return {
+      transform: [{ scale: 1 - p * SCENE_SCALE }, { translateX: p * SCENE_SHIFT }],
+      borderRadius: p * t.radius.lg,
+    };
+  });
 }
 
 /** A section heading in the drawer. The same tier as `Section`'s title on a screen. */

@@ -29,6 +29,7 @@ import {
 } from '@/chat/skill';
 import type { Skill, SkillDraft } from '@/chat/skill';
 import { packSkills, skillsZipName } from '@/chat/skillZip';
+import * as haptics from '@/lib/haptics';
 import { log } from '@/lib/log';
 import { useSkills } from '@/stores/skills';
 import { useTheme } from '@/theme';
@@ -139,6 +140,7 @@ export default function SkillsScreen() {
         text: 'Delete',
         style: 'destructive',
         onPress: () => {
+          haptics.warn();
           void useSkills.getState().remove(skill.id);
         },
       },
