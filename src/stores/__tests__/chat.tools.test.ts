@@ -157,6 +157,13 @@ jest.mock('expo-file-system', () => ({
 }));
 jest.mock('expo-print', () => ({ printToFileAsync: jest.fn() }));
 jest.mock('expo-sharing', () => ({ isAvailableAsync: jest.fn(async () => false), shareAsync: jest.fn() }));
+// The store notifies when a backgrounded turn finishes. Mocked whole rather than
+// mocking `expo-notifications` under it, so a turn in this suite never has to care
+// about `AppState` — `notifyReplyReady` deciding to stay quiet is its own test.
+jest.mock('@/lib/notify', () => ({
+  primeNotifications: jest.fn(async () => {}),
+  notifyReplyReady: jest.fn(async () => {}),
+}));
 
 /* -------------------------------------------------------------------------- */
 /* The stores around it                                                       */

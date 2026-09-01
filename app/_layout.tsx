@@ -12,7 +12,7 @@
  * 3. Provide the theme and the navigation stack.
  */
 
-import { Stack } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import type { ErrorBoundaryProps } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
@@ -24,6 +24,7 @@ import { useHydrated } from '@/lib/storage';
 import { invalidateTransports } from '@/lib/gateway';
 import { unlockApp } from '@/lib/appLock';
 import { debugLog } from '@/lib/log';
+import { onNotificationTap } from '@/lib/notify';
 import { clearCache, primeRedactorWithStoredKeys } from '@/lib/secureKey';
 import { useMemory } from '@/stores/memory';
 import { useChat } from '@/stores/chat';
@@ -36,6 +37,16 @@ import { ThemeProvider, useTheme } from '@/theme';
 
 function Navigator() {
   const t = useTheme();
+  const router = useRouter();
+
+  // A tapped "reply is ready" notification opens the conversation it came from,
+  // including the tap that started the process — see `onNotificationTap`. Pushed, not
+  // replaced, so the back gesture still goes where the user expects.
+  useEffect(
+    () => onNotificationTap((id) => router.push({ pathname: '/chat/[id]', params: { id } })),
+    [router],
+  );
+
   return (
     <>
       <StatusBar style={t.scheme === 'dark' ? 'light' : 'dark'} />
@@ -54,6 +65,8 @@ function Navigator() {
         {/* Home draws its own serif greeting, which *is* the title; a navigator header
             above it would say the app's name twice. */}
         <Stack.Screen name="index" options={{ title: APP_NAME, headerShown: false }} />
+        {/* `jarvis://new?q=…`: a redirect with a spinner, so it has nothing to title. */}
+        <Stack.Screen name="new" options={{ headerShown: false }} />
         {/* The title comes from the conversation, set by the screen itself. */}
         <Stack.Screen name="chat/[id]" options={{ title: '' }} />
         <Stack.Screen name="chat/inspect" options={{ title: 'Developer details' }} />

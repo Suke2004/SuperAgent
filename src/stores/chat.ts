@@ -83,6 +83,7 @@ import { projectSystemPrompt } from '@/chat/project';
 import { invalidateTransports, resolveTransport } from '@/lib/gateway';
 import { newId } from '@/lib/id';
 import { log } from '@/lib/log';
+import { notifyReplyReady, primeNotifications } from '@/lib/notify';
 import { estimateRequestTokens } from '@/lib/tokens';
 import { capabilitiesFor, useModels, wireHintsFor } from '@/stores/models';
 import { useCalibration } from '@/stores/calibration';
@@ -1272,6 +1273,9 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
 
   const controller = new AbortController();
   controllers.set(conversationId, controller);
+  // Asked here rather than at launch: a permission dialog makes sense a second after
+  // the user sent something long, and makes none on a first cold start.
+  void primeNotifications();
 
   const finish = async (): Promise<void> => {
     if (timer) clearTimeout(timer);
@@ -1664,6 +1668,17 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
   // after this one has been cleaned up rather than racing it.
   if (resume !== null) await runTurn(set, get, conversationId, { ...options, pauseContinuations: resume });
   else if (toolRound !== null) await runTurn(set, get, conversationId, { ...options, toolRounds: toolRound });
+  // Neither branch taken means the reply is finished rather than merely paused, so
+  // this is the one place a turn ends — a tool round or a continuation is not an
+  // answer and must not buzz the phone as if it were. `notifyReplyReady` decides
+  // whether anything is shown; a foreground turn and an abort say nothing.
+  else
+    await notifyReplyReady({
+      conversationId,
+      title: conversation.title === DEFAULT_TITLE ? '' : conversation.title,
+      text: live.text,
+      stopReason: live.stopReason,
+    });
 }
 
 /**

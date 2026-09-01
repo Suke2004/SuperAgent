@@ -22,6 +22,7 @@ import type { MdBlock } from '@/components/markdown/blocks';
 import { CodeBlock } from '@/components/markdown/CodeBlock';
 import { InlineText } from '@/components/markdown/Inline';
 import { BlockMath } from '@/components/markdown/MathView';
+import { MermaidView } from '@/components/markdown/MermaidView';
 import { Table } from '@/components/markdown/Table';
 import { useTheme } from '@/theme';
 import type { Theme } from '@/theme';
@@ -68,6 +69,9 @@ function BlockView({ block, spacedTop }: { block: MdBlock; spacedTop: boolean })
     }
 
     case 'code':
+      // A mermaid fence is a diagram first; `MermaidView` falls back to a `CodeBlock`
+      // itself for anything it cannot draw, so the source is never lost.
+      if (block.lang?.toLowerCase() === 'mermaid') return <MermaidView code={block.code} />;
       return <CodeBlock code={block.code} {...(block.lang ? { lang: block.lang } : {})} />;
 
     case 'math':

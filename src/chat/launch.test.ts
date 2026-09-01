@@ -1,4 +1,4 @@
-import { launchTarget } from '@/chat/launch';
+import { launchTarget, linkedPrompt } from '@/chat/launch';
 import type { Conversation } from '@/db/conversations';
 
 function conversation(patch: Partial<Conversation> & { id: string }): Conversation {
@@ -49,5 +49,24 @@ describe('launchTarget', () => {
       conversation({ id: 'blank', messageCount: 0, updatedAt: 100 }),
     ]);
     expect(target).toBe('blank');
+  });
+});
+
+describe('linkedPrompt', () => {
+  it('takes the text a link carries', () => {
+    expect(linkedPrompt('Summarise this page')).toBe('Summarise this page');
+    expect(linkedPrompt(undefined)).toBe('');
+  });
+
+  it('accepts the shapes a URL can actually produce', () => {
+    // `?q=a&q=b` arrives as an array, and a router that hands one over unguarded is a
+    // `.replace` on a non-string away from a crash on the launch path.
+    expect(linkedPrompt(['one', 'two'])).toBe('one two');
+    expect(linkedPrompt('  padded  ')).toBe('padded');
+    expect(linkedPrompt('two\r\nlines')).toBe('two\nlines');
+  });
+
+  it('caps the length rather than refusing the link', () => {
+    expect(linkedPrompt('x'.repeat(9000))).toHaveLength(4000);
   });
 });
