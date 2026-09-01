@@ -30,6 +30,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { OfflineBadge, OfflineBanner } from '@/components/OfflineBanner';
 import { CodeSandbox } from '@/components/CodeSandbox';
+import { Glyph } from '@/components/Glyph';
 import { useDialogKeys } from '@/components/dialog';
 import { PromptSheet, Sheet } from '@/components/Sheet';
 import { Sidebar } from '@/components/Sidebar';
@@ -44,12 +45,11 @@ import { VariantPager } from '@/components/chat/VariantPager';
 import {
   Body,
   Button,
-  Empty,
   Field,
   Inline,
+  MIN_TARGET,
   Note,
   Segmented,
-  Spinner,
   Stack,
   Stepper,
   SwitchRow,
@@ -206,7 +206,11 @@ export default function ChatScreen() {
   const edgePan = useMemo(
     () =>
       PanResponder.create({
-        onMoveShouldSetPanResponder: (_event, gesture) =>
+        // Capture, for the same reason the drawer's own gesture captures: the strip sits
+        // over a `FlashList`, and in the bubbling phase the list claims the drag first —
+        // so the swipe-in worked only if the finger happened to start moving before the
+        // list saw it. `dy` is checked so a diagonal scroll is still a scroll.
+        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
           gesture.dx > 8 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
         onPanResponderGrant: () => setSidebar(true),
       }),
@@ -568,8 +572,16 @@ export default function ChatScreen() {
 
   if (!loaded) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center' }}>
-        <Spinner label="Opening" />
+      // The mark, not a bare spinner: this is the first frame after the splash on a
+      // cold launch, and the splash is the same mark on the same colour, so anything
+      // else here reads as a flash of a different app. The header is set explicitly so
+      // the row above is empty rather than briefly carrying the previous screen's title.
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: t.spacing.md }}>
+        <NavStack.Screen options={{ title: '', headerRight: () => null }} />
+        <Glyph size={40} state="thinking" />
+        <Body size="sm" tone="faint" live>
+          Opening
+        </Body>
       </View>
     );
   }
@@ -1456,29 +1468,15 @@ ${result.content}` : result.content);
           // when there is, the gesture and the hardware button still go back, and
           // the drawer's own "All chats" reaches the list either way.
           headerLeft: () => (
-            <Pressable
+            <HeaderIcon
+              glyph="☰"
+              label="Chats"
+              hint="Opens the list of your chats"
               onPress={() => setSidebar(true)}
-              accessibilityRole="button"
-              accessibilityLabel="Chats"
-              accessibilityHint="Opens the list of your chats"
-              hitSlop={12}
-            >
-              <Body size="lg" weight="700">
-                ☰
-              </Body>
-            </Pressable>
+            />
           ),
           headerRight: () => (
-            <Pressable
-              onPress={() => setConvMenu(true)}
-              accessibilityRole="button"
-              accessibilityLabel="Conversation options"
-              hitSlop={12}
-            >
-              <Body size="lg" weight="700">
-                ⋯
-              </Body>
-            </Pressable>
+            <HeaderIcon glyph="⋯" label="Conversation options" onPress={() => setConvMenu(true)} />
           ),
         }}
       />
@@ -1506,10 +1504,19 @@ ${result.content}` : result.content);
           ItemSeparatorComponent={() => <View style={{ height: t.spacing.lg }} />}
           ListEmptyComponent={
             stream ? null : (
-              <Empty
-                title="Nothing here yet"
-                body={`Send a message and ${conversation.model} answers below.`}
-              />
+              // The mark and one question, centred, the way the reference apps open: an
+              // empty chat is not an error state and a bordered "Nothing here yet" card
+              // read like one. The model is still named, because which model answers is
+              // the one fact that changes what you should type.
+              <View style={{ paddingTop: t.spacing.xxl * 2, alignItems: 'center', gap: t.spacing.md }}>
+                <Glyph size={44} />
+                <Body size="xl" style={{ fontFamily: t.serifFont, textAlign: 'center' }}>
+                  What can we tackle together?
+                </Body>
+                <Body size="xs" tone="faint" style={{ textAlign: 'center' }}>
+                  {conversation.model} answers below.
+                </Body>
+              </View>
             )
           }
           ListFooterComponent={
@@ -1537,13 +1544,14 @@ ${result.content}` : result.content);
           }
         />
 
-        {/* The drawer's edge. Last child, so it is above the list; as wide as the
-            transcript's own padding, so a tap that lands in it would have landed on
-            padding anyway. Over the transcript only — the composer's attach button is
-            in the same corner. */}
+        {/* The drawer's edge. Last child, so it is above the list; a thumb's width
+            rather than the transcript's padding, because the gesture has to be findable
+            without looking — and the strip only recognises a horizontal drag, so a
+            vertical scroll that starts inside it still scrolls. Over the transcript
+            only: the composer's attach button is in the same corner. */}
         <View
           {...edgePan.panHandlers}
-          style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: t.spacing.md }}
+          style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: t.spacing.xl }}
         />
       </View>
       <View style={{ paddingBottom: keyboardHeight > 0 ? keyboardHeight : insets.bottom, gap: t.spacing.sm }}>
@@ -2093,5 +2101,50 @@ ${result.content}` : result.content);
           a process. */}
       {allowRunCode ? <CodeSandbox /> : null}
     </View>
+  );
+}
+
+/**
+ * A header button.
+ *
+ * A fixed square, centred, rather than a bare `<Text>`: the glyph grows with the
+ * system font scale and a `<Text>` in the header slot grew with it, drifting off the
+ * row and leaving a target smaller than a thumb at the default size. The box is the
+ * platform minimum, the glyph is centred inside it whatever size it renders at, and
+ * the negative margin keeps the *visual* edge where the header's own padding put it —
+ * a 44dp box flush against the screen edge looks indented next to a 17dp glyph.
+ */
+function HeaderIcon({
+  glyph,
+  label,
+  hint,
+  onPress,
+}: {
+  glyph: string;
+  label: string;
+  hint?: string;
+  onPress: () => void;
+}) {
+  const t = useTheme();
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      {...(hint !== undefined ? { accessibilityHint: hint } : {})}
+      style={({ pressed }) => ({
+        width: MIN_TARGET - 4,
+        height: MIN_TARGET - 4,
+        marginHorizontal: -t.spacing.sm,
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: t.radius.pill,
+        backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
+      })}
+    >
+      <Body size="lg" weight="700" style={{ lineHeight: t.fontSize.lg + 4 }}>
+        {glyph}
+      </Body>
+    </Pressable>
   );
 }

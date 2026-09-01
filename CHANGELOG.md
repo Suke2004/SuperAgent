@@ -14,6 +14,12 @@ and is marked **needs a rebuild** below.
 
 ### Added
 
+- **Terminal output** — a tool result that carries ANSI colour or redraws its own line
+  is rendered as a terminal instead of a code block: colours read, cursor codes
+  dropped, a progress bar showing its last state, tabs aligned to eight columns. This
+  is the last piece of using a remote shell over MCP from the phone — see
+  [docs/USAGE.md](docs/USAGE.md) §8.1. Copy and Markdown export give the
+  text without the escapes; the JSON export keeps the bytes verbatim.
 - **Word, Excel and PowerPoint attachments** — a `.docx`, `.xlsx` or `.pptx` is read
   on device into text and sent like any other document: paragraphs from a Word file,
   tab-separated cells per named sheet from a workbook, one section per slide from a
@@ -81,6 +87,18 @@ and is marked **needs a rebuild** below.
   message to be sent again.
 
 ### Fixed
+
+- The history drawer could not be dragged shut and its list would not scroll to the
+  end. The drag is claimed in the capture phase, so the list inside the panel stops
+  swallowing a horizontal swipe, and the scroller is bounded, so the footer buttons
+  stay on screen with four hundred chats above them. The panel is a layer rather than a
+  flex child, so a rotation no longer parks it at the previous width, and the swipe-in
+  strip at the screen edge is a thumb's width instead of a hairline.
+- The chat header's ☰ and ⋯ are fixed, centred targets rather than bare text that grew
+  out of the row at large system font sizes.
+- Opening a conversation showed a bare spinner under whatever title the previous screen
+  had left; it now shows the app's mark on an empty header, and an empty chat opens on
+  the mark and a question rather than a bordered "nothing here yet" card.
 
 - The tool manifest was left out of the turn's history budget entirely — `planTurn` was
   written to count it and was never handed it — so a conversation with two chatty MCP

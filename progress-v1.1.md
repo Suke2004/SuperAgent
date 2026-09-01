@@ -221,7 +221,7 @@ Reference surface: the Claude apps plus Claude Code, since the request is "every
 | **MCP resources readable by the model** | ✅ v1.1 — `read_mcp_resource` built-in | — |
 | **Subagents / task delegation** | ❌ | Not v1.1. Two models on one phone battery is a different product. |
 | **Plan mode** | ✅ — per-conversation toggle; writers and every MCP tool refused, reads still allowed ([plan.ts](src/chat/plan.ts)) | — |
-| **Native filesystem / bash** | ❌ | Not possible on device; §4 |
+| **Native filesystem / bash** | ❌ on device — ✅ over MCP | A `run_command` server on a real machine, rendered as a terminal ([terminal.ts](src/chat/terminal.ts), [USAGE §8.1](docs/USAGE.md)); §4 |
 | **Docx / xlsx / pptx reading** | ✅ — read on device into text, no new dependency ([office.ts](src/chat/office.ts)) | Writing them is still open: OOXML needs an XML writer, and CSV plus PDF cover the "give me a file" request |
 | **Chat sharing by link** | ❌ | Not building — needs a server, and the app's premise is no server |
 

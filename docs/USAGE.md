@@ -111,6 +111,30 @@ never. The full arguments are shown. Leaving the screen resolves nothing — you
 come back to the same question. Every failure, including a denial, comes back as a
 tool *result*, so a refused call never costs you the conversation.
 
+### 8.1 A shell, on a machine that has one
+
+An unrooted Android phone has no `git`, `node` or `python` and cannot be given one:
+there is no shell to hand out, and the app can reach its own sandbox and whatever you
+pick in the document picker, not the filesystem. The honest version of a terminal is
+therefore a shell **somewhere else**, reached over MCP.
+
+Run an MCP server on the laptop or VPS that owns the work — any server exposing a
+`run_command`-style tool — put it behind HTTPS with authentication, and add its URL in
+Settings → MCP servers. Nothing about it is special to this app: the tool is approved
+mid-turn like every other, and `always` is a decision to let a model run commands on
+that machine unattended, so it is worth keeping to a tool that cannot do damage.
+
+What the app adds is the reading. A result carrying ANSI colour or a carriage-return
+redraw is rendered as a terminal rather than a code block: colours read rather than
+printed as `[0;32m`, cursor and mode codes dropped, a progress bar showing its last
+state, tabs aligned to eight columns, and long output kept from the end with the
+dropped line count stated. **Copy** gives the text without the escapes, and so does a
+Markdown export; the JSON export keeps the bytes exactly as the server sent them.
+
+Full-screen programs — `vim`, `top`, anything that redraws in place — are not
+emulated. They arrive as legible plain text instead of a pretend screen. Prefer the
+non-interactive form (`git --no-pager …`, `top -b -n1`).
+
 ## 9. Prompts, memory, usage, backup
 
 - **Prompt library** (Settings, or the header menu) — reusable prompts with

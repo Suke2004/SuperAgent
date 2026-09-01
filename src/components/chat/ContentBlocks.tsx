@@ -21,7 +21,9 @@ import type { ViewStyle } from 'react-native';
 import { CodeBlock } from '@/components/markdown/CodeBlock';
 import { safeHref } from '@/components/markdown/href';
 import { Markdown } from '@/components/markdown/Markdown';
+import { TerminalView } from '@/components/chat/TerminalView';
 import { Badge, Body, Inline, Note, verticalSlop } from '@/components/ui';
+import { looksLikeTerminal } from '@/chat/terminal';
 import { useTheme } from '@/theme';
 import type { Citation, ContentBlock } from '@/transports/types';
 
@@ -161,7 +163,15 @@ function ToolResult({ content, isError }: { content: string; isError?: boolean }
         ) : null}
       </Inline>
       {content.trim() ? (
-        <CodeBlock code={content} />
+        // A remote shell over MCP is the only shell an unrooted phone can have, and its
+        // output arrives here. Rendered as a terminal when it carries escapes or
+        // in-place redraws, and as a code block otherwise — the same bargain the
+        // artifact preview makes: fall back to legible source rather than guess.
+        looksLikeTerminal(content) ? (
+          <TerminalView output={content} />
+        ) : (
+          <CodeBlock code={content} />
+        )
       ) : (
         <Body size="sm" tone="faint">
           Empty result.

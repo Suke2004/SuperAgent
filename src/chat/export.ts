@@ -33,6 +33,7 @@
  */
 
 import type { Conversation, StoredMessage } from '@/db/conversations';
+import { looksLikeTerminal, plainTerminal } from '@/chat/terminal';
 import { APP_WIRE_NAME } from '@/lib/app';
 import { redactString } from '@/lib/redact';
 import type { ContentBlock, TokenUsage } from '@/transports/types';
@@ -199,7 +200,12 @@ function blocksToMarkdown(blocks: readonly ContentBlock[], options: ExportOption
         break;
       case 'tool_result':
         out.push(
-          `**Tool result**${block.isError ? ' (error)' : ''}\n\n\`\`\`\n${safe(block.content)}\n\`\`\``,
+          // A shell's colour escapes are unreadable in a Markdown fence and mean
+          // nothing to a text editor, so command output is exported as the text it
+          // drew. The JSON export keeps the bytes verbatim — that one is the record.
+          `**Tool result**${block.isError ? ' (error)' : ''}\n\n\`\`\`\n${safe(
+            looksLikeTerminal(block.content) ? plainTerminal(block.content) : block.content,
+          )}\n\`\`\``,
         );
         break;
       case 'server_tool': {
