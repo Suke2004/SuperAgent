@@ -1,13 +1,17 @@
 /**
- * "The gateway could not be reached" — one component, three placements.
+ * "The gateway could not be reached" — one component, one placement per screen.
  *
- * Home, the chat header and the composer all need to say this, and three separate
- * strings would drift apart within a week. The wording is deliberately about the
- * last attempt rather than about the device: see {@link useReachability} for why
- * this app refuses to claim the user is offline.
+ * Home and the composer both need to say this, and two separate strings would drift
+ * apart within a week. The wording is deliberately about the last attempt rather
+ * than about the device: see {@link useReachability} for why this app refuses to
+ * claim the user is offline.
+ *
+ * There was a one-word `OfflineBadge` for the chat header too. It is gone: this
+ * banner already sits pinned above the composer on that screen, so the badge said
+ * the same thing a second time in less space, and it was crowding the title.
  */
 
-import { Badge, Note } from '@/components/ui';
+import { Note } from '@/components/ui';
 import { useReachability } from '@/stores/reachability';
 import { useSendQueue } from '@/stores/queue';
 
@@ -47,11 +51,4 @@ export function OfflineBanner() {
       }${waiting}`}
     </Note>
   );
-}
-
-/** One-word version, for a header or a dense row. */
-export function OfflineBadge() {
-  const status = useReachability((s) => s.status);
-  if (status !== 'unreachable') return null;
-  return <Badge label="Unreachable" tone="warning" srLabel="The gateway is not reachable" />;
 }

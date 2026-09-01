@@ -149,18 +149,35 @@ export function Sidebar({
   }, [visible, width, offset]);
 
   /**
+   * A rotation while the drawer is closed leaves the panel parked at the *old*
+   * width, which is a sliver of it visible down the edge on the wider screen. Nothing
+   * animates here — there is nothing on screen to animate.
+   */
+  useEffect(() => {
+    if (!visible) offset.setValue(-width);
+  }, [width, visible, offset]);
+
+  /**
    * Drag-to-close.
    *
-   * `onMoveShouldSet` rather than `onStartShouldSet`, and only for a horizontal
-   * drag: a vertical one belongs to the list, and a tap belongs to the row under
-   * the finger. Rightward drag is ignored — the panel is already fully open, and
-   * letting it rubber-band right would only invent a state to animate back from.
+   * **Capture phase**, which is the whole reason this works: the list inside the panel
+   * is a `ScrollView`, and in the bubbling phase the child that is already under the
+   * finger wins the responder — so a horizontal drag anywhere over the chat rows was
+   * being handed to a vertical scroller that had nothing to do with it, and the panel
+   * never moved. Capturing lets the panel claim the gesture first, and only for a
+   * gesture that is unambiguously horizontal and leftward: a vertical one still
+   * belongs to the list, and a tap still belongs to the row under the finger.
+   *
+   * Rightward drag is ignored — the panel is already fully open, and letting it
+   * rubber-band right would only invent a state to animate back from.
    */
   const pan = useMemo(
     () =>
       PanResponder.create({
-        onMoveShouldSetPanResponder: (_event, gesture) =>
+        onMoveShouldSetPanResponderCapture: (_event, gesture) =>
           gesture.dx < -6 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
+        // Once the drag is ours, the scroller may not ask for it back mid-gesture.
+        onPanResponderTerminationRequest: () => false,
         onPanResponderMove: (_event, gesture) => {
           offset.setValue(Math.max(-width, Math.min(0, gesture.dx)));
         },
@@ -209,12 +226,22 @@ export function Sidebar({
         <Animated.View
           {...pan.panHandlers}
           style={{
+            // Absolute rather than a flex child: the panel is a layer over the screen,
+            // and as a laid-out sibling of the backdrop its height depended on the
+            // parent's flex direction — which is how it ended up a sliver on one screen
+            // size and full height on another.
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            bottom: 0,
             width,
-            flex: 1,
             transform: [{ translateX: offset }],
             backgroundColor: t.colors.surface,
             borderTopRightRadius: t.radius.lg,
             borderBottomRightRadius: t.radius.lg,
+            // The rounded corners have to clip the rows, or a row's pressed background
+            // squares them off again.
+            overflow: 'hidden',
             paddingTop: insets.top + t.spacing.md,
             paddingBottom: Math.max(t.spacing.md, insets.bottom),
           }}
@@ -234,7 +261,18 @@ export function Sidebar({
 
             <Divider />
 
-            <ScrollView keyboardShouldPersistTaps="handled">
+            <ScrollView
+              // `flex: 1`, or the scroller sizes itself to its content: four hundred
+              // chats then push the footer buttons off the bottom of the screen and
+              // there is nothing left that scrolls. This is the one line that makes the
+              // list usable at any length.
+              style={{ flex: 1 }}
+              contentContainerStyle={{ paddingBottom: t.spacing.md }}
+              keyboardShouldPersistTaps="handled"
+              // A drag that started vertically stays vertical, so it cannot fight the
+              // panel's own horizontal gesture halfway down the list.
+              directionalLockEnabled
+            >
               {/* The other places first, because they are a fixed short list and the
                   history below is unbounded — a nav row at the bottom of 400 chats is
                   a nav row nobody reaches. Hidden while searching: a filter over the

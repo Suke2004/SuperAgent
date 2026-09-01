@@ -16,9 +16,10 @@ import { Stack, useRouter } from 'expo-router';
 import type { ErrorBoundaryProps } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, AppState, Pressable, Text, View } from 'react-native';
+import { AppState, Pressable, Text, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { Glyph } from '@/components/Glyph';
 import { APP_NAME } from '@/lib/app';
 import { useHydrated } from '@/lib/storage';
 import { invalidateTransports } from '@/lib/gateway';
@@ -95,11 +96,16 @@ function Navigator() {
  * Colours are hardcoded because this renders outside the ThemeProvider, and they
  * match the splash background so the handoff from the native splash to the first
  * React frame has no flash.
+ *
+ * The mark rather than a spinner, for the same reason: the native splash *is* the
+ * mark on this colour, so a stock `ActivityIndicator` here replaced it with an
+ * unrelated shape on the first React frame — which is what "the initial loading is
+ * not coming correctly" looks like. Same shape, same colour, now turning.
  */
 function Booting() {
   return (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#262624' }}>
-      <ActivityIndicator size="large" color="#d97757" />
+      <Glyph size={56} state="thinking" color="#d97757" label={`${APP_NAME} is starting`} />
     </View>
   );
 }
