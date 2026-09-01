@@ -97,7 +97,7 @@ function ReferenceBody({
     <Pressable
       onPress={onClose}
       accessibilityLabel="Cancel"
-      style={{ flex: 1, backgroundColor: '#00000088', justifyContent: 'flex-end' }}
+      style={{ flex: 1, backgroundColor: t.colors.scrim, justifyContent: 'flex-end' }}
     >
       <Pressable
         ref={trap}

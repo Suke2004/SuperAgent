@@ -33,6 +33,15 @@ export interface Palette {
   surfaceActive: string;
   border: string;
   borderStrong: string;
+  /**
+   * The wash behind a modal, sheet or drawer.
+   *
+   * One token for both schemes, and deliberately *not* derived from either palette:
+   * a scrim's job is to darken whatever is behind it, and a scrim tinted with the
+   * light palette's paper leaves the page underneath legible enough to keep
+   * competing with the sheet on top of it.
+   */
+  scrim: string;
   text: string;
   textDim: string;
   /**
@@ -86,6 +95,7 @@ const light: Palette = {
   surfaceActive: '#e6e3d9',
   border: '#e3e0d6',
   borderStrong: '#d3cfc2',
+  scrim: '#00000066',
   // 15.8:1 on bg, 14.3:1 on the sunk surface.
   text: '#1f1e1d',
   // 8.7:1 on bg, 7.9:1 on the sunk surface.
@@ -125,6 +135,7 @@ const dark: Palette = {
   surfaceActive: '#3d3d39',
   border: '#3d3d39',
   borderStrong: '#4d4c47',
+  scrim: '#00000099',
   // 13.8:1 on bg, 12.0:1 on surface.
   text: '#f5f4ef',
   textDim: '#d8d5cc',

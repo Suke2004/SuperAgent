@@ -34,6 +34,7 @@ import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 
 import { attachmentTokens, describeAttachments } from '@/chat/attachments';
 import { APP_NAME } from '@/lib/app';
 import { useDictation } from '@/lib/dictation';
+import { Icon } from '@/components/Icon';
 import { Body, Button, Note, targetSlop, useFocusRing } from '@/components/ui';
 import { contextPressure, estimateTextTokens, formatTokens } from '@/lib/tokens';
 import type { ContextPressure, PressureLevel } from '@/lib/tokens';
@@ -132,20 +133,10 @@ function SendButton({ onPress, disabled, reason }: { onPress: () => void; disabl
         ring,
       ]}
     >
-      {/* Fixed metrics: the disc is a fixed 36dp, so a glyph that grows with the
+      {/* Fixed metrics: the disc is a fixed 36dp, so a mark that grows with the
           system font scale clips against it or slides off centre. The label the
           screen reader announces is on the Pressable and scales as text should. */}
-      <Text
-        allowFontScaling={false}
-        style={{
-          color: t.colors.accentText,
-          fontSize: t.fontSize.md,
-          lineHeight: t.fontSize.md + 4,
-          fontWeight: '700',
-        }}
-      >
-        ↑
-      </Text>
+      <Icon name="send" size="lg" color={t.colors.accentText} />
     </Pressable>
   );
 }
@@ -236,17 +227,7 @@ function AttachmentChip({
           borderColor: t.colors.borderStrong,
         })}
       >
-        <Text
-          allowFontScaling={false}
-          style={{
-            color: t.colors.text,
-            fontSize: t.fontSize.xs,
-            lineHeight: t.fontSize.xs + 4,
-            fontWeight: '700',
-          }}
-        >
-          ×
-        </Text>
+        <Icon name="close" size={12} tone="text" />
       </Pressable>
     </View>
   );
@@ -282,12 +263,7 @@ function AttachButton({ onPress, disabled, reason }: { onPress: () => void; disa
         ring,
       ]}
     >
-      <Text
-        allowFontScaling={false}
-        style={{ color: t.colors.textDim, fontSize: t.fontSize.md, lineHeight: t.fontSize.md + 4 }}
-      >
-        +
-      </Text>
+      <Icon name="attach" size="lg" tone="textDim" />
     </Pressable>
   );
 }
@@ -324,12 +300,7 @@ function MicButton({ listening, onPress }: { listening: boolean; onPress: () => 
         ring,
       ]}
     >
-      <Text
-        allowFontScaling={false}
-        style={{ color: listening ? t.colors.danger : t.colors.textDim, fontSize: t.fontSize.md, lineHeight: t.fontSize.md + 4 }}
-      >
-        ●
-      </Text>
+      <Icon name="mic" tone={listening ? 'danger' : 'textDim'} />
     </Pressable>
   );
 }
@@ -342,12 +313,13 @@ function ModelChip({ model, onPress }: { model: string; onPress?: () => void }) 
     // `flexShrink` and no fixed width: a long model id gives up its room to the send
     // button rather than pushing it past the right edge. See the row below.
     <Text numberOfLines={1} style={{ color: t.colors.textDim, fontSize: t.fontSize.xs, flexShrink: 1 }}>
-      {onPress ? `${model} ⌄` : model}
+      {model}
     </Text>
   );
   const box = {
     flexDirection: 'row' as const,
     alignItems: 'center' as const,
+    gap: 4,
     flexShrink: 1,
     minWidth: 0,
     borderWidth: StyleSheet.hairlineWidth,
@@ -368,6 +340,9 @@ function ModelChip({ model, onPress }: { model: string; onPress?: () => void }) 
       style={({ pressed }) => [box, { backgroundColor: pressed ? t.colors.surfaceActive : 'transparent' }, ring]}
     >
       {body}
+      {/* The chevron is what makes the chip look like a control rather than a
+          read-out; it is only drawn when there is somewhere to go. */}
+      <Icon name="expand" size="sm" tone="textFaint" />
     </Pressable>
   );
 }
@@ -534,7 +509,7 @@ export function Composer({
               hitSlop={12}
               style={{ paddingTop: t.spacing.sm, paddingHorizontal: 4 }}
             >
-              <Text style={{ color: t.colors.textFaint, fontSize: t.fontSize.md }}>×</Text>
+              <Icon name="close" tone="textFaint" />
             </Pressable>
           ) : null}
         </View>

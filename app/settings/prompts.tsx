@@ -14,7 +14,7 @@ import { useFocusEffect } from 'expo-router';
 
 import { Sheet } from '@/components/Sheet';
 import type { SheetAction } from '@/components/Sheet';
-import { Body, Button, Empty, Field, Inline, Note, Row, Screen, Section, Spinner } from '@/components/ui';
+import { Body, Button, Empty, Field, Inline, Note, Row, Screen, Section, SkeletonRows } from '@/components/ui';
 import { MAX_PROMPT_CHARS, variablesIn } from '@/chat/prompts';
 import type { Prompt, PromptDraft } from '@/chat/prompts';
 import { usePrompts } from '@/stores/prompts';
@@ -147,11 +147,11 @@ export default function PromptsScreen() {
       >
         {!loaded ? (
           <View style={{ padding: t.spacing.md }}>
-            <Spinner label="Loading" />
+            <SkeletonRows count={4} label="Loading your prompts" />
           </View>
         ) : prompts.length === 0 ? (
           <View style={{ padding: t.spacing.md }}>
-            <Empty title="No prompts yet" body="Write one, with {{variables}} for the parts that change." />
+            <Empty icon="prompts" title="No prompts yet" body="Write one, with {{variables}} for the parts that change." />
           </View>
         ) : (
           prompts.map((prompt, index) => (

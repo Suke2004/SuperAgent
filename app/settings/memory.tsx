@@ -19,7 +19,7 @@ import { useFocusEffect } from 'expo-router';
 
 import { PromptSheet, Sheet } from '@/components/Sheet';
 import type { SheetAction } from '@/components/Sheet';
-import { Badge, Button, Empty, Inline, Note, Row, Screen, Section, Spinner, SwitchRow } from '@/components/ui';
+import { Badge, Button, Empty, Inline, Note, Row, Screen, Section, SkeletonRows, Spinner, SwitchRow } from '@/components/ui';
 import { MEMORY_BUDGET_CHARS, MEMORY_KINDS, approvedOnly, renderMemoryBlock } from '@/chat/memory';
 import type { Memory, MemoryKind } from '@/chat/memory';
 import { useMemory } from '@/stores/memory';
@@ -203,11 +203,12 @@ export default function MemoryScreen() {
       <Section title={`Remembered (${kept.length})`}>
         {!loaded ? (
           <View style={{ padding: t.spacing.md }}>
-            <Spinner label="Loading" />
+            <SkeletonRows count={4} label="Loading what is remembered" />
           </View>
         ) : kept.length === 0 ? (
           <View style={{ padding: t.spacing.md }}>
             <Empty
+              icon="memory"
               title="Nothing remembered yet"
               body="Keep chatting and durable preferences will collect here, or add one yourself."
             />

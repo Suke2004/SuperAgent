@@ -31,6 +31,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { CodeSandbox } from '@/components/CodeSandbox';
 import { Glyph } from '@/components/Glyph';
+import { Icon } from '@/components/Icon';
+import type { IconName } from '@/components/Icon';
 import { useDialogKeys } from '@/components/dialog';
 import { PromptSheet, Sheet } from '@/components/Sheet';
 import { Sidebar } from '@/components/Sidebar';
@@ -1384,6 +1386,7 @@ ${result.content}` : result.content);
   const sidebarLinks: readonly SidebarLink[] = [
     {
       label: 'Projects',
+      icon: 'projects',
       ...(currentProject ? { detail: currentProject.name } : projects.length ? { detail: String(projects.length) } : {}),
       onPress: () => {
         setSidebar(false);
@@ -1393,6 +1396,7 @@ ${result.content}` : result.content);
     },
     {
       label: 'Files',
+      icon: 'files',
       onPress: () => {
         setSidebar(false);
         openFiles();
@@ -1400,6 +1404,7 @@ ${result.content}` : result.content);
     },
     {
       label: 'Skills',
+      icon: 'skills',
       ...(installedSkills.length ? { detail: String(installedSkills.length) } : {}),
       onPress: () => {
         setSidebar(false);
@@ -1408,6 +1413,7 @@ ${result.content}` : result.content);
     },
     {
       label: 'Prompts',
+      icon: 'prompts',
       ...(library.length ? { detail: String(library.length) } : {}),
       onPress: () => {
         setSidebar(false);
@@ -1417,6 +1423,7 @@ ${result.content}` : result.content);
     },
     {
       label: 'Memory',
+      icon: 'memory',
       ...(memoryEnabled ? {} : { detail: 'Off' }),
       onPress: () => {
         setSidebar(false);
@@ -1425,6 +1432,7 @@ ${result.content}` : result.content);
     },
     {
       label: 'Usage',
+      icon: 'usage',
       onPress: () => {
         setSidebar(false);
         router.push('/settings/usage');
@@ -1457,14 +1465,14 @@ ${result.content}` : result.content);
           // the drawer's own "All chats" reaches the list either way.
           headerLeft: () => (
             <HeaderIcon
-              glyph="☰"
+              icon="menu"
               label="Chats"
               hint="Opens the list of your chats"
               onPress={() => setSidebar(true)}
             />
           ),
           headerRight: () => (
-            <HeaderIcon glyph="⋯" label="Conversation options" onPress={() => setConvMenu(true)} />
+            <HeaderIcon icon="more" label="Conversation options" onPress={() => setConvMenu(true)} />
           ),
         }}
       />
@@ -2095,20 +2103,20 @@ ${result.content}` : result.content);
 /**
  * A header button.
  *
- * A fixed square, centred, rather than a bare `<Text>`: the glyph grows with the
- * system font scale and a `<Text>` in the header slot grew with it, drifting off the
- * row and leaving a target smaller than a thumb at the default size. The box is the
- * platform minimum, the glyph is centred inside it whatever size it renders at, and
- * the negative margin keeps the *visual* edge where the header's own padding put it —
- * a 44dp box flush against the screen edge looks indented next to a 17dp glyph.
+ * A fixed square with a centred icon rather than a bare `<Text>`: a text glyph in the
+ * header slot grew with the system font scale, drifting off the row and leaving a
+ * target smaller than a thumb at the default size. The box is the platform minimum,
+ * the icon does not scale, and the negative margin keeps the *visual* edge where the
+ * header's own padding put it — a 44dp box flush against the screen edge looks
+ * indented next to a 22dp mark.
  */
 function HeaderIcon({
-  glyph,
+  icon,
   label,
   hint,
   onPress,
 }: {
-  glyph: string;
+  icon: IconName;
   label: string;
   hint?: string;
   onPress: () => void;
@@ -2130,9 +2138,7 @@ function HeaderIcon({
         backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
       })}
     >
-      <Body size="lg" weight="700" style={{ lineHeight: t.fontSize.lg + 4 }}>
-        {glyph}
-      </Body>
+      <Icon name={icon} size="lg" tone="text" />
     </Pressable>
   );
 }

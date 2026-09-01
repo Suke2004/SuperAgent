@@ -196,7 +196,7 @@ export default function DebugScreen() {
 
       <Section title={`Entries (${entries.length})`}>
         {newestFirst.length === 0 ? (
-          <Empty title="Nothing logged yet" body="Run a connection test or send a message, then come back." />
+          <Empty icon="diagnostics" title="Nothing logged yet" body="Run a connection test or send a message, then come back." />
         ) : (
           newestFirst.map((entry, index) => (
             <View

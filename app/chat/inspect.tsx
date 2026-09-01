@@ -130,7 +130,7 @@ export default function InspectScreen() {
   if (!message) {
     return (
       <Screen>
-        <Empty title="That message is gone" body="It was deleted while this screen was open." />
+        <Empty icon="info" title="That message is gone" body="It was deleted while this screen was open." />
         <View style={{ height: t.spacing.md }} />
         <Button label="Back" variant="secondary" onPress={() => router.back()} />
       </Screen>
