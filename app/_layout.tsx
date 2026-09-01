@@ -33,6 +33,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { Glyph } from '@/components/Glyph';
 import { useReducedMotion } from '@/components/motion';
+import { ToastHost } from '@/components/Toast';
 import { duration } from '@/constants/animations';
 import { APP_NAME } from '@/lib/app';
 import { useHydrated } from '@/lib/storage';
@@ -313,6 +314,11 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <ThemeProvider mode={themeMode}>
           <Navigator />
+          {/* Above the navigator and outside it, so a toast survives the screen change
+              that often causes it — "archived" is raised by the list and read on the
+              screen after it. Mounted once: it is a module-level slot, and a second host
+              would draw the same message twice. */}
+          <ToastHost />
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

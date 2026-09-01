@@ -18,6 +18,8 @@ import { memo } from 'react';
 import { Pressable, View } from 'react-native';
 
 import { ContentBlocks } from '@/components/chat/ContentBlocks';
+import { anchorOf } from '@/components/ContextMenu';
+import type { Anchor } from '@/components/ContextMenu';
 import { Glyph } from '@/components/Glyph';
 import { Badge, Body, Inline, MIN_TARGET, Note, verticalSlop } from '@/components/ui';
 import { isToolTurn } from '@/db/content';
@@ -155,7 +157,7 @@ function MessageViewInner({
   now: number;
   pricing?: ModelPricing;
   thinkingExpanded: boolean;
-  onAction?: (message: StoredMessage) => void;
+  onAction?: (message: StoredMessage, at: Anchor) => void;
   onExplainCost?: (message: StoredMessage) => void;
 }) {
   const t = useTheme();
@@ -198,9 +200,10 @@ function MessageViewInner({
     <Pressable
       // Tap as well as long-press. A long-press-only affordance is undiscoverable —
       // there is nothing on screen that hints at it — and it is also the one gesture
-      // a switch-control or screen-reader user is least able to produce.
-      onPress={onAction ? () => onAction(message) : undefined}
-      onLongPress={onAction ? () => onAction(message) : undefined}
+      // a switch-control or screen-reader user is least able to produce. Both hand the
+      // press point over, so the menu opens where the finger is either way.
+      onPress={onAction ? (event) => onAction(message, anchorOf(event)) : undefined}
+      onLongPress={onAction ? (event) => onAction(message, anchorOf(event)) : undefined}
       delayLongPress={300}
       accessibilityRole={onAction ? 'button' : undefined}
       accessibilityHint={onAction ? 'Opens message actions' : undefined}

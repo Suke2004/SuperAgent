@@ -28,6 +28,9 @@ import type { SwipeAction } from '@/components/SwipeRow';
 import { OfflineBanner } from '@/components/OfflineBanner';
 import { Glyph } from '@/components/Glyph';
 import { Icon } from '@/components/Icon';
+import { ContextMenu, anchorOf } from '@/components/ContextMenu';
+import type { Anchor } from '@/components/ContextMenu';
+import { toast } from '@/components/Toast';
 import {
   Badge,
   Body,
@@ -171,7 +174,7 @@ function ConversationRow({
   selecting: boolean;
   selected: boolean;
   onOpen: () => void;
-  onMenu: () => void;
+  onMenu: (at: Anchor) => void;
   /** Uncovered by a leftward swipe. The same actions the long-press menu offers. */
   actions: readonly SwipeAction[];
 }) {
@@ -182,7 +185,7 @@ function ConversationRow({
     <SwipeRow actions={actions} enabled={!selecting}>
     <Pressable
       onPress={onOpen}
-      onLongPress={onMenu}
+      onLongPress={(event) => onMenu(anchorOf(event))}
       delayLongPress={300}
       // A checkbox while selecting, a button otherwise. The role is what a screen
       // reader uses to decide whether to announce a checked state at all, so
@@ -292,6 +295,8 @@ export default function Home() {
     null,
   );
   const [menuFor, setMenuFor] = useState<Conversation | null>(null);
+  /** Where the press that opened the row menu landed. See {@link ContextMenu}. */
+  const [menuAt, setMenuAt] = useState<Anchor | null>(null);
   const [prompt, setPrompt] = useState<{ kind: 'rename' | 'tags'; conversation: Conversation } | null>(null);
   const [keyChecked, setKeyChecked] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -587,6 +592,11 @@ export default function Home() {
    * than the size of the selection. Selection mode is left on success only: a
    * failed action leaves the selection intact so it can be retried without
    * re-tapping twelve rows.
+   *
+   * Success is a toast and failure is still an `Alert`. The user asked for this and
+   * watched the rows leave; a dialog demanding a tap to confirm what they can already
+   * see is an interruption for nothing. A failure is the opposite — the rows are still
+   * there, the reason is worth reading, and it should not scroll past in three seconds.
    */
   const runBulk = async (label: string, action: () => Promise<number>): Promise<void> => {
     if (bulkBusy) return;
@@ -594,7 +604,7 @@ export default function Home() {
     try {
       const affected = await action();
       exitSelection();
-      Alert.alert(label, affected === 0 ? 'Nothing changed.' : `${plural(affected, 'conversation')}.`);
+      toast(affected === 0 ? `${label}: nothing changed.` : `${label} ${plural(affected, 'conversation')}.`);
     } catch (error) {
       Alert.alert(`Could not ${label.toLowerCase()}`, error instanceof Error ? error.message : String(error));
     } finally {
@@ -871,11 +881,14 @@ export default function Home() {
               ? setSelected((current) => toggleSelected(current ?? new Set(), item.conversation.id))
               : openConversation(item.conversation.id)
           }
-          onMenu={() =>
-            selecting
-              ? setSelected((current) => toggleSelected(current ?? new Set(), item.conversation.id))
-              : setMenuFor(item.conversation)
-          }
+          onMenu={(at) => {
+            if (selecting) {
+              setSelected((current) => toggleSelected(current ?? new Set(), item.conversation.id));
+              return;
+            }
+            setMenuAt(at);
+            setMenuFor(item.conversation);
+          }}
         />
       );
     },
@@ -1171,10 +1184,11 @@ export default function Home() {
         )}
       </View>
 
-      <Sheet
+      {/* At the finger, over a blurred list, for the same reason as the message menu:
+          a long-press means "this row", and the row stays visible underneath. */}
+      <ContextMenu
         visible={menuFor !== null}
-        title={menuFor?.title ?? ''}
-        {...(menuFor?.preview ? { subtitle: menuFor.preview } : {})}
+        anchor={menuAt}
         actions={menuFor ? menuActions(menuFor) : []}
         onClose={() => setMenuFor(null)}
       />

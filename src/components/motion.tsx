@@ -266,3 +266,59 @@ export function useBreath(active: boolean) {
  * becomes a context holding a per-drawer shared value.
  */
 export const drawerProgress = makeMutable(0);
+
+/**
+ * How far the artifact panel is open: `0` closed, `1` fully open.
+ *
+ * The same arrangement as {@link drawerProgress} and for the same reason — the panel is
+ * a `Modal`, so the transcript it slides over is in a different tree. Separate from the
+ * drawer's value rather than shared: they push the screen in opposite directions, and
+ * one number cannot mean "14dp right" and "14dp left" at once.
+ */
+export const panelProgress = makeMutable(0);
+
+/**
+ * What the screen behind an open panel does: shrink a little, move away from the panel a
+ * little, round its corners as it goes.
+ *
+ * Shrunk 6% and shifted 14dp, so the page reads as a card the panel has slid in front of
+ * rather than as a wall the panel is stuck to. Small numbers on purpose: the effect is
+ * depth, and a page that visibly shrinks to 0.85 has become a thumbnail of itself.
+ *
+ * Here rather than on either screen because it is the other half of two animations — the
+ * numbers and the values driving them belong together, and a screen that opened a drawer
+ * would otherwise have to know how that drawer's spring is configured to keep up with
+ * it. Wrap the screen's root in a `Reanimated.View` carrying this style and
+ * `overflow: 'hidden'`, so the corner radius actually clips.
+ *
+ * Both panels are read, and summed rather than picked between: the drawer pushes right
+ * and the artifact panel pushes left, so a screen with both somehow open ends up where
+ * it started rather than jumping between two answers. The scale takes whichever is
+ * further along, because two panels do not shrink a page twice.
+ *
+ * Reduce Motion drops it entirely rather than shortening it, and this is the one place in
+ * the pair where that is right: unlike a panel's own slide, the scale says nothing the
+ * user needs — the panel arriving is already unmistakable — and it is a large-area
+ * transform, which is exactly the kind of movement the setting is asking about.
+ *
+ * @param radius The page's corner radius at full open. From the theme, at the call site,
+ *   because this module deliberately does not import the theme.
+ */
+export function useScenePush(radius: number) {
+  const reduced = useReducedMotion();
+
+  return useAnimatedStyle(() => {
+    if (reduced) return {};
+    const drawer = drawerProgress.value;
+    const panel = panelProgress.value;
+    const open = Math.max(drawer, panel);
+    return {
+      transform: [{ scale: 1 - open * SCENE_SCALE }, { translateX: (drawer - panel) * SCENE_SHIFT }],
+      borderRadius: open * radius,
+    };
+  });
+}
+
+const SCENE_SCALE = 0.06;
+const SCENE_SHIFT = 14;
+

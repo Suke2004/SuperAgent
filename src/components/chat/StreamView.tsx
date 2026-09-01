@@ -22,7 +22,9 @@ import { CodeBlock } from '@/components/markdown/CodeBlock';
 import { Markdown } from '@/components/markdown/Markdown';
 import { Glyph } from '@/components/Glyph';
 import { ThinkingDots } from '@/components/chat/ThinkingDots';
+import { useReducedMotion } from '@/components/motion';
 import { Badge, Body, Button, Inline, Note } from '@/components/ui';
+import { TYPEWRITER_MS, revealStep } from '@/chat/typewriter';
 import { duration } from '@/constants/animations';
 import { APP_NAME } from '@/lib/app';
 import { estimateTextTokens } from '@/lib/tokens';
@@ -87,6 +89,41 @@ function useRetryCountdown(retry: RetryState | undefined): number | undefined {
   // otherwise read as *more* than the wait actually is.
   const remaining = Math.min(retry.delayMs, retry.at + retry.delayMs - now);
   return Math.max(0, Math.ceil(remaining / 1000));
+}
+
+/**
+ * The revealed prefix of a growing string.
+ *
+ * See `@/chat/typewriter` for why the screen lags the buffer at all. This is the
+ * scheduling half: one self-cancelling timeout per revealed step, restarted by the
+ * effect's dependency on `shown` rather than by an interval, so a caught-up stream
+ * holds no timer and an unmount cannot leave one running.
+ *
+ * @param text The buffer, as it stands this render.
+ * @param snap Show everything immediately. Set once the turn is past writing, so the
+ *   handover from this component to the stored message is not a visible jump.
+ */
+function useTypewriter(text: string, snap: boolean): string {
+  const reduced = useReducedMotion();
+  const [shown, setShown] = useState(0);
+  const full = text.length;
+
+  // A retried turn replaces the text from empty. Without this the count stays where the
+  // abandoned reply left it and the replacement's first few hundred characters appear in
+  // one slab — the exact effect the pacing exists to avoid. Adjusted during render, the
+  // pattern used for the sheets: an effect would spend a frame showing the stale count.
+  if (shown > full) setShown(full);
+
+  useEffect(() => {
+    if (reduced || snap || shown >= full) return;
+    const timer = setTimeout(() => setShown((was) => revealStep(was, full)), TYPEWRITER_MS);
+    return () => clearTimeout(timer);
+  }, [shown, full, reduced, snap]);
+
+  // Reduce Motion takes the whole thing at once. The reveal is decoration — the text is
+  // the content, and holding content back from someone who asked for less motion is the
+  // one reading of the setting that is never right.
+  return reduced || snap ? text : text.slice(0, Math.min(shown, full));
 }
 
 function PartialTool({ name, partialJson }: { name: string; partialJson: string }) {
@@ -182,14 +219,30 @@ export function StreamView({
   const shownRate = rate ? (reported === undefined ? `~${rate}` : rate) : undefined;
 
   /**
+   * The reply, paced.
+   *
+   * Snapped once the model has stopped writing — a stop, a failure, or a phase past
+   * `streaming`, which is where the turn gets saved and this component is replaced by
+   * the stored message. Anything still held back at that moment would appear in one
+   * slab as the swap happens, which looks like a glitch rather than a handover.
+   */
+  const revealed = useTypewriter(
+    stream.text,
+    failed || stream.aborting || stream.phase === 'tools' || stream.phase === 'saving',
+  );
+
+  /**
    * Nothing has arrived yet.
    *
    * Not `phase === 'connecting'`: a turn can sit in `tools` or `summarising` for just as
    * long with an equally empty screen, and the question the dots answer — "is anything
    * still happening?" — is the same in all of them. Thinking text counts as arrival,
    * because it is already visibly filling the space.
+   *
+   * Measured against the *revealed* text rather than the buffer, or the dots would leave
+   * on the frame the first chunk lands and the reply would arrive into a gap.
    */
-  const waiting = !failed && stream.text.length === 0 && stream.thinking.length === 0;
+  const waiting = !failed && revealed.length === 0 && stream.thinking.length === 0;
 
   return (
     // Same gutter as a stored assistant turn, so the live reply does not shift
@@ -255,9 +308,9 @@ export function StreamView({
             <ThinkingDots label={phase} />
           </Reanimated.View>
         ) : null}
-        {stream.text ? (
+        {revealed ? (
           <Reanimated.View entering={FadeIn.duration(duration.quick)}>
-            <Markdown source={stream.text} />
+            <Markdown source={revealed} />
           </Reanimated.View>
         ) : null}
 
