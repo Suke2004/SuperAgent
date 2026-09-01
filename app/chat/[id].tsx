@@ -25,7 +25,7 @@ import { FlashList } from '@shopify/flash-list';
 import * as Clipboard from 'expo-clipboard';
 import { Stack as NavStack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Modal, Pressable, ScrollView, View } from 'react-native';
+import { Alert, Modal, PanResponder, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { OfflineBadge, OfflineBanner } from '@/components/OfflineBanner';
@@ -33,6 +33,7 @@ import { CodeSandbox } from '@/components/CodeSandbox';
 import { useDialogKeys } from '@/components/dialog';
 import { PromptSheet, Sheet } from '@/components/Sheet';
 import { Sidebar } from '@/components/Sidebar';
+import type { SidebarLink } from '@/components/Sidebar';
 import type { SheetAction } from '@/components/Sheet';
 import { CommandBar } from '@/components/chat/CommandBar';
 import { Composer } from '@/components/chat/Composer';
@@ -183,6 +184,28 @@ export default function ChatScreen() {
   const [attachMenu, setAttachMenu] = useState(false);
   /** The collapsible history drawer. Collapsed is unmounted — see `Sidebar`. */
   const [sidebar, setSidebar] = useState(false);
+
+  /**
+   * Swipe in from the left edge to open the drawer.
+   *
+   * Up here with the state it drives rather than next to the strip it is attached to,
+   * because the screen returns early while the conversation is still loading and a
+   * hook after that return would not be called on every render.
+   *
+   * The drawer is opened on recognition rather than tracked under the finger: it
+   * animates itself in over 240ms, so the panel is already moving before the thumb has
+   * travelled much further, and following the finger here would mean reimplementing
+   * the drawer's own gesture from the outside.
+   */
+  const edgePan = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_event, gesture) =>
+          gesture.dx > 8 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
+        onPanResponderGrant: () => setSidebar(true),
+      }),
+    [],
+  );
   const [reference, setReference] = useState(false);
   /** The generated-files sheet, and the one file whose actions are open. */
   const [filesOpen, setFilesOpen] = useState(false);
@@ -884,10 +907,19 @@ ${text}` : text);
 
   const currentProject = projects.find((project) => project.id === conversation.projectId);
 
+  /**
+   * The ⋯ menu.
+   *
+   * Subtitles here are the *state* of the thing and nothing else — the model id, the
+   * project it is in, which skills are on. The explanations that used to sit under
+   * each row turned a menu of eleven choices into a wall of prose you had to read
+   * past to find the one you came for, on the screen with the least room for it.
+   * What each row does is what its label says.
+   */
   const conversationActions: SheetAction[] = [
     {
       label: 'System prompt',
-      subtitle: conversation.systemPrompt ? 'Set — tap to edit' : 'Not set',
+      subtitle: conversation.systemPrompt ? 'Set' : 'Not set',
       onPress: () => setPrompt({ kind: 'system' }),
     },
     { label: 'Model', subtitle: conversation.model, onPress: () => setModelMenu(true) },
@@ -895,21 +927,16 @@ ${text}` : text);
       // Present always, not only when the profile is missing: a conversation started
       // on the wrong gateway is a normal mistake, and this is where it is fixed.
       label: 'Provider profile',
-      subtitle: profile ? profile.name : 'Missing — this conversation cannot send until you pick one',
+      // The one subtitle that is not purely state: without a profile the conversation
+      // cannot send at all, and the row is where that is discovered.
+      subtitle: profile ? profile.name : 'Missing — pick one to send',
       onPress: () => setProfileMenu(true),
     },
-    {
-      label: 'Model controls',
-      subtitle: 'Sampling and reasoning for the next message',
-      onPress: openModelControls,
-    },
+    { label: 'Model controls', onPress: openModelControls },
     {
       // A toggle rather than a screen: it has one state, and burying a safety gate
       // behind another sheet is how it stops being used.
       label: conversation.config.planMode ? 'Plan mode: on — turn it off' : 'Plan mode: off — turn it on',
-      subtitle: conversation.config.planMode
-        ? 'The model plans and reads, but writing files and MCP tools are refused.'
-        : 'Ask the model to propose before it acts. Reading still works.',
       onPress: () => void useChat.getState().setConfig(id, { planMode: !conversation.config.planMode }),
     },
     {
@@ -918,8 +945,8 @@ ${text}` : text);
         (conversation.config.skills ?? []).length > 0
           ? (conversation.config.skills ?? []).join(', ')
           : installedSkills.length
-            ? 'None on for this conversation'
-            : 'None written yet — Settings → Skills',
+            ? 'None on'
+            : 'None yet',
       onPress: () => setSkillMenu(true),
     },
     {
@@ -928,17 +955,13 @@ ${text}` : text);
         (conversation.config.servers ?? []).length > 0
           ? (conversation.config.servers ?? []).join(', ')
           : mcpServers.length
-            ? 'None on for this conversation'
-            : 'None added yet — Settings → MCP servers',
+            ? 'None on'
+            : 'None yet',
       onPress: () => setServerMenu(true),
     },
     {
       label: 'Project',
-      subtitle: currentProject
-        ? `${currentProject.name} — its instructions and documents are in every turn`
-        : projects.length
-          ? 'Not in a project'
-          : 'None yet — Settings → Projects',
+      subtitle: currentProject ? currentProject.name : projects.length ? 'Not in a project' : 'None yet',
       onPress: () => {
         void useProjects.getState().load();
         setProjectMenu(true);
@@ -956,12 +979,11 @@ ${text}` : text);
     },
     {
       label: 'Bring in a message…',
-      subtitle: 'Quotes something from another chat into this draft.',
       onPress: () => setReference(true),
     },
     {
       label: 'Prompt library…',
-      subtitle: library.length ? `${library.length} saved` : 'None yet — Settings → Prompts',
+      subtitle: library.length ? `${library.length} saved` : 'None yet',
       onPress: () => {
         void usePrompts.getState().load();
         setLibraryOpen(true);
@@ -969,7 +991,6 @@ ${text}` : text);
     },
     {
       label: 'Export…',
-      subtitle: 'Markdown or JSON. Attachments and keys are left out.',
       onPress: () => setExportOpen(true),
     },
     { label: 'Delete conversation', destructive: true, onPress: confirmDeleteConversation },
@@ -1313,6 +1334,65 @@ ${result.content}` : result.content);
     }
   })();
 
+  /**
+   * The app's other places, for the drawer.
+   *
+   * Built here rather than inside `Sidebar` because routing is the screen's job and
+   * two of these are not routes at all — files is a sheet, and projects wants its
+   * store loaded before the screen it lands on renders empty. The details are counts
+   * already in hand; nothing here fetches to fill a subtitle.
+   */
+  const sidebarLinks: readonly SidebarLink[] = [
+    {
+      label: 'Projects',
+      ...(currentProject ? { detail: currentProject.name } : projects.length ? { detail: String(projects.length) } : {}),
+      onPress: () => {
+        setSidebar(false);
+        void useProjects.getState().load();
+        router.push('/settings/projects');
+      },
+    },
+    {
+      label: 'Files',
+      onPress: () => {
+        setSidebar(false);
+        openFiles();
+      },
+    },
+    {
+      label: 'Skills',
+      ...(installedSkills.length ? { detail: String(installedSkills.length) } : {}),
+      onPress: () => {
+        setSidebar(false);
+        router.push('/settings/skills');
+      },
+    },
+    {
+      label: 'Prompts',
+      ...(library.length ? { detail: String(library.length) } : {}),
+      onPress: () => {
+        setSidebar(false);
+        void usePrompts.getState().load();
+        router.push('/settings/prompts');
+      },
+    },
+    {
+      label: 'Memory',
+      ...(memoryEnabled ? {} : { detail: 'Off' }),
+      onPress: () => {
+        setSidebar(false);
+        router.push('/settings/memory');
+      },
+    },
+    {
+      label: 'Usage',
+      onPress: () => {
+        setSidebar(false);
+        router.push('/settings/usage');
+      },
+    },
+  ];
+
   /* ---------------------------------------------------------------------- */
 
   return (
@@ -1330,7 +1410,9 @@ ${result.content}` : result.content);
           // it was only visible two taps deep, in the ⋯ menu. Sending a long prompt
           // to the wrong one costs real money, so it is on screen.
           headerTitle: () => (
-            <View style={{ gap: 1 }}>
+            // `minWidth: 0` so the two lines actually truncate instead of pushing the
+            // header's own row wider than the ☰ and ⋯ leave room for.
+            <View style={{ gap: 1, flexShrink: 1, minWidth: 0 }}>
               <Body size="md" weight="400" numberOfLines={1} style={{ fontFamily: t.serifFont }}>
                 {conversation.title}
               </Body>
@@ -1374,57 +1456,67 @@ ${result.content}` : result.content);
         }}
       />
 
-      <FlashList
-        data={messages}
-        extraData={extraData}
-        keyExtractor={(item) => item.id}
-        // Recycle a user bubble only onto another user bubble. The two roles have
-        // very different subtrees — an assistant message carries markdown, a
-        // reasoning pane and a usage footer — so reusing one for the other throws
-        // away the whole view tree on the way past, which is the difference
-        // between a smooth 1,000-message scroll and a visibly hitching one. An
-        // errored turn gets its own pool for the same reason.
-        getItemType={(item) => (item.error ? 'error' : item.role)}
-        renderItem={renderItem}
-        maintainVisibleContentPosition={{ startRenderingFromBottom: true, autoscrollToBottomThreshold: 0.2 }}
-        contentContainerStyle={{ padding: t.spacing.md }}
-        // Dragging the transcript puts the keyboard away with the gesture instead of
-        // requiring a separate tap, and a tap on a message action still lands rather
-        // than being swallowed by the dismiss.
-        keyboardDismissMode="interactive"
-        keyboardShouldPersistTaps="handled"
-        ItemSeparatorComponent={() => <View style={{ height: t.spacing.lg }} />}
-        ListEmptyComponent={
-          stream ? null : (
-            <Empty
-              title="Nothing here yet"
-              body={`Send a message and ${conversation.model} answers below.`}
-            />
-          )
-        }
-        ListFooterComponent={
-          stream ? (
-            <View style={{ paddingTop: messages.length ? t.spacing.lg : 0 }}>
-              <StreamView
-                stream={stream}
-                showThinking={thinkingExpanded || stream.text.length === 0}
-                onStop={() => abort(id)}
-                onDismiss={() => dismissError(id)}
-                {...(stream.error !== undefined
-                  ? {
-                      onRetry: () => void useChat.getState().retryTurn(id),
-                      // A rejected parameter is fixable, and the fix is in a sheet the
-                      // banner can open. Without this the user has to guess which of
-                      // the ⋯ entries owns `temperature`.
-                      onEditRequest: openModelControls,
-                    }
-                  : {})}
+      <View style={{ flex: 1 }}>
+        <FlashList
+          data={messages}
+          extraData={extraData}
+          keyExtractor={(item) => item.id}
+          // Recycle a user bubble only onto another user bubble. The two roles have
+          // very different subtrees — an assistant message carries markdown, a
+          // reasoning pane and a usage footer — so reusing one for the other throws
+          // away the whole view tree on the way past, which is the difference
+          // between a smooth 1,000-message scroll and a visibly hitching one. An
+          // errored turn gets its own pool for the same reason.
+          getItemType={(item) => (item.error ? 'error' : item.role)}
+          renderItem={renderItem}
+          maintainVisibleContentPosition={{ startRenderingFromBottom: true, autoscrollToBottomThreshold: 0.2 }}
+          contentContainerStyle={{ padding: t.spacing.md }}
+          // Dragging the transcript puts the keyboard away with the gesture instead of
+          // requiring a separate tap, and a tap on a message action still lands rather
+          // than being swallowed by the dismiss.
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
+          ItemSeparatorComponent={() => <View style={{ height: t.spacing.lg }} />}
+          ListEmptyComponent={
+            stream ? null : (
+              <Empty
+                title="Nothing here yet"
+                body={`Send a message and ${conversation.model} answers below.`}
               />
-            </View>
-          ) : null
-        }
-      />
+            )
+          }
+          ListFooterComponent={
+            stream ? (
+              <View style={{ paddingTop: messages.length ? t.spacing.lg : 0 }}>
+                <StreamView
+                  stream={stream}
+                  showThinking={thinkingExpanded || stream.text.length === 0}
+                  onStop={() => abort(id)}
+                  onDismiss={() => dismissError(id)}
+                  {...(stream.error !== undefined
+                    ? {
+                        onRetry: () => void useChat.getState().retryTurn(id),
+                        // A rejected parameter is fixable, and the fix is in a sheet the
+                        // banner can open. Without this the user has to guess which of
+                        // the ⋯ entries owns `temperature`.
+                        onEditRequest: openModelControls,
+                      }
+                    : {})}
+                />
+              </View>
+            ) : null
+          }
+        />
 
+        {/* The drawer's edge. Last child, so it is above the list; as wide as the
+            transcript's own padding, so a tap that lands in it would have landed on
+            padding anyway. Over the transcript only — the composer's attach button is
+            in the same corner. */}
+        <View
+          {...edgePan.panHandlers}
+          style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: t.spacing.md }}
+        />
+      </View>
       <View style={{ paddingBottom: keyboardHeight > 0 ? keyboardHeight : insets.bottom, gap: t.spacing.sm }}>
         {/* Above the composer rather than at the top of the screen: it is a
             statement about what will happen when you press send. */}
@@ -1464,6 +1556,7 @@ ${result.content}` : result.content);
       <Sidebar
         visible={sidebar}
         currentId={id}
+        links={sidebarLinks}
         onClose={() => setSidebar(false)}
         onOpen={switchTo}
         onNew={startAnother}

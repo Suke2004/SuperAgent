@@ -13,6 +13,7 @@
  */
 
 import { Stack } from 'expo-router';
+import type { ErrorBoundaryProps } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, AppState, Pressable, Text, View } from 'react-native';
@@ -108,6 +109,39 @@ function Locked({ onUnlock }: { onUnlock: () => void }) {
         style={{ paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10, backgroundColor: '#d97757' }}
       >
         <Text style={{ color: '#262624', fontSize: 16 }}>Unlock</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+/**
+ * The last resort.
+ *
+ * A thrown render was taking the whole app out — a blank screen and then the process
+ * gone, with nothing on screen to say why. Exported under this name because
+ * expo-router looks for it and wraps this segment's routes in a boundary for us,
+ * which is a boundary the app cannot forget to mount.
+ *
+ * Hardcoded colours and no `useTheme`, for the same reason as {@link Booting}: the
+ * thing that threw may be inside the theme, and a fallback that can itself throw is
+ * not a fallback. The message is shown because "it broke" with no detail is what
+ * makes a crash unreportable; `retry` remounts the route, which is enough for the
+ * common case of a screen that choked on one bad record.
+ */
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return (
+    <View style={{ flex: 1, justifyContent: 'center', gap: 20, padding: 24, backgroundColor: '#262624' }}>
+      <Text style={{ color: '#f5f4ef', fontSize: 20 }}>That screen stopped working</Text>
+      <Text selectable style={{ color: '#b7b5ad', fontSize: 13, fontFamily: 'monospace' }}>
+        {error.message}
+      </Text>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Try again"
+        onPress={() => void retry()}
+        style={{ alignSelf: 'flex-start', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 10, backgroundColor: '#d97757' }}
+      >
+        <Text style={{ color: '#262624', fontSize: 16 }}>Try again</Text>
       </Pressable>
     </View>
   );

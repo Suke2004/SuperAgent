@@ -39,12 +39,6 @@ export default function Appearance() {
       <Section title="Message rendering">
         <SwitchRow
           first
-          label="Render markdown"
-          subtitle="Off shows the raw text the model actually produced — useful when a table or code fence looks wrong."
-          value={settings.renderMarkdown}
-          onChange={(v) => settings.set('renderMarkdown', v)}
-        />
-        <SwitchRow
           label="Expand reasoning by default"
           subtitle="The collapsed/expanded choice is remembered either way."
           value={settings.showThinkingByDefault}
