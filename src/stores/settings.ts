@@ -28,6 +28,15 @@ export interface SettingsState {
   debugLogEnabled: boolean;
   /** Mirror debug entries to the Metro console too. */
   debugMirrorToConsole: boolean;
+  /**
+   * Add "Developer details" to a message's ⋯ menu.
+   *
+   * Off by default, and not because it is dangerous — it shows the raw request and
+   * response for one reply, and everything it shows is already redacted. It is off
+   * because it is an eighth item in a menu most people use to copy text, and reading
+   * a `messages` array is not something a non-developer ever wants to do by accident.
+   */
+  devPanelEnabled: boolean;
   /** Fall back to the backup domain when the primary is unreachable. */
   autoFailover: boolean;
   /** Cap on agentic tool-use rounds per turn. */
@@ -134,6 +143,7 @@ const DEFAULTS = {
   contextWarnAt: 0.8,
   debugLogEnabled: true,
   debugMirrorToConsole: false,
+  devPanelEnabled: false,
   autoFailover: true,
   maxToolIterations: 8,
   confirmToolCalls: true,

@@ -141,6 +141,16 @@ export interface MessageMeta {
   aborted?: boolean;
   /** The base URL used, when it differed from the profile's primary. */
   failedOverTo?: string;
+  /**
+   * Debug log ids of the HTTP requests this turn opened, for the developer panel.
+   *
+   * Ids, not payloads: the bodies are large, they are already in `@/lib/log`'s ring
+   * buffer with the key redacted, and copying them into every row would put an
+   * unredacted-by-accident request one schema change away from being on disk
+   * forever. The cost is that the panel has nothing to show after a restart, which
+   * is the right trade for a debugging aid.
+   */
+  requestIds?: string[];
 }
 
 export interface StoredMessage {

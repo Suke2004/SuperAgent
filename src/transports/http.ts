@@ -103,6 +103,8 @@ export interface SendOptions {
   optionalParams?: readonly string[];
   onParamDropped?: (info: ParamDropInfo) => void;
   onRetry?: (info: RetryAttempt) => void;
+  /** Called with the debug log id of every request opened, including retries. */
+  onRequest?: (id: string) => void;
   retryPolicy?: RetryPolicy;
 }
 
@@ -395,6 +397,7 @@ export class HttpClient {
       ...(body ? { body } : {}),
       ...(droppedParam ? { droppedParam } : {}),
     });
+    options.onRequest?.(entry.id);
 
     // Connect timeout only. Once headers arrive the idle timeout takes over, so a
     // legitimately long stream is never cut off by a total-duration limit.

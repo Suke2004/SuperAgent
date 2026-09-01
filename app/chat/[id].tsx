@@ -152,6 +152,7 @@ export default function ChatScreen() {
   const memoryEnabled = useSettings((s) => s.memoryEnabled);
   const contextStrategy = useSettings((s) => s.contextStrategy);
   const allowRunCode = useSettings((s) => s.allowRunCode);
+  const devPanel = useSettings((s) => s.devPanelEnabled);
 
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -808,6 +809,17 @@ ${text}` : text);
         destructive: true,
         onPress: () => confirmDelete(message),
       },
+      // Last, and only for the person who switched it on: the ⋯ menu is where text is
+      // copied from, not where an API payload is read.
+      ...(devPanel && message.role === 'assistant'
+        ? [
+            {
+              label: 'Developer details',
+              subtitle: 'Raw request and response, tokens, latency, copy as curl.',
+              onPress: () => router.push({ pathname: '/chat/inspect', params: { c: id, m: message.id } }),
+            } satisfies SheetAction,
+          ]
+        : []),
     ];
   };
 

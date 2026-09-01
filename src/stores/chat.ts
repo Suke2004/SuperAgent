@@ -186,6 +186,15 @@ export interface StreamState {
 interface LiveStream extends Omit<StreamState, 'toolCalls'> {
   /** Tool call scratch space, indexed by the stream's block index. */
   toolIndex: Map<number, PartialToolCall>;
+  /**
+   * Debug log ids of the HTTP requests this turn opened, in order.
+   *
+   * On the live accumulator rather than in `runTurn`'s body because the failure path
+   * writes its own row from `live`, and a turn that failed is the one whose raw
+   * request a developer most wants to read. Not in {@link StreamState}: nothing on
+   * screen shows this while the answer is arriving.
+   */
+  requestIds: string[];
   thinkingSignature?: string;
   redactedThinking: string[];
   /** Provider-side tool blocks, in the order the provider ran them. */
@@ -1234,6 +1243,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     citations: [],
     usage: {},
     droppedParams: [],
+    requestIds: [],
     stopReason: 'unknown',
     aborting: false,
   };
@@ -1442,6 +1452,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
           live.retry = { ...info, at: Date.now() };
           publish(true);
         },
+        onRequest: (requestId) => live.requestIds.push(requestId),
       })) {
         if (!yielded) {
           yielded = true;
@@ -1489,6 +1500,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     const blocks = blocksOf(live);
     const meta: MessageMeta = {};
     if (live.droppedParams.length) meta.droppedParams = live.droppedParams.map((d) => d.param);
+    if (live.requestIds.length) meta.requestIds = [...live.requestIds];
     if (options.modelOverride) meta.modelOverride = true;
     if (options.regeneratedFrom) meta.regeneratedFrom = options.regeneratedFrom;
     if (request.reasoning?.effort) meta.effort = request.reasoning.effort;
@@ -1687,6 +1699,7 @@ async function handleTurnFailure(
   const meta: MessageMeta = {};
   if (aborted) meta.aborted = true;
   if (live.droppedParams.length) meta.droppedParams = live.droppedParams.map((d) => d.param);
+  if (live.requestIds.length) meta.requestIds = [...live.requestIds];
   if (options.modelOverride) meta.modelOverride = true;
   if (live.failover) meta.failedOverTo = live.failover.to;
 
