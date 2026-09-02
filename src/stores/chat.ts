@@ -211,6 +211,41 @@ interface LiveStream extends Omit<StreamState, 'toolCalls'> {
 
 const controllers = new Map<string, AbortController>();
 
+/**
+ * Conversations with a turn in flight, claimed synchronously.
+ *
+ * `streams[conversationId]` is the *published* marker, and it does not exist yet for
+ * the whole prologue of a send: storing the user's row, re-reading the conversation
+ * and possibly renaming it are three awaits of real SQLite before `runTurn` publishes
+ * anything. A second tap on Send inside that window passed a `streams` check, stored
+ * the draft a second time and started a second turn on the same conversation — which
+ * then overwrote the first's entry in {@link controllers}, so Stop could only reach
+ * one of the two. The same window reopens between tool rounds, where the stream is
+ * cleared before the results are written and the next round begins.
+ *
+ * A `Set` rather than more state in the store: nothing renders from this, and the
+ * point is that the claim lands in the same tick as the check.
+ */
+const inFlight = new Set<string>();
+
+/**
+ * Runs `body` unless this conversation is already busy.
+ *
+ * Wraps the actions that start a turn, not `runTurn` itself: by the time `runTurn` is
+ * reached the duplicate user message has already been written, and the recursive tool
+ * and `pause_turn` rounds run *inside* the caller's claim, which is what keeps them
+ * covered too.
+ */
+async function once(conversationId: string, body: () => Promise<void>): Promise<void> {
+  if (inFlight.has(conversationId)) return;
+  inFlight.add(conversationId);
+  try {
+    await body();
+  } finally {
+    inFlight.delete(conversationId);
+  }
+}
+
 function snapshot(live: LiveStream): StreamState {
   const state: StreamState = {
     conversationId: live.conversationId,
@@ -707,119 +742,127 @@ export const useChat = create<ChatState>()((set, get) => ({
   },
 
   async send(conversationId, options) {
-    if (get().streams[conversationId]) return;
+    return once(conversationId, async () => {
+      if (get().streams[conversationId]) return;
 
-    const content: ContentBlock[] = [];
-    const text = options.text.trim();
-    if (text) content.push({ type: 'text', text });
-    if (options.attachments?.length) content.push(...options.attachments);
-    if (!content.length) return;
+      const content: ContentBlock[] = [];
+      const text = options.text.trim();
+      if (text) content.push({ type: 'text', text });
+      if (options.attachments?.length) content.push(...options.attachments);
+      if (!content.length) return;
 
-    // The conversation is moving past the last reply, so its alternatives go now.
-    // Keeping them would leave rows that no longer answer anything, and a later
-    // regenerate could page one of them back into a history it was never written
-    // for.
-    if (get().variants[conversationId]?.variants.length) {
-      await dropHiddenMessages(conversationId);
-      set((state) => ({ variants: { ...state.variants, [conversationId]: { answersId: '', variants: [] } } }));
-    }
+      // The conversation is moving past the last reply, so its alternatives go now.
+      // Keeping them would leave rows that no longer answer anything, and a later
+      // regenerate could page one of them back into a history it was never written
+      // for.
+      if (get().variants[conversationId]?.variants.length) {
+        await dropHiddenMessages(conversationId);
+        set((state) => ({ variants: { ...state.variants, [conversationId]: { answersId: '', variants: [] } } }));
+      }
 
-    const message = await appendMessage(conversationId, { role: 'user', content });
-    appendToTranscript(set, conversationId, message);
-    // Both drafts clear together, and only after the row is stored: an attachment
-    // dropped from the staging area before its message exists is a photo the user
-    // has to take again.
-    set((state) => {
-      const attachments = { ...state.attachments };
-      delete attachments[conversationId];
-      return { drafts: { ...state.drafts, [conversationId]: '' }, attachments };
-    });
+      const message = await appendMessage(conversationId, { role: 'user', content });
+      appendToTranscript(set, conversationId, message);
+      // Both drafts clear together, and only after the row is stored: an attachment
+      // dropped from the staging area before its message exists is a photo the user
+      // has to take again.
+      set((state) => {
+        const attachments = { ...state.attachments };
+        delete attachments[conversationId];
+        return { drafts: { ...state.drafts, [conversationId]: '' }, attachments };
+      });
 
-    // First message names the conversation, so the list is readable without the
-    // user having to rename anything.
-    const conversation = await getConversation(conversationId);
-    if (conversation && conversation.title === DEFAULT_TITLE && text) {
-      await get().rename(conversationId, deriveTitle(text));
-    }
+      // First message names the conversation, so the list is readable without the
+      // user having to rename anything.
+      const conversation = await getConversation(conversationId);
+      if (conversation && conversation.title === DEFAULT_TITLE && text) {
+        await get().rename(conversationId, deriveTitle(text));
+      }
 
-    await runTurn(set, get, conversationId, {
-      ...(options.modelOverride ? { modelOverride: options.modelOverride } : {}),
+      await runTurn(set, get, conversationId, {
+        ...(options.modelOverride ? { modelOverride: options.modelOverride } : {}),
+      });
     });
   },
 
   async regenerate(conversationId, messageId) {
-    if (get().streams[conversationId]) return;
-    const messages = get().messages[conversationId] ?? (await listMessages(conversationId));
-    const target = messages.find((m) => m.id === messageId);
-    if (!target) return;
+    return once(conversationId, async () => {
+      if (get().streams[conversationId]) return;
+      const messages = get().messages[conversationId] ?? (await listMessages(conversationId));
+      const target = messages.find((m) => m.id === messageId);
+      if (!target) return;
 
-    // Regenerating an assistant reply rewinds to it; regenerating a user message
-    // means "answer this again", so the rewind starts after it. The `inclusive`
-    // flag is the whole mechanism — this used to also add `Number.EPSILON` to the
-    // seq for the exclusive case, which expressed the intent but did nothing: one
-    // ULP of a seq above 4 is larger than EPSILON, so the addition rounded away.
-    const inclusive = target.role === 'assistant';
-    const answersId = inclusive ? slotOf(messages, target.seq) : target.id;
+      // Regenerating an assistant reply rewinds to it; regenerating a user message
+      // means "answer this again", so the rewind starts after it. The `inclusive`
+      // flag is the whole mechanism — this used to also add `Number.EPSILON` to the
+      // seq for the exclusive case, which expressed the intent but did nothing: one
+      // ULP of a seq above 4 is larger than EPSILON, so the addition rounded away.
+      const inclusive = target.role === 'assistant';
+      const answersId = inclusive ? slotOf(messages, target.seq) : target.id;
 
-    // Only the reply at the end of the conversation keeps its alternatives. Further
-    // back, the turns after it were written against the answer being replaced, so
-    // there is no history in which both versions make sense — that stays the
-    // destructive rewind it has always been.
-    if (!answersId || slotOf(messages, Number.POSITIVE_INFINITY) !== answersId) {
-      await deleteMessagesFrom(conversationId, target.seq, inclusive);
+      // Only the reply at the end of the conversation keeps its alternatives. Further
+      // back, the turns after it were written against the answer being replaced, so
+      // there is no history in which both versions make sense — that stays the
+      // destructive rewind it has always been.
+      if (!answersId || slotOf(messages, Number.POSITIVE_INFINITY) !== answersId) {
+        await deleteMessagesFrom(conversationId, target.seq, inclusive);
+        await get().reload(conversationId);
+        await runTurn(set, get, conversationId, { regeneratedFrom: messageId });
+        return;
+      }
+
+      const previous = await setTurnAside(conversationId, target.seq, inclusive, answersId);
+      log.debug('chat', 'Kept the previous reply as a variant', { turnId: previous });
       await get().reload(conversationId);
-      await runTurn(set, get, conversationId, { regeneratedFrom: messageId });
-      return;
-    }
-
-    const previous = await setTurnAside(conversationId, target.seq, inclusive, answersId);
-    log.debug('chat', 'Kept the previous reply as a variant', { turnId: previous });
-    await get().reload(conversationId);
-    await runTurn(set, get, conversationId, { regeneratedFrom: messageId, turnId: newId('turn_'), answersId });
-    // The new pass's rows are in the transcript already, but its `turn_id` only
-    // becomes a *choice* once the variant set is re-read.
-    await get().reload(conversationId);
-
-    // A turn that wrote nothing at all — a connection that failed before the first
-    // token, or a stop pressed on an empty reply — would otherwise leave the slot
-    // with every variant hidden: the old answer still in the database, and no arrow
-    // on screen able to reach it. Put it back. `selectTurn` directly rather than the
-    // action, because a failed turn keeps its stream entry and the action refuses to
-    // run while one exists.
-    const slot = get().variants[conversationId];
-    const newest = slot?.variants[slot.variants.length - 1];
-    if (slot && newest && !slot.variants.some((v) => v.selected)) {
-      await selectTurn(conversationId, slot.answersId, newest.turnId);
+      await runTurn(set, get, conversationId, { regeneratedFrom: messageId, turnId: newId('turn_'), answersId });
+      // The new pass's rows are in the transcript already, but its `turn_id` only
+      // becomes a *choice* once the variant set is re-read.
       await get().reload(conversationId);
-    }
+
+      // A turn that wrote nothing at all — a connection that failed before the first
+      // token, or a stop pressed on an empty reply — would otherwise leave the slot
+      // with every variant hidden: the old answer still in the database, and no arrow
+      // on screen able to reach it. Put it back. `selectTurn` directly rather than the
+      // action, because a failed turn keeps its stream entry and the action refuses to
+      // run while one exists.
+      const slot = get().variants[conversationId];
+      const newest = slot?.variants[slot.variants.length - 1];
+      if (slot && newest && !slot.variants.some((v) => v.selected)) {
+        await selectTurn(conversationId, slot.answersId, newest.turnId);
+        await get().reload(conversationId);
+      }
+    });
   },
 
   async selectVariant(conversationId, index) {
-    if (get().streams[conversationId]) return;
-    const slot = get().variants[conversationId];
-    const chosen = slot?.variants[index];
-    if (!slot || !chosen || chosen.selected) return;
-    await selectTurn(conversationId, slot.answersId, chosen.turnId);
-    await get().reload(conversationId);
+    return once(conversationId, async () => {
+      if (get().streams[conversationId]) return;
+      const slot = get().variants[conversationId];
+      const chosen = slot?.variants[index];
+      if (!slot || !chosen || chosen.selected) return;
+      await selectTurn(conversationId, slot.answersId, chosen.turnId);
+      await get().reload(conversationId);
+    });
   },
 
   async editAndResend(conversationId, messageId, text) {
-    if (get().streams[conversationId]) return;
-    const messages = get().messages[conversationId] ?? (await listMessages(conversationId));
-    const target = messages.find((m) => m.id === messageId);
-    if (!target) return;
+    return once(conversationId, async () => {
+      if (get().streams[conversationId]) return;
+      const messages = get().messages[conversationId] ?? (await listMessages(conversationId));
+      const target = messages.find((m) => m.id === messageId);
+      if (!target) return;
 
-    // Keep any non-text blocks — re-attaching images to fix a typo would be a
-    // miserable way to spend a Tuesday.
-    const kept = target.content.filter((block) => block.type !== 'text');
-    const content: ContentBlock[] = text.trim() ? [{ type: 'text', text: text.trim() }, ...kept] : kept;
-    if (!content.length) return;
+      // Keep any non-text blocks — re-attaching images to fix a typo would be a
+      // miserable way to spend a Tuesday.
+      const kept = target.content.filter((block) => block.type !== 'text');
+      const content: ContentBlock[] = text.trim() ? [{ type: 'text', text: text.trim() }, ...kept] : kept;
+      if (!content.length) return;
 
-    const meta: MessageMeta = { ...target.meta, editedAt: Date.now() };
-    await updateMessage(messageId, { content, meta });
-    await deleteMessagesFrom(conversationId, target.seq, false);
-    await get().reload(conversationId);
-    await runTurn(set, get, conversationId, {});
+      const meta: MessageMeta = { ...target.meta, editedAt: Date.now() };
+      await updateMessage(messageId, { content, meta });
+      await deleteMessagesFrom(conversationId, target.seq, false);
+      await get().reload(conversationId);
+      await runTurn(set, get, conversationId, {});
+    });
   },
 
   async editInPlace(conversationId, messageId, text) {
@@ -839,9 +882,16 @@ export const useChat = create<ChatState>()((set, get) => ({
    * sent. `toUnifiedMessages` already filters on this flag, so the whole mechanism
    * existed except for a way to set it. Useful for pruning a long tool transcript
    * or a wrong turn without losing the record of what happened.
+   *
+   * Recorded twice on purpose. `excluded` is the column everything downstream
+   * reads, and the trim ladder writes it too — recomputing it from scratch on every
+   * send, which used to undo this the moment the user sent their next message.
+   * {@link MessageMeta.userExcluded} is what tells the two apart.
    */
   async setExcluded(conversationId, messageId, excluded) {
-    await updateMessage(messageId, { excluded });
+    const messages = get().messages[conversationId] ?? (await listMessages(conversationId));
+    const target = messages.find((m) => m.id === messageId);
+    await updateMessage(messageId, { excluded, meta: { ...target?.meta, userExcluded: excluded } });
     await get().reload(conversationId);
   },
 
@@ -896,9 +946,11 @@ export const useChat = create<ChatState>()((set, get) => ({
   },
 
   async continueTurn(conversationId) {
-    if (get().streams[conversationId]) return;
-    get().dismissContextNote(conversationId);
-    await runTurn(set, get, conversationId, {});
+    return once(conversationId, async () => {
+      if (get().streams[conversationId]) return;
+      get().dismissContextNote(conversationId);
+      await runTurn(set, get, conversationId, {});
+    });
   },
 
   dismissContextNote(conversationId) {
@@ -1937,7 +1989,13 @@ async function applyContextStrategy(input: StrategyInput): Promise<StrategyResul
   // Built by hand rather than through `toUnifiedMessages`, which filters out
   // already-excluded rows: the indices returned by the budget selector have to
   // line up with `eligible` for the dropped set to name the right messages.
-  const eligible = stored.filter((m) => m.content.length > 0);
+  //
+  // A row the *user* excluded is not eligible at all — not on the wire, and not
+  // passed to `setExclusions`, which is what keeps the recomputation below from
+  // resetting a flag it did not set. Trim-set exclusions are deliberately not
+  // filtered here: those are this function's own previous answer, and it recomputes
+  // them from scratch so a bigger window brings those turns back.
+  const eligible = stored.filter((m) => m.content.length > 0 && !m.meta?.userExcluded);
   const all: UnifiedMessage[] = eligible.map((m) => ({ role: m.role, content: m.content }));
 
   const sendEverything = async (): Promise<StrategyResult> => ({

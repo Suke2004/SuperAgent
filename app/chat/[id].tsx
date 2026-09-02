@@ -595,10 +595,15 @@ export default function ChatScreen() {
   );
 
   /**
-   * The arithmetic behind one row's `~$…`, spelled out.
+   * The arithmetic behind one row's `~…`, spelled out.
    *
    * Built here rather than in the sheet because it needs the pricing entry for the
    * *message's* model, which only this screen can look up.
+   *
+   * Unit-free on purpose, like the row it explains: the two rates are whatever the user
+   * typed on the model screen, which does not ask for a currency because a New API
+   * gateway bills in whatever it bills in. "per million input tokens" is the unit that
+   * is actually known here.
    */
   const costExplanation = useMemo<string | undefined>(() => {
     if (!costFor) return undefined;
@@ -611,8 +616,8 @@ export default function ChatScreen() {
     }
     const inputTokens = (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
     return [
-      `${modelId}: $${pricing.inputPerMTok} per million input tokens, $${pricing.outputPerMTok} per million output.`,
-      `${formatTokens(inputTokens)} in × input rate = $${formatCost(cost.input)}. ${formatTokens(usage.output ?? 0)} out × output rate = $${formatCost(cost.output)}. Total ~$${formatCost(cost.total)}.`,
+      `${modelId}: ${pricing.inputPerMTok} per million input tokens, ${pricing.outputPerMTok} per million output.`,
+      `${formatTokens(inputTokens)} in × input rate = ${formatCost(cost.input)}. ${formatTokens(usage.output ?? 0)} out × output rate = ${formatCost(cost.output)}. Total ~${formatCost(cost.total)}.`,
       usage.cacheRead || usage.cacheWrite
         ? 'Cached tokens are charged at the full input rate here: both vendors discount them, but a gateway\'s own markup is not knowable from the app, so this figure is an upper bound.'
         : '',
@@ -2180,11 +2185,11 @@ ${result.content}` : result.content);
         }}
       />
 
-      {/* Where `~$0.0042` comes from, said once, on demand.
+      {/* Where `~0.0042` comes from, said once, on demand.
           The number is arithmetic on a price table this app cannot verify: the
           gateway does not publish rates, so the table is hand-entered and may be
           stale, wrong for a re-routed model, or missing the gateway's own markup.
-          A row that shows a dollar figure without a way to learn that is claiming
+          A row that shows a cost figure without a way to learn that is claiming
           more than it knows. */}
       <Sheet
         visible={costFor !== null}

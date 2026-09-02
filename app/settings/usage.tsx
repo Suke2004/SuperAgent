@@ -138,8 +138,9 @@ export default function UsageScreen() {
       </Section>
 
       <Note tone="info">
-        Costs come from the price table you can edit in Settings → Models. A bucket marked “partial” had turns whose
-        model has no rates entered.
+        Costs come from the price table you can edit in Settings → Models, in whatever currency your gateway bills — the
+        rates are typed in by hand, so no symbol is shown here. A bucket marked “partial” had turns whose model has no
+        rates entered.
       </Note>
 
       <Section title="Pricing">
@@ -162,5 +163,8 @@ function tokens(bucket: UsageBucket): string {
 function cost(bucket: UsageBucket): string {
   if (bucket.cost === null) return 'No rates';
   const amount = bucket.cost < 0.01 ? bucket.cost.toFixed(4) : bucket.cost.toFixed(2);
-  return `~$${amount}${bucket.partialCost ? ' partial' : ''}`;
+  // No currency symbol. The rates behind this are typed in by hand on the model screen,
+  // which deliberately does not ask which currency they are in — a New API gateway bills
+  // in whatever it bills in — so printing `$` here invents a fact about someone's money.
+  return `~${amount}${bucket.partialCost ? ' partial' : ''}`;
 }

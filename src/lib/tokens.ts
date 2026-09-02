@@ -313,6 +313,32 @@ export interface CostBreakdown {
 }
 
 /**
+ * The two prices as a user typed them, or the reason they cannot be used.
+ *
+ * `ok` with no `pricing` is the documented way to clear a price: both fields blank means
+ * "report usage in tokens only, not a guess". A pair where only *one* side parses is
+ * neither of those, and naming it is the point of this function — the model screen used to
+ * let that case fall between its two branches and silently do nothing, leaving a typed
+ * number on screen and no pricing in the registry. Coercing the missing side to 0 would be
+ * worse than a message: it reports one direction as free.
+ */
+export function readPricing(
+  input: string,
+  output: string,
+): { ok: true; pricing?: ModelPricing } | { ok: false; issue: string } {
+  if (!input.trim() && !output.trim()) return { ok: true };
+  const inputPerMTok = Number.parseFloat(input);
+  const outputPerMTok = Number.parseFloat(output);
+  if (![inputPerMTok, outputPerMTok].every((value) => Number.isFinite(value) && value >= 0)) {
+    return {
+      ok: false,
+      issue: 'Both prices are needed, as numbers of 0 or more. Clear both to report usage in tokens only.',
+    };
+  }
+  return { ok: true, pricing: { inputPerMTok, outputPerMTok } };
+}
+
+/**
  * Cost for a usage record, or `null` when pricing is unknown.
  *
  * `null` rather than 0 on purpose: the registry leaves pricing blank by default

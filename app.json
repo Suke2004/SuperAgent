@@ -11,7 +11,7 @@
     ],
     "android": {
       "package": "org.lyric.agentrouter",
-      "versionCode": 1,
+      "versionCode": 4,
       "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#262624",

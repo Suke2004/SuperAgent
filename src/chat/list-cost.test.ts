@@ -66,10 +66,15 @@ function markdown(i: number): string {
   ].join('\n');
 }
 
-function elapsed(work: () => void): number {
-  const started = performance.now();
-  work();
-  return performance.now() - started;
+/** The cost of the fastest of `runs` attempts. See the module comment. */
+function fastest(work: () => void, runs = 3): number {
+  let best = Infinity;
+  for (let run = 0; run < runs; run++) {
+    const started = performance.now();
+    work();
+    best = Math.min(best, performance.now() - started);
+  }
+  return best;
 }
 
 /**

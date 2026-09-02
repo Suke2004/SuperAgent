@@ -247,6 +247,32 @@ describe('streamable HTTP', () => {
     expect((error as McpError).message).toMatch(/did not answer within/);
   });
 
+  it('applies the configured timeout to an SSE answer that never arrives, not just to the fetch', async () => {
+    const { fetchImpl } = streamableServer({});
+    // Headers arrive and say `text/event-stream`, then the body yields nothing. The
+    // fetch timeout is already spent by then — it is cleared the moment the response
+    // resolves — so this is governed by the SSE wait, which used to be a hard-coded
+    // 60s and ignored `timeoutMs` entirely. Without the fix this test times out.
+    const silentStream: ResponseLike = {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { get: (name) => (name.toLowerCase() === 'content-type' ? 'text/event-stream' : null) },
+      text: async () => '',
+      body: { getReader: () => ({ read: () => new Promise(() => undefined), cancel: () => undefined }) },
+    };
+    const hangsMidStream: FetchLike = (url, init) => {
+      const body = init.body ? (JSON.parse(init.body) as { method?: string }) : {};
+      return body.method === 'tools/call' ? Promise.resolve(silentStream) : fetchImpl(url, init);
+    };
+
+    const error = await client(hangsMidStream, { timeoutMs: 30 })
+      .callTool('search', {})
+      .catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(McpError);
+    expect((error as McpError).message).toMatch(/sent nothing/);
+  });
+
   it('says the server could not be reached when the fetch itself fails', async () => {
     const dead: FetchLike = async () => {
       throw new Error('Network request failed');

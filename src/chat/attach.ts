@@ -117,25 +117,38 @@ async function encodeImage(asset: ImagePicker.ImagePickerAsset): Promise<Encoded
   const plan = planResize({ width: asset.width, height: asset.height });
 
   const context = ImageManipulator.manipulate(asset.uri);
-  if (plan.resized) {
-    // `height: null` is the instruction to derive it from the ratio — which is what
-    // we want when the platform reported no dimensions, because the native side has
-    // the real bitmap and we do not.
-    context.resize(plan.height === null ? { width: plan.width } : { width: plan.width, height: plan.height });
+  // Both halves are `SharedObject`s holding a native bitmap — the context the
+  // full-resolution source it loaded, the render the downscaled copy — and neither is
+  // freed until the JS garbage collector gets round to the wrapper. `release()` is the
+  // API for exactly this case; expo-modules-core names an image bitmap as the example.
+  // Without it, "sequential rather than `Promise.all`" only staggers the allocations:
+  // eight picked photos still end up as sixteen live bitmaps, which is the crash the
+  // rest of this module is arranged to avoid.
+  try {
+    if (plan.resized) {
+      // `height: null` is the instruction to derive it from the ratio — which is what
+      // we want when the platform reported no dimensions, because the native side has
+      // the real bitmap and we do not.
+      context.resize(plan.height === null ? { width: plan.width } : { width: plan.width, height: plan.height });
+    }
+    const rendered = await context.renderAsync();
+    try {
+      let best: Encoded | undefined;
+      for (const compress of QUALITY_LADDER) {
+        const saved = await rendered.saveAsync({ base64: true, compress, format: SaveFormat.JPEG });
+        discard(saved.uri);
+        const data = saved.base64;
+        if (!data) continue;
+        best = { mediaType: 'image/jpeg', data };
+        if (data.length <= MAX_IMAGE_BASE64_CHARS) break;
+      }
+      return best;
+    } finally {
+      rendered.release();
+    }
+  } finally {
+    context.release();
   }
-  const rendered = await context.renderAsync();
-
-  let best: Encoded | undefined;
-  for (const compress of QUALITY_LADDER) {
-    const saved = await rendered.saveAsync({ base64: true, compress, format: SaveFormat.JPEG });
-    discard(saved.uri);
-    const data = saved.base64;
-    if (!data) continue;
-    best = { mediaType: 'image/jpeg', data };
-    if (data.length <= MAX_IMAGE_BASE64_CHARS) break;
-  }
-
-  return best;
 }
 
 /**

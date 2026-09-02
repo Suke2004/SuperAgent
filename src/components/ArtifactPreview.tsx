@@ -163,6 +163,27 @@ export function ArtifactPreview({
     );
   }, [visible, reduced]);
 
+  /**
+   * Put the scene back when this component is unmounted rather than told to hide.
+   *
+   * `CodeBlock` mounts the preview to open it and unmounts it to close — it has to, or a
+   * transcript with twenty fences in it holds twenty WebViews. So `visible: false` never
+   * arrives, the exit effect above never runs, and {@link panelProgress} is left at `1`
+   * for the rest of the session: the transcript underneath keeps the 6% shrink, the 14dp
+   * shift and the rounded corners {@link useScenePush} gave it, and the *next* preview
+   * slides in from a value that is already `1`, so it pops instead. A module value has to
+   * be returned by whoever moved it.
+   *
+   * Its own effect, not the one above: that one's cleanup would also run whenever
+   * `visible` or `reduced` changed, and undo the animation it had just started.
+   */
+  useEffect(
+    () => () => {
+      panelProgress.value = withTiming(0, { duration: duration.exit, easing: Easing.bezier(...curve.exit) });
+    },
+    [],
+  );
+
   const backdrop = useAnimatedStyle(() => ({ opacity: panelProgress.value }));
   const slide = useAnimatedStyle(() => ({
     transform: [{ translateX: width * (1 - panelProgress.value) }],

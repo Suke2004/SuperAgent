@@ -100,13 +100,19 @@ export default function ModelsScreen() {
               key={p.id}
               first={index === 0}
               label={p.name}
-              value={p.id === profileId ? 'Showing' : ''}
+              value={p.id === profile.id ? 'Showing' : ''}
               onPress={() => {
                 setProfileId(p.id);
                 setError(null);
                 setOutcome(null);
               }}
-              right={<Badge label={p.id === profileId ? '●' : '○'} tone={p.id === profileId ? 'accent' : 'neutral'} />}
+              right={
+                // Against the resolved profile, not the raw `profileId`: line 41 falls
+                // back to the first profile when the selected one has been deleted, and a
+                // marker on the raw id would leave every row hollow while the list below
+                // showed one of them.
+                <Badge label={p.id === profile.id ? '●' : '○'} tone={p.id === profile.id ? 'accent' : 'neutral'} />
+              }
             />
           ))}
         </Section>

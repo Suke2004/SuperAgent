@@ -233,10 +233,14 @@ async function restore(backup: Backup): Promise<string> {
     settings += 1;
   }
 
-  const providers = useProviders.getState();
   let addedProfiles = 0;
   for (const profile of backup.profiles) {
-    if (providers.profiles.some((existing) => existing.name === profile.name)) continue;
+    // `getState()` inside the loop, as the four loops below do: a snapshot taken before
+    // it would not contain the profiles this loop is adding, and nothing enforces unique
+    // profile names — so a file holding two called "Home" (which `duplicateProfile` and a
+    // hand-edit both produce) installed both, and the name-keyed `idOf` map below then
+    // gave one of the two every model override and left the other bare.
+    if (useProviders.getState().profiles.some((existing) => existing.name === profile.name)) continue;
     if (profile.kind !== 'anthropic' && profile.kind !== 'openai') continue;
     useProviders.getState().addProfile({
       name: profile.name,

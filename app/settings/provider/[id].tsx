@@ -79,9 +79,19 @@ export default function ProviderDetail() {
   const commit = useCallback(() => {
     if (!profile) return;
     const patch: Parameters<typeof updateProfile>[1] = {};
-    if (name.trim() && name.trim() !== profile.name) patch.name = name.trim();
-    if (baseUrl.trim() && baseUrl.trim() !== profile.baseUrl) patch.baseUrl = baseUrl.trim();
-    if (defaultModel.trim() && defaultModel.trim() !== profile.defaultModel) patch.defaultModel = defaultModel.trim();
+    // Name, base URL and default model are all `string` on the profile, never optional,
+    // so an empty one is refused — a blank `defaultModel` would hand the next new
+    // conversation an empty model (see `stores/chat.ts`). Refused *and put back*: the
+    // draft is seeded from the profile once and never re-synced, so a silently discarded
+    // edit otherwise left the field showing text the store had rejected, until the screen
+    // was left and reopened. `fallbackBaseUrl` below is the optional one, and clearing it
+    // is a real instruction rather than a mistake.
+    if (!name.trim()) setName(profile.name);
+    else if (name.trim() !== profile.name) patch.name = name.trim();
+    if (!baseUrl.trim()) setBaseUrl(profile.baseUrl);
+    else if (baseUrl.trim() !== profile.baseUrl) patch.baseUrl = baseUrl.trim();
+    if (!defaultModel.trim()) setDefaultModel(profile.defaultModel);
+    else if (defaultModel.trim() !== profile.defaultModel) patch.defaultModel = defaultModel.trim();
     const nextFallback = fallback.trim();
     if (nextFallback !== (profile.fallbackBaseUrl ?? '')) {
       patch.fallbackBaseUrl = nextFallback || undefined;

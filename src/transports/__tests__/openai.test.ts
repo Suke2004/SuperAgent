@@ -338,6 +338,16 @@ describe('translateChunk', () => {
     expect(events).toEqual([{ type: 'start', id: 'chatcmpl-1', model: 'gpt-x' }]);
   });
 
+  it('does not re-announce start on the later chunks that repeat the same id', () => {
+    // Every chunk of an OpenAI stream carries the id and model, and `start` is an
+    // event the store publishes immediately — one per chunk would re-render the
+    // transcript per chunk and undo the commit throttle for this whole transport.
+    const state = createStreamState();
+    const chunk = { id: 'chatcmpl-1', model: 'gpt-x', choices: [{ delta: { content: 'hi' } }] };
+    translateChunk({ data: JSON.stringify(chunk) }, state);
+    expect(translateChunk({ data: JSON.stringify(chunk) }, state)).toEqual([{ type: 'text_delta', text: 'hi' }]);
+  });
+
   it('ignores [DONE] and malformed frames rather than killing the stream', () => {
     const state = createStreamState();
     expect(translateChunk({ data: '[DONE]' }, state)).toEqual([]);

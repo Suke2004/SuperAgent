@@ -156,6 +156,20 @@ export interface MessageMeta {
    * is the right trade for a debugging aid.
    */
   requestIds?: string[];
+  /**
+   * Set when *the user* excluded this message, as opposed to the trim ladder.
+   *
+   * Both write the same `excluded` column, and the column alone cannot tell them
+   * apart — which is why the manual flag used to survive exactly until the next
+   * send, when `applyContextStrategy` recomputed exclusions from scratch and reset
+   * it. This is the durable half; `excluded` stays the single flag everything
+   * downstream reads, so `toUnifiedMessages` and the transcript badge need no
+   * knowledge of who set it.
+   *
+   * In `meta` rather than its own column because `meta` is schema-free JSON: no
+   * migration, and nothing to do for rows written before it existed.
+   */
+  userExcluded?: boolean;
 }
 
 export interface StoredMessage {

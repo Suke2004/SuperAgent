@@ -44,6 +44,18 @@ const FOCUSABLE = [
 export function useDialogKeys(visible: boolean, onClose: () => void) {
   const ref = useRef<View | null>(null);
 
+  // The callback is held in a ref so the trap below depends on `visible` alone.
+  // Every caller passes an inline arrow, so depending on `onClose` re-ran the effect
+  // on every render of the screen behind the sheet — and re-running it runs the
+  // cleanup, which hands focus back outside the sheet before the setup grabs the
+  // first control again. The home screen re-renders on a clock tick, so typing a new
+  // title into an open rename sheet had the caret jump out of the field roughly once
+  // a minute, on web.
+  const close = useRef(onClose);
+  useEffect(() => {
+    close.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!visible || Platform.OS !== 'web') return;
 
@@ -67,7 +79,7 @@ export function useDialogKeys(visible: boolean, onClose: () => void) {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        close.current();
         return;
       }
       if (event.key !== 'Tab') return;
@@ -98,7 +110,7 @@ export function useDialogKeys(visible: boolean, onClose: () => void) {
       document.removeEventListener('keydown', onKeyDown, true);
       restoreTo?.focus?.();
     };
-  }, [visible, onClose]);
+  }, [visible]);
 
   return ref;
 }

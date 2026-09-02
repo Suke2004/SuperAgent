@@ -26,6 +26,7 @@ import {
   SwitchRow,
 } from '@/components/ui';
 import * as haptics from '@/lib/haptics';
+import { readPricing } from '@/lib/tokens';
 import { useModels } from '@/stores/models';
 import { useProviders } from '@/stores/providers';
 import { useTheme } from '@/theme';
@@ -63,14 +64,16 @@ export default function ModelDetail() {
   const isAnthropic = profile?.kind === 'anthropic';
   const caps = entry.capabilities;
 
+  /**
+   * The two price fields, read as a pair. See {@link readPricing} for why a half-filled
+   * pair is named rather than silently dropped.
+   */
+  const price = readPricing(inputPrice, outputPrice);
+  const priceIssue = price.ok ? null : price.issue;
+
   function commitPricing() {
-    const input = Number.parseFloat(inputPrice);
-    const output = Number.parseFloat(outputPrice);
-    if (Number.isFinite(input) && Number.isFinite(output) && input >= 0 && output >= 0) {
-      setPricing(key, { inputPerMTok: input, outputPerMTok: output });
-    } else if (!inputPrice.trim() && !outputPrice.trim()) {
-      setPricing(key, undefined);
-    }
+    if (!price.ok) return;
+    setPricing(key, price.pricing);
   }
 
   return (
@@ -198,6 +201,7 @@ export default function ModelDetail() {
                   keyboardType="decimal-pad"
                   mono
                   placeholder="0.00"
+                  {...(priceIssue ? { error: priceIssue } : {})}
                 />
               </View>
               <View style={{ flex: 1 }}>
@@ -209,6 +213,7 @@ export default function ModelDetail() {
                   keyboardType="decimal-pad"
                   mono
                   placeholder="0.00"
+                  {...(priceIssue ? { error: priceIssue } : {})}
                 />
               </View>
             </Inline>

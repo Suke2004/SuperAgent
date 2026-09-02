@@ -285,12 +285,14 @@ export default function Home() {
   const refreshKeyStatus = useProviders((s) => s.refreshKeyStatus);
   const reach = useReachability((s) => s.status);
   const projects = useProjects((s) => s.projects);
+  const projectsLoaded = useProjects((s) => s.loaded);
   const projectCounts = useProjects((s) => s.counts);
 
   const [now, setNow] = useState(() => Date.now());
   const [query, setQuery] = useState('');
-  const [tag, setTag] = useState<string | undefined>(undefined);
-  const [projectId, setProjectId] = useState<string | undefined>(undefined);
+  /** Raw filter state. Read {@link tag} and {@link projectId} below instead. */
+  const [tagRaw, setTag] = useState<string | undefined>(undefined);
+  const [projectIdRaw, setProjectId] = useState<string | undefined>(undefined);
   const [found, setFound] = useState<{ query: string; tag?: string; projectId?: string; hits: SearchHit[] } | null>(
     null,
   );
@@ -332,6 +334,31 @@ export default function Home() {
   const [exportBusy, setExportBusy] = useState(false);
 
   const active = profiles.find((p) => p.id === activeId) ?? profiles[0];
+
+  const tags = useMemo(() => tagCounts(conversations), [conversations]);
+
+  /**
+   * The two filters as they can actually be applied, and what everything below reads.
+   *
+   * Either can be left pointing at something that no longer exists: a project deleted
+   * in Settings, or the last conversation carrying a tag having it dropped from the row
+   * menu. Its chip is gone by then, so an unfiltered-looking screen would show an empty
+   * list — "no conversations" rather than "a filter you can no longer see is hiding
+   * them" — and `start` below would put the next new conversation into the deleted
+   * project, writing a `project_id` no project row matches.
+   *
+   * Derived rather than cleared in an effect, for the reason given on {@link picked}
+   * below and because the React Compiler rules forbid the effect outright. Both guards
+   * are load-bearing: `projects` is `[]` until the focus effect's load resolves, and
+   * `tags` is empty whenever the list is, so an unguarded check would drop a live
+   * filter on first render. The setters keep their names — only the reads change.
+   */
+  const projectId = !projectIdRaw || (projectsLoaded && !projects.some((p) => p.id === projectIdRaw))
+    ? undefined
+    : projectIdRaw;
+  const tag = !tagRaw || (conversations.length > 0 && !tags.some((entry) => entry.tag === tagRaw))
+    ? undefined
+    : tagRaw;
 
   // Results carry the query *and the tag* that produced them, and both "which hits"
   // and "still searching" are derived from that one comparison. Storing them
@@ -397,8 +424,6 @@ export default function Home() {
     () => filterConversations(conversations, { query, ...(tag ? { tag } : {}) }),
     [conversations, query, tag],
   );
-
-  const tags = useMemo(() => tagCounts(conversations), [conversations]);
 
   const selecting = selected !== null;
 
