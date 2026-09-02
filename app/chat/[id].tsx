@@ -37,10 +37,14 @@ import { Glyph } from '@/components/Glyph';
 import { Icon } from '@/components/Icon';
 import type { IconName } from '@/components/Icon';
 import { useDialogKeys } from '@/components/dialog';
+import { useScenePush } from '@/components/motion';
 import { PromptSheet, Sheet, SheetShell } from '@/components/Sheet';
-import { Sidebar, useDrawerScene } from '@/components/Sidebar';
+import { Sidebar } from '@/components/Sidebar';
 import type { SidebarLink } from '@/components/Sidebar';
 import type { SheetAction } from '@/components/Sheet';
+import { ContextMenu } from '@/components/ContextMenu';
+import type { Anchor } from '@/components/ContextMenu';
+import { toast } from '@/components/Toast';
 import { CommandBar } from '@/components/chat/CommandBar';
 import { Composer } from '@/components/chat/Composer';
 import { MessageView } from '@/components/chat/MessageView';
@@ -177,6 +181,8 @@ export default function ChatScreen() {
    */
   const [mountedAt] = useState(() => Date.now());
   const [menuFor, setMenuFor] = useState<StoredMessage | null>(null);
+  /** Where the press that opened the message menu landed. See {@link ContextMenu}. */
+  const [menuAt, setMenuAt] = useState<Anchor | null>(null);
   const [prompt, setPrompt] = useState<Prompt | null>(null);
   const [convMenu, setConvMenu] = useState(false);
   const [modelMenu, setModelMenu] = useState(false);
@@ -211,7 +217,7 @@ export default function ChatScreen() {
   /** The collapsible history drawer. Collapsed is unmounted — see `Sidebar`. */
   const [sidebar, setSidebar] = useState(false);
   /** What this page does while that drawer is coming in. */
-  const drawerScene = useDrawerScene();
+  const scene = useScenePush(t.radius.lg);
 
   /**
    * The transcript, so the jump-to-latest disc has something to jump with.
@@ -363,7 +369,10 @@ export default function ChatScreen() {
     return replyReservation(params, conversation.config.reasoning);
   }, [capabilities, conversation]);
 
-  const onAction = useCallback((message: StoredMessage) => setMenuFor(message), []);
+  const onAction = useCallback((message: StoredMessage, at: Anchor) => {
+    setMenuAt(at);
+    setMenuFor(message);
+  }, []);
 
   /* ----------------------------------------------------------------------- */
   /* Attachments                                                              */
@@ -827,6 +836,9 @@ ${text}` : text);
         onPress: () => {
           haptics.confirm();
           void Clipboard.setStringAsync(message.text);
+          // The sheet closes on the same tap, so without this the only feedback that
+          // anything was copied is the haptic — which a phone on silent does not give.
+          toast('Copied to the clipboard.');
         },
       },
       {
@@ -1511,13 +1523,14 @@ ${result.content}` : result.content);
     // the keyboard". The composer's own `paddingBottom` below does the whole job
     // from the one number that is actually authoritative: `useKeyboardHeight()`.
     //
-    // Animated, because the drawer shrinks and shifts this page as it slides in —
-    // see `useDrawerScene`. `overflow: 'hidden'` is what lets the corner radius that
-    // comes with it actually clip the transcript. The navigator's header is drawn
-    // above this view and outside it, so it stays put while the page moves; on one
-    // flat background that reads as the page sliding under the header rather than as
-    // two things disagreeing, and reaching the header would mean drawing our own.
-    <Reanimated.View style={[{ flex: 1, overflow: 'hidden' }, drawerScene]}>
+    // Animated, because the drawer and the artifact panel each shrink and shift this
+    // page as they slide in — see `useScenePush`. `overflow: 'hidden'` is what lets
+    // the corner radius that comes with it actually clip the transcript. The
+    // navigator's header is drawn above this view and outside it, so it stays put
+    // while the page moves; on one flat background that reads as the page sliding
+    // under the header rather than as two things disagreeing, and reaching the header
+    // would mean drawing our own.
+    <Reanimated.View style={[{ flex: 1, overflow: 'hidden' }, scene]}>
       <NavStack.Screen
         options={{
           // Just the title, in the navigator's own serif, centred and truncated by
@@ -1764,10 +1777,13 @@ ${result.content}` : result.content);
         onClose={() => setReference(false)}
       />
 
-      <Sheet
+      {/* A menu at the finger rather than a sheet at the bottom edge: this one is about
+          one message, and the blur behind it keeps that message the only thing in focus.
+          It also loses the title and the text preview the sheet carried — with the
+          message itself visible under the blur, both were saying it twice. */}
+      <ContextMenu
         visible={menuFor !== null}
-        title={menuFor?.role === 'user' ? 'Your message' : 'Reply'}
-        {...(menuFor?.text ? { subtitle: menuFor.text } : {})}
+        anchor={menuAt}
         actions={menuFor ? messageActions(menuFor) : []}
         onClose={() => setMenuFor(null)}
       />

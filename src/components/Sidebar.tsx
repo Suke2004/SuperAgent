@@ -77,17 +77,6 @@ const CLOSE_FRACTION = 0.35;
 const CLOSE_VELOCITY = 500;
 
 /**
- * What the screen behind the drawer does while it is open.
- *
- * Shrunk 6% and pushed 14dp right, so the page reads as a card the drawer has slid in
- * front of rather than as a wall the drawer is stuck to. Small numbers on purpose: the
- * effect is depth, and a page that visibly shrinks to 0.85 is a page that has become a
- * thumbnail of itself.
- */
-const SCENE_SCALE = 0.06;
-const SCENE_SHIFT = 14;
-
-/**
  * Drag-to-close.
  *
  * The predecessor here was a **capture-phase** `PanResponder`, and the reason is worth
@@ -403,35 +392,6 @@ export function Sidebar({
       </View>
     </Modal>
   );
-}
-
-/**
- * The style for the screen the drawer slides over: shrink a little, shift right a
- * little, round the corners as it goes.
- *
- * Lives here rather than on the screen because it is the other half of one animation —
- * the numbers and the value driving them belong together, and a screen that opened a
- * drawer would otherwise have to know how the drawer's spring is configured to keep up
- * with it. Wrap the screen's root in a `Reanimated.View` carrying this and
- * `overflow: 'hidden'`, so the corner radius actually clips.
- *
- * Reduce Motion drops it entirely rather than shortening it, and this is the one place
- * in the pair where that is right: unlike the panel's slide, the scale says nothing the
- * user needs — the drawer arriving is already unmistakable — and it is a large-area
- * transform, which is exactly the kind of movement the setting is asking about.
- */
-export function useDrawerScene() {
-  const reduced = useReducedMotion();
-  const t = useTheme();
-
-  return useAnimatedStyle(() => {
-    if (reduced) return {};
-    const p = drawerProgress.value;
-    return {
-      transform: [{ scale: 1 - p * SCENE_SCALE }, { translateX: p * SCENE_SHIFT }],
-      borderRadius: p * t.radius.lg,
-    };
-  });
 }
 
 /** A section heading in the drawer. The same tier as `Section`'s title on a screen. */

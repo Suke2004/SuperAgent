@@ -23,8 +23,6 @@ import { forwardRef, useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   ActivityIndicator,
-  Animated,
-  Easing,
   Keyboard,
   Platform,
   Pressable,
@@ -36,16 +34,25 @@ import {
   View,
 } from 'react-native';
 import type { StyleProp, TextInputProps, TextStyle, ViewProps, ViewStyle } from 'react-native';
-// Aliased, because RN's own `Animated` is still in this file for {@link Skeleton}'s
-// looping pulse. Two libraries called Animated in one module is exactly the kind of
-// thing that produces a bug nobody can see in review.
-import Reanimated, { useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
+import { LinearGradient } from 'expo-linear-gradient';
+import Reanimated, {
+  Easing,
+  FadeOut,
+  ReduceMotion,
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withRepeat,
+  withSpring,
+  withTiming,
+} from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useTheme } from '@/theme';
 import type { Palette, Theme } from '@/theme';
 
-import { REDUCED_MS, spring } from '@/constants/animations';
+import { duration, REDUCED_MS, spring } from '@/constants/animations';
 import { Glyph } from './Glyph';
 import { Icon, iconSize } from './Icon';
 import type { IconName } from './Icon';
@@ -1207,8 +1214,21 @@ export function Empty({ title, body, icon }: { title: string; body?: string; ico
 /* Loading                                                                     */
 /* -------------------------------------------------------------------------- */
 
-/** One breath of the skeleton pulse, in ms. Slow: this is a wait, not a heartbeat. */
+/** One pass of the highlight across a block, in ms. Slow: this is a wait, not a heartbeat. */
 const SKELETON_MS = 1100;
+
+/**
+ * How long the block sits still between passes, in ms.
+ *
+ * A highlight that restarts the instant it leaves reads as a barber's pole — a
+ * continuous band of movement with no beginning, which is both busier than the wait
+ * deserves and impossible to look away from. The pause is what makes it a repeated
+ * sweep rather than a loop.
+ */
+const SKELETON_GAP_MS = 450;
+
+/** How far past each edge the highlight starts and ends, as a fraction of the width. */
+const SWEEP_OVERSHOOT = 0.6;
 
 /**
  * A placeholder block, sized like the content that is coming.
@@ -1218,8 +1238,18 @@ const SKELETON_MS = 1100;
  * the arriving content does not shove the screen. A spinner is kept only for the
  * waits whose result has no shape yet: a reachability probe, a database search.
  *
- * `surfaceAlt` at a low opacity rather than a shimmer gradient: a travelling
- * highlight needs a gradient library and draws the eye to the wait itself.
+ * ## The highlight, and why it is a gradient
+ *
+ * A travelling band of light across the block, which is what says "still working"
+ * rather than "this is what the row looks like". It is a three-stop `LinearGradient`
+ * translated across a clipped parent, and it has to be a gradient: a plain lighter
+ * `View` sliding past has two hard edges, and a hard edge moving across a placeholder
+ * looks like a rendering artefact rather than a sheen.
+ *
+ * Under Reduce Motion the sweep is dropped entirely and the block holds one flat
+ * tone. Travel is exactly what the setting is about, and a skeleton is decoration
+ * over a wait that the surrounding `accessibilityRole="progressbar"` already
+ * announces — so there is nothing to preserve by shortening it.
  */
 export function Skeleton({
   width = '100%',
@@ -1234,37 +1264,69 @@ export function Skeleton({
 }) {
   const t = useTheme();
   const reduce = useReducedMotion();
-  const [pulse] = useState(() => new Animated.Value(0));
+
+  /** Measured, because the sweep travels in dp and `width` is usually a percentage. */
+  const [measured, setMeasured] = useState(0);
+  /** -1 → fully off the left, 1 → fully off the right. */
+  const sweep = useSharedValue(-1);
 
   useEffect(() => {
-    if (reduce) return;
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 1, duration: SKELETON_MS, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 0, duration: SKELETON_MS, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-      ]),
+    if (reduce || measured === 0) return;
+    sweep.value = -1;
+    sweep.value = withRepeat(
+      // The delay is inside the repeated animation rather than between repeats, because
+      // `withRepeat` has no notion of a rest — so the pause is the first thing each pass
+      // does, holding the block still at the far edge before the next one begins.
+      withDelay(SKELETON_GAP_MS, withTiming(1, { duration: SKELETON_MS, easing: Easing.inOut(Easing.quad) })),
+      -1,
+      false,
     );
-    loop.start();
-    return () => loop.stop();
-  }, [pulse, reduce]);
+    return () => cancelAnimation(sweep);
+  }, [measured, reduce, sweep]);
+
+  const shine = useAnimatedStyle(() => ({
+    transform: [{ translateX: sweep.value * measured * (1 + SWEEP_OVERSHOOT) }],
+  }));
 
   return (
-    <Animated.View
+    <View
       // Hidden from the accessibility tree entirely. There is nothing here to read,
       // and the list or screen around it carries the "Loading" announcement.
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
+      onLayout={(event) => {
+        const next = Math.round(event.nativeEvent.layout.width);
+        // Guarded, or a percentage width that re-measures to the same number restarts
+        // the sweep from the left edge on every layout pass.
+        setMeasured((was) => (was === next ? was : next));
+      }}
       style={[
         {
           width,
           height,
           borderRadius: r ?? t.radius.sm,
           backgroundColor: t.colors.surfaceAlt,
-          opacity: reduce ? 0.7 : pulse.interpolate({ inputRange: [0, 1], outputRange: [0.45, 0.9] }),
+          // Both load-bearing: the clip is what turns a wide gradient into a band
+          // passing a window, and without it the highlight is visible outside the block.
+          overflow: 'hidden',
+          opacity: reduce ? 0.7 : 0.85,
         },
         style,
       ]}
-    />
+    >
+      {reduce || measured === 0 ? null : (
+        <Reanimated.View style={[StyleSheet.absoluteFill, shine]}>
+          <LinearGradient
+            // Horizontal, and transparent at both ends so the band has no edge of its
+            // own — only the middle is lighter than the block it crosses.
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            colors={['transparent', t.colors.surfaceActive, 'transparent']}
+            style={StyleSheet.absoluteFill}
+          />
+        </Reanimated.View>
+      )}
+    </View>
   );
 }
 
@@ -1273,12 +1335,19 @@ export function Skeleton({
  *
  * The widths step down the list rather than all matching, because a column of
  * identical bars reads as a broken image; uneven ones read as text.
+ *
+ * Fades out on the way off, which is the other half of the sweep: the placeholder and
+ * the content it stood in for occupy the same space, so an instant swap is a flicker
+ * at exactly the moment the user's eye is already there. `exiting` lives here rather
+ * than at each call site because there is no case where a skeleton should vanish —
+ * every one of them is being replaced by the thing it was shaped like.
  */
 export function SkeletonRows({ count = 5, label = 'Loading' }: { count?: number; label?: string }) {
   const t = useTheme();
   const widths: readonly `${number}%`[] = ['78%', '64%', '85%', '55%', '72%'];
   return (
-    <View
+    <Reanimated.View
+      exiting={FadeOut.duration(duration.exit).reduceMotion(ReduceMotion.System)}
       accessibilityRole="progressbar"
       accessibilityLabel={label}
       accessibilityLiveRegion="polite"
@@ -1290,6 +1359,6 @@ export function SkeletonRows({ count = 5, label = 'Loading' }: { count?: number;
           <Skeleton width="42%" height={11} />
         </View>
       ))}
-    </View>
+    </Reanimated.View>
   );
 }
