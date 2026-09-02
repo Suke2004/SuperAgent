@@ -9,6 +9,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+import { DEFAULT_STYLE } from '@/chat/voice';
 import { expectHydration, persistConfig } from '@/lib/storage';
 import type { ThemeMode } from '@/theme';
 
@@ -76,6 +77,22 @@ export interface SettingsState {
   allowRunCode: boolean;
   /** Speak assistant replies with the system voice. */
   ttsEnabled: boolean;
+  /**
+   * Which of `VOICE_STYLES` speaks.
+   *
+   * A `string` rather than `VoiceStyleId`, because this is persisted: a build that drops a
+   * style would otherwise rehydrate a value its own type says is impossible. `styleById`
+   * is the one reader and it falls back rather than trusting it.
+   */
+  voiceStyle: string;
+  /**
+   * Playback speed multiplier for spoken replies. One of `SPEEDS`.
+   *
+   * Separate from the style's own rate and multiplied into it, so "slower" and "which
+   * voice" stay independent choices — the alternative is five styles times four speeds as
+   * twenty presets nobody can find their way around.
+   */
+  speechRate: number;
   /**
    * Require the device's biometric or PIN before the app opens.
    *
@@ -151,6 +168,8 @@ const DEFAULTS = {
   allowWebSearch: false,
   allowRunCode: false,
   ttsEnabled: false,
+  voiceStyle: DEFAULT_STYLE as string,
+  speechRate: 1,
   appLockEnabled: false,
   sendOnEnter: false,
   memoryEnabled: true,

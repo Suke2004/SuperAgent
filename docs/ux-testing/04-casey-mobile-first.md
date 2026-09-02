@@ -1,5 +1,16 @@
 # Agent 4 — CASEY, The Mobile-First User
 
+> **Historical record — see [the status box on the consolidated report](00-consolidated-report.md)
+> before trusting anything below.** Dated 2026-09-01, against a Phase 1 app then called
+> AgentRouter Mobile; it is now SuperAgent. Casey's findings are closed, and two of them
+> shaped how the app is built rather than getting a local patch: every undersized target
+> is now made up in `hitSlop` against `MIN_TARGET = 48`
+> ([ui.tsx:66](src/components/ui.tsx:66)) *"rather than by inflating the design"*, and the
+> long-press-only message actions became a menu that opens where you pressed. The
+> keyboard double-adjust this report could only mark *unverified on device* was
+> reproduced on hardware and fixed. Kept unedited because the mid-stream connection kill
+> and the 7.6 s time-to-failure were measured against a live gateway.
+
 **Persona.** Uses the app one-handed, on a phone, on the move, on a flaky connection. Thumbs, not fingertips. Judges software by whether the first tap works and whether losing signal loses work.
 
 **Session.** 375×812 viewport (a standard phone form factor), conversations with five or more messages and long generated replies, plus a mid-stream connection kill. Where a measurement is only meaningful on a real device, it is marked as such rather than guessed at.

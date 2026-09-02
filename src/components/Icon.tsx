@@ -61,7 +61,28 @@ export const ICONS = {
   stop: 'square',
   attach: 'plus',
   mic: 'mic',
+  /**
+   * Voice mode, as distinct from `mic`.
+   *
+   * Feather's `activity` — the ECG trace — rather than a second microphone. `mic` already
+   * means "dictate into the box you are looking at"; this opens a screen where the phone
+   * talks back, and two microphones side by side in the same row would be a coin toss.
+   */
+  voice: 'activity',
   model: 'cpu',
+
+  /**
+   * The camera — see `@/components/chat/CameraMode`.
+   *
+   * `flash` and `flashOff` are two glyphs for one control on purpose. The button cycles
+   * `off → auto → on`, and a single `zap` that only changes its label leaves the state
+   * readable exclusively to a screen reader; the struck-through `zap-off` is the one state
+   * worth seeing at a glance, because it is the one where nothing will happen.
+   */
+  camera: 'camera',
+  flash: 'zap',
+  flashOff: 'zap-off',
+  flip: 'rotate-cw',
 
   /* Settings groups */
   gateway: 'globe',
@@ -93,6 +114,10 @@ export const ICONS = {
   error: 'alert-circle',
   success: 'check-circle',
   offline: 'wifi-off',
+
+  /* Tool steps — what a call in the transcript did. See `@/chat/toolLabel`. */
+  calendar: 'calendar',
+  mail: 'mail',
 } as const;
 
 export type IconName = keyof typeof ICONS;

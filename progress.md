@@ -1,21 +1,35 @@
-# AgentRouter Mobile — Build Progress
+# SuperAgent — Build Progress
 
-**Last updated:** 2026-08-30
+**Last updated:** 2026-09-02
 **Gates, all green as of this writing:**
 
 ```bash
-npx tsc --noEmit && npx eslint . && npx jest
+pnpm gates
 ```
 
-→ tsc clean, eslint clean, **1163 tests / 53 suites** in ~17 s with coverage.
+→ tsc clean, eslint clean, **1,603 tests / 80 suites** in ~4–6 s plain and ~6–8 s with coverage, plus a green `expo export`. Those are *warm* figures — a cold first run on this filesystem is several times that, which is how an earlier revision of this file came to blame `calibration.test.ts` for ten seconds it does not take (0.64 s).
 
-Coverage is now a **gate, not a note**: `npx jest --coverage` measures statements 68.35%, branches 65.22%, functions 60.69%, lines 69.87%, and `jest.config.js` carries a `coverageThreshold` a point or two under each of those, so the runner fails rather than the number going stale in this file. The functions figure is low for a structural reason, not a negligent one — `app/` and `src/components/` are excluded from unit testing by design (see the note on `jest.config.js` below), and every uncovered function is a component or a store action that only exists to call one.
+The same measurement problem produced a **real flake, found and fixed while re-running these gates**. `src/chat/list-cost.test.ts` asserted absolute times — 2,000 ms for 1,000 markdown bodies, 150 ms for the two conversation-list guards. Start a second Jest run on the same machine and two of the three cross their ceilings: `parses every message body inside the first-paint budget` failed first, and once that one was on a ratio the *filter* guard failed next, which is how it became clear the bound was the defect rather than the number. All three are now ratios — a quarter of the input against all of it, asserting the big run cost under 12× the small one, with `fastest()` taking the minimum of three runs and each unit repeating 20× for timer resolution. Reproduced under three concurrent suites, six clean runs after. **A wall-clock assertion measures the machine; only a ratio measures the code.**
 
-The same three gates run in CI on every push and pull request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), which is the only thing that makes the paragraph above worth reading. `pnpm gates` runs them locally in one command. CI runs a **fourth** step the local command does not: `expo export --platform android`, a full Metro bundle whose output is discarded. It is there because the other three gates structurally cannot see a broken screen — `testMatch` is `.ts` only, so no component is ever imported by the suite, and `tsc` resolves types rather than resolving what Metro resolves.
+Coverage is a **gate, not a note**: `pnpm test:coverage` measures statements 70.05%, branches 66.24%, functions 64.49%, lines 71.62%, and `jest.config.js` carries a `coverageThreshold` of 66 / 63 / 58 / 68 — a few points under each, so the runner fails on a regression rather than the number going stale in this file. Raise the floors when a run comes in comfortably higher; never lower them to make a red run green.
 
-Run all three at the end of every phase and fix what they surface. Don't pause between phases to ask whether to continue.
+The functions figure is low for a structural reason, not a negligent one — but the reason is narrower than this file used to claim. `testMatch` is `*.test.ts` and never `.tsx`, so no component is ever *tested*; `collectCoverageFrom` however excludes by **file extension**, not by directory. `app/` is out because it is not under `src`, and every `.tsx` is out because of the extension — but the `.ts` files that live inside `src/components/` are counted, and they report 0%. That is why the per-directory numbers show `src/components` at 0/0 while `src/components/markdown` sits at 94.88/87.89. See [docs/06_Eng_Plan.md](docs/06_Eng_Plan.md) §7.4 for the full breakdown.
+
+The same three gates run in CI on every push and pull request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), which is the only thing that makes the paragraph above worth reading. `pnpm gates` runs them locally in one command. CI runs a **fourth** step the local command does not:
+
+```bash
+pnpm expo export --platform android --output-dir .expo-export
+```
+
+A full Metro bundle whose output is discarded. It is there because the other three gates structurally cannot see a broken screen — `testMatch` is `.ts` only, so no component is ever imported by the suite, and `tsc` resolves types rather than resolving what Metro resolves. CI pins **Node 24**, because `src/db/__tests__` imports `node:sqlite`, which needs `--experimental-sqlite` on Node 22 and would take the whole directory down.
+
+Run all of them at the end of every phase and fix what they surface. Don't pause between phases to ask whether to continue.
 
 **On phase numbering:** the table under "Phases 2–6" below is the *original* PRD grouping. [docs/06_Eng_Plan.md](docs/06_Eng_Plan.md) supersedes it and is what current work follows — there, Phase 2 is Sprints 5 and 6 ("List & organisation"), and the model/reasoning controls the table calls Phase 2 were largely delivered inside Phase 1's config sheet. Where the two disagree, the Eng Plan wins.
+
+**Two workstreams landed after the phases and are not in this file's phase sections.** The v1.1 list is in [progress-v1.1.md](progress-v1.1.md); Sections 1–7 and 10–12 of a Claude-parity checklist are recorded here under *Claude parity, Sections 1–7 and 10–12* below and in [docs/06_Eng_Plan.md](docs/06_Eng_Plan.md) §4.5. Together they are larger than Phases 3, 4 and 5 combined, which is the single most important thing to know before reading anything dated below.
+
+**On the name:** the app is SuperAgent, from one constant (`src/lib/app.ts`). The slug `agentrouter-mobile`, the package `org.lyric.agentrouter` and the `jarvis://` scheme are identity, not presentation, and deliberately did not change — renaming them orphans installs and OAuth redirects. The backup envelope reader accepts both old and new strings for the same reason.
 
 ---
 
@@ -72,7 +86,7 @@ This is already encoded as two distinct transports in `src/transports/`. Don't c
 
 **Stores** (`src/stores/`) — `settings.ts`, `providers.ts` (named profiles, active one, failover state), `models.ts` (registry from `/v1/models`, per-profile keys `profileId::modelId`, discovery never overwrites hand-edited capability flags)
 
-**Persistence** (`src/db/`) — `ddl.ts` (all DDL as plain SQL strings with **no `expo-sqlite` import**, so tests build the real schema under `node:sqlite`), `schema.ts` (WAL, foreign keys, `user_version` migration chain, currently **v3**; FTS5 external-content + sync triggers + integrity-check-on-boot), `list-query.ts` (pure keyset-paging SQL builder), `conversations.ts` (full CRUD, `listConversationPage`, `toUnifiedMessages`, `recordUsage`, `DEFAULT_TITLE`), `memories.ts` (long-term memory CRUD + `clearMemories`), `search.ts` (FTS-then-LIKE hybrid, because `unicode61` cannot tokenize CJK)
+**Persistence** (`src/db/`) — `ddl.ts` (all DDL as plain SQL strings with **no `expo-sqlite` import**, so tests build the real schema under `node:sqlite`), `schema.ts` (WAL, foreign keys, `user_version` migration chain, now **v8** reached by eight migrations; SQLCipher key issued before every other statement; FTS5 external-content + sync triggers + integrity-check-on-boot), `list-query.ts` (pure keyset-paging SQL builder), `conversations.ts` (full CRUD, `listConversationPage`, `toUnifiedMessages`, `recordUsage`, `DEFAULT_TITLE`), `content.ts` (`flattenContent`, the projection contract, kept `expo-sqlite`-free so Jest can reach it), `cipher.ts` (all SQLCipher string handling, imports nothing), `memories.ts` (long-term memory CRUD + `clearMemories`), `search.ts` (FTS-then-LIKE hybrid, because `unicode61` cannot tokenize CJK)
 
 **Security** — `src/lib/secureKey.ts`, `src/lib/redact.ts`
 
@@ -89,7 +103,7 @@ This is already encoded as two distinct transports in `src/transports/`. Don't c
 **Chat logic**
 - `src/chat/request.ts` + `request.test.ts` — `EFFORT_BUDGETS`, `budgetForEffort`, `validateConfig`, `hasBlockingIssue`, `defaultParams`, `mergeParams`, `resolveReasoning`, `buildRequest`, `composeSystem`, `SUMMARY_INSTRUCTION`. Both mandated Claude constraints are encoded as validation: thinking cannot be *disabled* at `xhigh`/`max`, and `max_tokens` caps total output **including** thinking so a thin margin warns and a zero margin blocks.
 - `src/chat/list.ts` + `list.test.ts` — `filterConversations`, `buildRows` (pinned first, then today / yesterday / week / older, stable partition), `tagCounts`, `parseTags`, `matchesQuery`, `rowTime`.
-- `src/stores/chat.ts` (~970 lines) — `runTurn` orchestrator with a 60 ms publish throttle (a 100 Hz delta stream must not re-render the transcript per token), failover (network errors only, only before the first stream event), `applyContextStrategy` (warn / drop-oldest / summarise), `setExclusions`, `summariseDropped`, `applyEvent`, `handleTurnFailure` (abort keeps partial text with `stopReason: 'aborted'`), and every message action: send, regenerate, editAndResend, editInPlace, delete, fork, abort.
+- `src/stores/chat.ts` (~2,170 lines now, and the largest module in the app) — `runTurn` orchestrator with a 60 ms publish throttle (a 100 Hz delta stream must not re-render the transcript per token), failover (network errors only, only before the first stream event), `applyContextStrategy` (warn / drop-oldest / summarise), `setExclusions`, `summariseDropped`, `applyEvent`, `handleTurnFailure` (abort keeps partial text with `stopReason: 'aborted'`), and every message action: send, regenerate, editAndResend, editInPlace, delete, fork, abort. Later work added the bounded tool loop, the built-in tool resolvers, `citations` accumulation and the `tools` stream phase.
 
 **Markdown and rendering** (`src/components/markdown/`)
 - `blocks.ts` + `blocks.test.ts` — `parseMarkdown()` → closed `MdBlock` / `InlineToken` AST. `breaks: true` deliberately, because chat prose relies on single newlines. Math is tokenised by a `MarkedExtension` on a private `Marked` instance **before** inline parsing, or `$x_1 + x_2$` becomes emphasis. An unterminated ``` fence lexes as a `code` token, which is exactly what streaming needs. Includes a prefix-fuzz suite that parses every prefix of a mixed document, because a throw there takes the transcript down mid-answer.
@@ -107,7 +121,7 @@ This is already encoded as two distinct transports in `src/transports/`. Don't c
 - `src/components/Sheet.tsx` — `Sheet` (a scrolling action sheet; Android's `Alert` caps out at three buttons, and disabled actions are shown *with the reason* rather than hidden) and `PromptSheet` (one line of text; `Alert.prompt` does not exist on Android).
 
 **Screens** (`app/`)
-- `_layout.tsx` — all ten routes registered, including `chat/[id]`. Boots behind `hydrated && primed` so no screen can log a request before the redactor knows the stored keys.
+- `_layout.tsx` — all nineteen routes registered, including `chat/[id]` and `settings/tools`. Boots behind `hydrated && primed` so no screen can log a request before the redactor knows the stored keys.
 - `index.tsx` — the conversation list. Fixed search field at the top, gateway-status banner and tag chips in the scrolling list header, `FlashList` rows via `buildRows`, long-press sheet for rename / tags / pin / delete, fixed bottom bar with New conversation. Search is **two passes shown as two passes**: typing filters the loaded conversations instantly, and a debounced `searchMessages` adds message hits underneath, each badged `index` (FTS) or `scan` (LIKE) so it is clear which pass found it.
 - `chat/[id].tsx` — the transcript. `FlashList` with `maintainVisibleContentPosition={{ startRenderingFromBottom: true, autoscrollToBottomThreshold: 0.2 }}` so streaming text stays anchored without a `scrollToEnd` per delta; the live stream as `ListFooterComponent`; composer above the safe-area inset; three sheets (message actions, conversation actions, model picker) plus `PromptSheet` for system prompt / rename / tags / edit.
 
@@ -214,7 +228,7 @@ Most of the wire and storage layer was already in place before this sprint: `Ima
 
 **Three limits, each binding separately:** `MAX_IMAGE_BASE64_CHARS` per image, `MAX_MESSAGE_ATTACHMENT_CHARS` (4.5 M chars ≈ 3.4 MB) per message, `MAX_ATTACHMENTS_PER_MESSAGE = 8` by count — with `MAX_PDF_BYTES = 8 MB` and `MAX_TEXT_FILE_BYTES = 1 MB` on the document side. The count limit is also passed to the system picker as `selectionLimit`, so the OS enforces it before the user picks something we would refuse.
 
-**A denied permission is not a dead button.** `canAskAgain === false` sets `needsSettings`, and the sheet that reports the refusal grows an "Open Settings" action wired to `Linking.openSettings()`. `app.json` carries the `expo-image-picker` plugin with camera and photo permission copy that says the attachment stays on the device until send.
+**A denied permission is not a dead button.** `canAskAgain === false` sets `needsSettings`, and the sheet that reports the refusal grows an "Open Settings" action wired to `Linking.openSettings()`. `app.json` carries the `expo-image-picker` plugin with photo-library permission copy that says the attachment stays on the device until send. *(Its `cameraPermission` string was removed in Section 6: the picker's camera path is gone, and the camera copy now lives once, on the `expo-camera` plugin. Note it was **deleted** rather than set to `false` — `false` makes the picker plugin actively block `android.permission.CAMERA`, which would break `expo-camera`.)*
 
 **Documents have three outcomes, not two.** `documentSupport(transport, capabilities, mediaType)` returns `{ supported, reason, native }`: a PDF on Anthropic with the `documents` flag is native; a PDF on an OpenAI-compatible profile is **refused with the reason**, because there is no document block and nothing on device can extract a PDF's text; a text file goes on either path, as extracted text. `documentCaveat` produces the sentence for the silently-lossy case, and the composer shows it **before sending** — afterwards the only evidence is an answer that ignored the tables. Text is read as text even where a native block exists, so the app can show it, search it and export it.
 
@@ -276,7 +290,7 @@ Three things asked for together, because they are one change: a chat-first app n
 
 **Launch lands on a chat.** `app/index.tsx` still owns the list, but on the first mount of a process it loads the list, picks a target with `launchTarget()` and `router.replace`s into `/chat/[id]`. The flag is at **module scope**, not in state: this screen mounts again every time the user comes back to the list, and a per-component flag would redirect out of it every time, making the full list unreachable. `launchTarget()` reuses the newest **empty, non-archived** conversation rather than starting one per launch — otherwise an app opened twice a day leaves thirty blank rows in the history it is meant to be showing — and treats an absent `messageCount` as non-empty, because that field is only populated by the list query and reusing a row of unknown size means landing in someone's transcript. A failure leaves the list on screen with its own error banner rather than a spinner that never resolves.
 
-**The drawer is a `Modal`.** `src/components/Sidebar.tsx` gets the Android back button, the iOS focus trap and the same escape/Tab handling as the sheets for free, and "collapsed" is genuinely unmounted rather than a panel parked off-screen. It carries the rows, a title/model/tag filter (`filterConversations`, the fast pass only), New chat, and links to the full list and Settings — no bulk selection, no export, no archive toggle, no tag filter; those stay on the list screen, one tap away. Switching chats uses `router.replace`, so opening eleven threads from the drawer does not leave eleven screens on the stack. The ☰ takes the header's left slot, where the back arrow was: on most launches there is nothing to go back to, and where there is, the swipe gesture and the hardware button still work.
+**The drawer is a `Modal`.** `src/components/Sidebar.tsx` gets the Android back button, the iOS focus trap and the same escape/Tab handling as the sheets for free, and "collapsed" is genuinely unmounted rather than a panel parked off-screen. It carries the rows — grouped and virtualised exactly like the list screen since parity §7 below — a title/model/tag filter (`filterConversations`, the fast pass only), New chat, and links to the full list and Settings; no bulk selection, no export, no archive toggle, no tag filter, and no per-row menu, all of which stay on the list screen one tap away. Switching chats uses `router.replace`, so opening eleven threads from the drawer does not leave eleven screens on the stack. The ☰ takes the header's left slot, where the back arrow was: on most launches there is nothing to go back to, and where there is, the swipe gesture and the hardware button still work.
 
 **Cross-chat content goes through the draft, not the request.** `src/chat/reference.ts` renders one message from another conversation as an attributed markdown blockquote, and `ReferenceSheet` searches for it with the same debounced two-pass `searchMessages` the list screen uses, with the current conversation filtered out of the results. Two deliberate decisions: the quote lands in the **draft** as visible, editable text, so the composer's gauge counts it *before* it is sent and nothing steers a conversation from context the user cannot see; and the message is re-read from the store rather than quoted from the hit, because a `SearchHit.snippet` is a one-line window around the match and quoting it would put half a sentence in the draft and call it a quote. `QUOTE_CHAR_LIMIT` trims a 40k-character reply at a word boundary and says where the rest is. Memories were already shared across conversations via `useMemory.promptBlock()`; message content was the half that was missing.
 
@@ -304,7 +318,7 @@ Storage is migration 3 → 4 (`SCHEMA_VERSION = 4`) with a unique index on `name
 
 **stdio is rejected at the field, not at connect time.** `parseServerUrl` accepts http(s) only. A phone has no child processes, so a `stdio` entry can only be a config pasted from a desktop client, and saying so in the form is clearer than a connection that cannot be made.
 
-**A server's tool names are not trusted.** They arrive from a third party and land in a request body where both APIs enforce `^[a-zA-Z0-9_-]{1,64}$`. `bridgeTools` rewrites them to `mcp__<server>__<tool>`, capped at 64 characters, and *keeps the mapping* rather than parsing the wire name back apart later. The prefix also means an MCP tool can never be mistaken for `invoke_skill`.
+**A server's tool names are not trusted.** They arrive from a third party and land in a request body where both APIs enforce `^[a-zA-Z0-9_-]{1,64}$`. `bridgeTools` rewrites them through `qualifyToolName` to `mcp_<slug>_<tool>`, lower-cased, non-matching characters folded to `_`, capped at 64 with the *tool* half truncated rather than the slug, exact collisions resolved by the caller with a `_2` suffix — and it *keeps the mapping* rather than parsing the wire name back apart later. The prefix also means an MCP tool can never be mistaken for `invoke_skill`.
 
 **Every failure is a tool result.** Server error, timeout, expired token, user denial — all of them come back as content with `isError`, never as a thrown turn. Same reason as skills: an unanswered `tool_use` block invalidates every later request in the conversation, so crashing the loop would cost the user the thread rather than the call. `timeoutMs` is per call and separate from the 30 s connect timeout.
 
@@ -313,6 +327,11 @@ Storage is migration 3 → 4 (`SCHEMA_VERSION = 4`) with a unique index on `name
 **Tokens never enter the store.** An access token goes to `expo-secure-store` through the same path as the API key, which also registers it with the redactor — so it is scrubbed from the debug log and from every export from the moment it exists. Discovery results, enabled-tool sets and approval modes are SQLite (migration 4 → 5, `mcp_servers`); the token is not.
 
 **No new dependency.** The plan had `expo-web-browser` + `expo-auth-session` pencilled in for the OAuth flow; `expo-linking`, already installed for deep links, does both halves — `openURL` out and a listener back — so neither was added.
+
+**Added later, in parity §10:** a bundled directory of eleven well-known servers
+([src/mcp/catalog.ts](src/mcp/catalog.ts)) so the screen no longer requires you to arrive knowing
+a URL. It is data, not a registry client, and it prefills the form described above rather than
+bypassing it. See *Claude parity, Sections 1–7 and 10–12* below.
 
 ### Phase 6 — power features — ✅ COMPLETE
 
@@ -346,10 +365,14 @@ Everything that was recorded as "left over" is now done or has a stated reason i
 
 **The five-item fix queue in [docs/flaws.md](docs/flaws.md) is closed** — auto-backup off via a config plugin, the 401 kinds collapsed to one `unauthorized`, a secret-header guard on the providers store, a fingerprint that no longer carries last-4, and a confirm gate before a distilled memory is stored.
 
-### Two of the PRD's Phase 3 leftovers are deliberately **not** built
+### Two of the PRD's Phase 3 leftovers were deliberately **not** built — and both calls have since been revisited
 
 - **On-device speech-to-text.** There is no first-party Expo module for it, and the keyboard's own microphone already dictates into the composer like any other `TextInput`. A third-party native module to duplicate a button the user already has is the wrong trade, and it would not survive Expo Go.
+  → **Reversed.** `expo-speech-recognition` exists and is what shipped, first as hold-to-talk in v1.1 ([src/lib/dictation.ts](src/lib/dictation.ts)) and then as the listening half of hands-free voice mode ([src/chat/voice.ts](src/chat/voice.ts)). The premise that was wrong was "no module"; the premise that held is the Expo Go one — this is native, so it needs a rebuild. It also gave `android.permission.RECORD_AUDIO`, which `app.json` had been declaring with nothing behind it, a feature to justify it.
 - **Android share-target registration.** The intent filter itself is three lines of `app.json`. *Reading* the `ACTION_SEND` payload needs a native module (`expo-share-intent`), and registering a target that then silently drops what was shared into it is worse than not appearing in the share sheet at all. Both halves or neither; this is neither, on purpose.
+  → **Half of it shipped, and the both-halves-or-neither rule is why it is only half.** What is registered is `ACTION_VIEW` — "open with" from a file manager, eleven MIME types in `app.json` — because both halves of *that* exist: the filter, and a reader in [app/+native-intent.tsx](app/+native-intent.tsx) resolving through the pure [src/chat/incoming.ts](src/chat/incoming.ts). `ACTION_SEND` share-target registration is still **not** built, because `expo-share-intent` is still not a dependency and the objection above still applies verbatim.
+
+**The inbound reader refuses rather than sanitises, and that is load-bearing.** A `content://` URI from a system provider is accepted; `file://` is refused with the reason shown to the user, because `file:///data/data/org.lyric.agentrouter/…` can name this app's own encrypted database, and a hostile app can fire the intent. `incoming.test.ts` pins both directions.
 
 ## Security hardening sprint — ✅ COMPLETE (2026-08-30, after physical-device verification)
 
@@ -380,11 +403,16 @@ re-prime is not optional — `clearCache` unregisters the key from the redactor,
 without a fresh Keystore read a later log line would lose its protection. Cost: one
 Keystore read per foregrounding.
 
-**OTA updates are off (§2.7).** `updates.enabled: false` and
-`checkAutomatically: "NEVER"`. Nothing in the repo publishes an update, so an enabled
-channel was the largest trust dependency in the app in exchange for nothing. The URL
-stays so re-enabling is a one-line change — and if that happens it should come with
-`expo-updates` code signing rather than trust in a project id.
+**OTA updates were switched off here (§2.7), and that has since been reversed.** This sprint set
+`updates.enabled: false` and `checkAutomatically: "NEVER"`, on the reasoning that nothing in the repo
+published an update, so an enabled channel was the largest trust dependency in the app in exchange for
+nothing. Both halves of that changed: the repo now publishes (`pnpm update:preview`,
+`pnpm update:production`, `pnpm update:rollback`), and `SECURITY.md` names the channel as the only
+route a JavaScript security
+fix has to a hand-installed APK. **`app.json` has read `enabled: true` and `checkAutomatically:
+"ON_LOAD"` since `0803d51`** — see [docs/07_Deployment.md](docs/07_Deployment.md) §2.2 for the current
+state and [docs/flaws.md](docs/flaws.md) §2.7 for both halves. `expo-updates` **code signing** was the
+condition attached to re-enabling and is still not done; it remains the open item.
 
 **An app lock (§2.2).**
 `src/lib/appLock.ts` + `expo-local-authentication`, surfaced as Settings → Privacy →
@@ -459,9 +487,12 @@ data destroys the key and the conversations with it — `allowBackup: false` mea
 file cannot arrive on a device whose Keystore never held its key).
 
 **This changes the native build and has not been compiled.** Nothing in this pass is
-verified beyond `tsc`, `jest` (54 suites / 1,182 tests) and `eslint`. `pnpm run
-build:apk` — or EAS — is required before the encryption is trusted, and the first
-launch on a device with an existing database is what exercises the conversion path.
+verified beyond `tsc`, `jest` (54 suites / 1,182 tests **at the time of that pass** —
+80 / 1,603 now) and `eslint`. A preview build — `pnpm build:preview`, or EAS — is
+required before the encryption is trusted, and the first launch on a device with an
+existing database is what exercises the conversion path. *(This section originally said
+`pnpm run build:apk`; there is no such script. The profiles are `build:dev`,
+`build:preview`, `build:preview:local` and `build:production`.)*
 
 **Three features from the audit's list, the ones that were both missing and small:**
 a per-conversation memory opt-out (`ConversationConfig.memory`, opt-out only —
@@ -477,16 +508,335 @@ already exist.
 
 ---
 
+## v1.1 — ✅ COMPLETE (the eight-item list in [progress-v1.1.md](progress-v1.1.md))
+
+Recorded in full there rather than duplicated here. The shape of it: slash commands and
+`@`-mentions over one merged index; `prompts/get` so MCP prompts stopped being decoration;
+built-in tools (`write_file`, `fetch_url`, `read_mcp_resource`, `web_search`, `run_code`, with
+`fetch_url`, `web_search` and `run_code` off by default and `read_mcp_resource` offered only when a
+connected server advertises a resource); Markdown → PDF; the tool-loop repairs (image results passed through
+under `MAX_TOOL_IMAGE_BASE64`, pre-approved calls run in parallel, a Continue button instead of the
+round-cap sentence, a `tools` stream phase); hold-to-talk dictation; artifacts and a projects
+feature that were both pencilled in for v1.2 and landed early.
+
+Two entries there are corrections to that document rather than features, and they matter more than
+the features: a truncated `tool_use` arguments blob is **refused with an error result**, not
+retried — the app cannot reconstruct JSON it never received — and `planTurn`'s only caller had
+never been passed `tools` at all, so the manifest was excluded from the history budget entirely,
+contradicting `budget.ts`'s own rationale.
+
+---
+
+## Claude parity, Sections 1–7 and 10–12 — ✅ COMPLETE (the checklist that came after v1.1)
+
+A twelve-section checklist against the Claude mobile app's UI/UX. Ten of the twelve are done —
+1–7 and 10–12. Sections 8 (sync) and 9 (a cowork/agentic surface) are both on the PRD's non-goals
+list and are skipped pending a product decision, which is why 10 was taken out of order and why
+11 and 12 followed it. Nothing here was a planned sprint, which is its own finding —
+[docs/06_Eng_Plan.md](docs/06_Eng_Plan.md) §4.5 and D-17.
+
+
+**§1 Message rendering.** A typewriter reveal decoupled from the delta stream
+([src/chat/typewriter.ts](src/chat/typewriter.ts) driving
+[StreamView.tsx](src/components/chat/StreamView.tsx)), so the text arrives at reading speed rather
+than at network speed and a 100 Hz burst does not become a 100 Hz repaint. A long-press action menu
+that opens **at the touch point** rather than at a fixed corner, because the finger is already
+there. Tool calls render with a human label per tool ([src/chat/toolLabel.ts](src/chat/toolLabel.ts))
+instead of a raw wire name.
+
+**§2 Inline visuals.** Charts from a fenced spec, drawn as **views and text** — no canvas, no
+`react-native-svg`, no chart library ([chart.ts](src/components/markdown/chart.ts) +
+[ChartView.tsx](src/components/markdown/ChartView.tsx)). The supported shape set is deliberately
+small and anything outside it returns `{kind: 'unsupported', why}`, so the fence degrades to a code
+block *with a reason* rather than to a blank box. The payoff is that a chart cannot execute, which
+is the whole point when the spec came from a model. The six series colours live in `SERIES` in
+[src/theme/index.tsx](src/theme/index.tsx) with their measured contrast ratios in comments.
+
+**§3 Reading a file another app hands over.** `ACTION_VIEW` for eleven MIME types, resolved before
+any React tree exists ([app/+native-intent.tsx](app/+native-intent.tsx)) through the pure
+[incoming.ts](src/chat/incoming.ts). Refuses `file://`; see the section above for why that is not
+negotiable.
+
+**§4 Generating and editing files.** `.docx`, `.xlsx` and `.pptx` written as OOXML through the
+already-present `fflate` ([ooxml.ts](src/chat/ooxml.ts)) — **no new dependency**, and it reversed a
+v1.1 decision that said this needed an XML library. Plus a preview for every format the app can
+generate ([preview.ts](src/chat/preview.ts) + [FilePreview.tsx](src/components/chat/FilePreview.tsx)).
+A generated Office file is **read-only in the app, and says why**: the reader recovers words, not
+layout, so a save would silently drop the formatting.
+
+**§5 Voice mode.** Hands-free, half-duplex, on the two engines already on the device:
+`expo-speech-recognition` listens, [voice.ts](src/chat/voice.ts) scripts the reply into utterances,
+`expo-speech` speaks them, recognition restarts on `onDone`
+([VoiceMode.tsx](src/components/chat/VoiceMode.tsx)). It needed **no streaming audio provider**,
+which is what `progress-v1.1.md` had said would block it. Barge-in is a listener that cancels the
+utterance. Two costs are stated rather than hidden: the app listens or speaks, never both, and the
+five voice styles are pitch and rate on the OS voice rather than five voices. `MAX_STEP` is the one
+constant not to exceed — it is both the utterance handed to an engine that refuses long input *and*
+the run of text highlighted on screen, so an escaped cap breaks the speech and the sync at once.
+
+**§6 Camera and vision.** A viewfinder inside the app
+([camera.ts](src/chat/camera.ts) + [CameraMode.tsx](src/components/chat/CameraMode.tsx)), because
+the thing people actually do with a camera in a chat app is take four photos of the same page and
+keep the one that is in focus — which a single hand-off to the system camera cannot do. Several
+shots per message, a review strip that drops one by tapping it, a flash cycle that knows the front
+camera only has a screen flash, and a status line that counts down the remaining attachment slots.
+**Nothing is encoded until the user presses *use*:** shots are held as file URIs and run through
+`ingestAssets` at the end, so `attach.ts`'s one-bitmap-at-a-time discipline still holds and an
+abandoned session is deleted rather than left in the cache. The old `captureImage` row — a hand-off
+to the system camera through `expo-image-picker` — was **deleted**, not kept as a fallback: it needs
+the same `CAMERA` permission and the same pipeline, so two camera rows would be a fork with no basis
+for choosing. The cost of that is stated in [docs/flaws.md](docs/flaws.md): if `CameraView` fails to
+mount there is now no other way in.
+
+This is the section that broke the streak. `expo-camera` is the first new native dependency in the
+whole parity effort, which makes Section 6 **the first item that cannot reach an installed build
+over the update channel** — it is a rebuild. The permission surface is confined to the screen that
+needs it, and a permanent refusal turns into the same *Open Settings* action the file pickers use.
+Deliberately not built: pinch-to-zoom (`CameraView.zoom` is a plain prop, so a gesture would
+re-render the camera per frame), crop and document-scan, and barcode scanning —
+`barcodeScannerEnabled: false` in the config plugin keeps ML Kit out of the APK, and
+`recordAudioAndroid: false` keeps the manifest from claiming `RECORD_AUDIO` on the camera's account.
+
+**Three commits after that gave the whole app one vocabulary.** Every affordance draws through a
+*role* in [Icon.tsx](src/components/Icon.tsx) (`send`, not `arrow-up`), every duration, curve,
+spring and stagger lives in [src/constants/animations.ts](src/constants/animations.ts), and
+[motion.tsx](src/components/motion.tsx) holds the behaviour. Reduce Motion is not an off switch:
+decorative motion collapses to `REDUCED_MS`, positional motion keeps its direction and only
+shortens, because a sheet that appears instantly no longer says which edge it came from.
+
+**§7 The sidebar and navigation.** The drawer already had the harder half — a `Modal` with a
+slide and a backdrop off one shared `drawerProgress`, Gesture-Handler drag-to-close arbitrated
+against the list's own scroll, edge-swipe-to-open, Reduce Motion, a focus trap, search over
+titles/models/tags, and an account footer naming the active gateway profile. What it did not have
+was the list screen's *shape*. Three gaps, two closed:
+
+- **Grouped headings.** The drawer rendered one flat run under a single "History", so a pinned
+  chat from March sat wherever its timestamp put it and forty rows told you nothing about where
+  last week ended. It now calls [`drawerRows`](src/chat/list.ts) — a five-line wrapper over the
+  same `buildRows` the list screen has always used, so *Pinned · Today · Yesterday · This week ·
+  Older* with counts is a reuse rather than a second implementation. While a search is running the
+  groups are dropped and the run is labelled **Matches**: results come back in relevance order,
+  and date buckets over a ranked list bury the best hit under a heading. That one decision is the
+  reason the wrapper exists rather than being a branch in JSX — it is four tests in
+  [list.test.ts](src/chat/list.test.ts) instead of untestable `.tsx`.
+- **Virtualisation.** `filtered.map()` inside a `ScrollView` mounted every row on every open; the
+  file's own comment admitted it struggled at 400 chats. It is now a `FlashList` with
+  `getItemType` per row kind and `extraData={currentId}` — without that last one a recycled cell
+  keeps the previously open chat's marker, because `currentId` is read from the closure and is not
+  in `data`. `renderScrollComponent={ScrollView}` keeps **Gesture Handler's** scroller, which is
+  what holds the panel's horizontal pan and the list's vertical one in one arbitration; the
+  default RN scroller would take the drag back and the panel would stop following the finger.
+- **A per-row menu is *not* built, and that is a decision rather than an omission** — see below.
+
+The interesting constraint was the clock. `buildRows` needs a `now`, and reading it in the render
+body is exactly what `react-hooks/purity` refuses (`Date.now()` is impure; the compiler may
+memoise the render). The previous session's render-phase-adjustment trick works for `setMounted`
+and does *not* work for a clock. The fix is a component: the history is now `DrawerHistory`, and
+because RN's `Modal` renders `null` while closed it is mounted only while the drawer is — so
+`useState(() => Date.now())` inside it reads the clock **on each open**, which is both legal and
+the right staleness. Per-keystroke would re-bucket while typing; per-app-launch would leave
+yesterday's chats under *Today* after midnight. `query` moved in with it and gained something
+free: a search no longer survives the close, so the drawer always reopens on the whole history.
+
+**Section 7 needed no new dependency and no native change**, so unlike Section 6 it reaches an
+installed build over the update channel. It is still unverified in the two ways that matter —
+grouped headings, a 400-chat scroll and the two-axis gesture argument are frame rate and touch,
+which is why it added §7 section **R**, steps 69–71, to
+[07_Deployment.md](docs/07_Deployment.md).
+
+**§10 Connected tools.** Taken out of order, because 8 and 9 need a product decision and this did
+not. Most of the section was already built and had been since v1.1 — per-tool enablement, four
+standing approval modes per tool, OAuth 2.1 with PKCE and dynamic client registration, tokens in
+the Keystore under `mcp.<id>`, per-conversation server selection, a bounded agentic loop with an
+approval gate on every call. Two things were missing, and both were about *knowing* rather than
+*doing*:
+
+- **You had to already know the URL.** [src/mcp/catalog.ts](src/mcp/catalog.ts) is eleven
+  well-known servers as a frozen array — `ConnectorEntry` with an `id` that doubles as the
+  default server name (so it must survive `qualifyToolName` intact), a vendor name, a URL,
+  a transport, an auth kind, a searched one-liner of what it is *for* and a separate line
+  of what it can *see* once connected, plus the vendor's own docs page — ordered so the
+  entries
+  needing no sign-in come first. It is **bundled data, not an integration**: no vendor SDK,
+  no
+  registry client, no network call at build or at start, and adding a connector is an entry
+  in
+  `CONNECTORS` rather than a code path. `draftFromEntry` produces the same `McpServerDraft`
+  the add
+  form produces, so tapping an entry **prefills and saves nothing** and the form's own
+  `validate`
+  runs either way — the shortcut is into the form, not around it. `connectorAdded` matches
+  on
+  normalised URL so an installed server reads *Added* instead of offering itself a second
+  time.
+  The honest parts are in the UI, not only in the docs: `CATALOG_AS_OF` is `'May 2026'` and
+  the
+  screen says so, and the screen says nothing in the list is vetted or recommended by this
+  project.
+- **Nothing answered "what can this turn actually do?"** The answer was spread across a settings
+  screen, this conversation's server list, its skill list and the plan-mode flag. `summariseTools`
+  in [builtins.ts](src/chat/builtins.ts) is one pure function over exactly those inputs, rendered
+  in the conversation ⋯ menu's **Tools** row and again as the settings hub's subtitle. It takes
+  `plan: boolean` as an **input** rather than consulting the gate, because `plan.ts` imports
+  `builtins.ts` and the reverse would close a cycle — so the plan-mode wording is duplicated, and
+  the duplication is held in step by a tripwire in `builtins.test.ts`, the one module allowed to
+  import both. Where a cycle forces two modules to know the same thing, the test that can see both
+  is the only place the agreement can live.
+
+The three global switches moved off the settings hub onto [their own screen](app/settings/tools.tsx),
+which also names the three tools that have **no** switch and why: `write_file`, `create_pdf` and
+`create_document` reach nothing but this app's own storage, so there is no access to withhold. They
+stay global and exist in exactly one place; a per-conversation copy of a decision this size is two
+sources of truth waiting to disagree.
+
+**Section 10 needed no new dependency and no native change either**, so it also ships over the
+update channel. What it cannot verify is the part that matters most: `catalog.test.ts` proves every
+entry's URL parses and every draft the form would accept, and proves nothing whatsoever about
+whether somebody else's server is up. That is §7 section **S**, steps 72–75 — and step 72 states
+the rule that a failure there means the **catalog entry is stale**, not that the handset is broken.
+
+**§11 Platform specifics.** The section that mostly turned out to be **already built, or not
+buildable from here**, and saying which is which is the deliverable. Already built, all of it
+before this section existed: `ACTION_VIEW` for eleven MIME types with `file://` refused (§3);
+outbound share through `expo-sharing` plus *Share as Markdown* and *Share as JSON*; a local
+notification when a reply lands while the app is away, with an Android channel, a body that
+truncates to one readable line, and a tap that opens the right conversation **including from a cold
+start** ([src/lib/notify.ts](src/lib/notify.ts)); a send queue that survives backgrounding
+([src/stores/queue.ts](src/stores/queue.ts)); `onRequestClose` on every one of the eight modals, so
+the hardware back button closes the surface rather than the app; `softwareKeyboardLayoutMode:
+resize`; safe-area insets in every component that reaches an edge; a status bar that follows the
+theme; a permission dead-end that routes to `Linking.openSettings()` instead of a shrug; and
+`selectable` defaulting to `true` on body text, which is what hands the Android text-selection
+toolbar its Copy, Share and Web-search for free.
+
+One real gap was found and closed, and it was in the *distribution* surface rather than the UI:
+**`expo-updates` was configured and never called.** `updates.enabled` has been `true` since
+`0803d51`, [SECURITY.md](SECURITY.md) names the channel as the only route a JavaScript security fix
+has to a hand-installed APK, and no line of JavaScript in the repository imported the package. With
+`checkAutomatically: 'ON_LOAD'` a fix downloads at launch and then waits for the *next cold start* —
+which, for an app people leave resident for days, can be a long time. The settings hub now shows a
+single **Restart to finish updating** row while `useUpdates().isUpdatePending` is true, and it is
+deliberately not a second update mechanism: doing nothing arrives at the same place, later. It says
+out loud that an unsent draft is lost, because drafts are in memory only. `isUpdatePending` is
+`false` in a dev client and on web, so the section simply never appears there and no platform guard
+was needed.
+
+**Four items are flagged rather than stubbed, because every one of them needs a rebuild** and would
+undo the property Sections 7, 10, 11 and 12 have between them — that a fix reaches an installed
+build over the update channel:
+
+| Not built | What it would cost | Why that is not a small decision |
+|---|---|---|
+| **Share *to* the app** (`ACTION_SEND`) — the share sheet entry Claude's app has | A new native dependency (`expo-share-intent` or an own config plugin) **plus** an `app.json` intent filter | Expo cannot see it without one: `Linking.getInitialURL()` and `+native-intent.tsx` both read the intent's *data* URI, and a share carries its payload in `EXTRA_TEXT` / `EXTRA_STREAM`, which neither can reach. This is the one genuine parity gap in the section |
+| **Launcher shortcuts** (long-press the icon → *New chat*) | A config plugin writing `shortcuts.xml` | Decoration, and it costs the OTA property to get |
+| **Predictive back** | Flipping `predictiveBackGestureEnabled` **and** auditing all eight modals | The flag changes how every `onRequestClose` behaves; turning it on without the audit trades a working back button for an animation |
+| **Landscape and large screens** | Unlocking `orientation: portrait` **and** a real layout pass | Every screen is currently written for one column. Unlocking the orientation without the pass ships a stretched app, which is worse than a locked one |
+
+Deferred with its reason rather than flagged, because it is JS-only and still not worth it today: **a
+typed draft does not survive process death.** Drafts live in `useChat`, which has no `persist`
+middleware on purpose. Adding one would put AsyncStorage into the import graph of the single store
+that has real test coverage, and bring a rehydrate-versus-keystroke race with it, to save a draft
+from an event Android mostly avoids for a recently-used app. Add it when someone reports losing one.
+
+**§12 Accessibility and settings.** Like §11, most of this was already there and the finding is
+what was *missing* from an otherwise thorough surface: 87 `accessibilityLabel`s, 78
+`accessibilityRole`s, 52 `accessibilityHint`s, 25 `accessibilityState`s, eight polite live regions,
+nine `accessibilityElementsHidden` / `importantForAccessibility`, `accessibilityViewIsModal` on all
+eight modals with the focus trap's reasoning written down in
+[src/components/dialog.ts](src/components/dialog.ts), `hitSlop` taking every small control past
+48dp, `MIN_TARGET = 48` as a `minHeight` rather than a `height` so text can grow the box it sits in,
+the six chart series colours carrying their measured contrast ratios in comments, and Reduce Motion
+read at mount *and subscribed to* — with per-animation judgment rather than a blanket off switch
+([motion.tsx](src/components/motion.tsx)): `Glyph` swaps its rotation for a breath, `useScenePush`
+drops out entirely because it is a large-area transform, the press dip keeps its opacity and loses
+only its scale, and every Reanimated preset carries `ReduceMotion.System`.
+
+Two gaps, both closed:
+
+- **Nothing was ever announced to a screen reader.** `announceForAccessibility` appeared zero times
+  in the repository. The transcript carries no live region on the streaming text, and that is
+  correct — a text node that changes on every delta makes TalkBack restart from the top dozens of
+  times, so the user hears the first sentence over and over and never reaches the end. But the
+  consequence was silence: a screen-reader user had no way to know a reply had arrived except to
+  swipe around looking for it. `replyAnnouncement` in [notify.ts](src/lib/notify.ts) is the
+  mirror of `replyNotice` — same input, same three silences, opposite side of `foreground` — and it
+  says **"Reply ready, 48 words"** rather than reading the reply out, because the size is the one
+  thing swiping cannot tell you cheaply and because an announcement cannot be interrupted once it
+  starts. Reading a reply aloud on purpose is a different feature with its own switch. The pair has
+  an invariant worth the test it now has: **exactly one of the two speaks for any given turn.**
+- **One control could scale out of its own box.** `StepButton`'s `−` and `+` sat in a fixed 40×36
+  box — the only `height` rather than `minHeight` in [ui.tsx](src/components/ui.tsx) — with text
+  that scaled. At Android's largest font setting the glyph grows and the box cannot. It now opts
+  out of scaling, for the same stated reason `Icon` does: a glyph in a fixed disc is not text.
+  Everything else in the file is text and still scales.
+
+Not built, with the reasoning stated so it does not read as an oversight: **there is no in-app
+haptics switch.** Android owns *Touch feedback* system-wide, and an in-app duplicate would be a
+second source of truth for a boolean the platform already has — the same argument
+[notify.ts](src/lib/notify.ts) already records for not duplicating the notification toggle.
+
+**Neither section added a dependency or any native code**, so both ship over the update channel —
+and neither is verified, because what they claim is a synthesised voice, a system setting and a text
+size. That is §7 section **T**, steps 76–79, and step 76 is the one that matters: one announcement
+per finished turn, and *never* the reply read aloud as it streams.
+
+**Nine of the ten sections needed no new dependency.** `react-native-svg`, a chart library, an XML
+library and an audio library were each considered and each declined; Section 7 reused `buildRows`
+and a `FlashList` that were already in the app, Section 10 reused the add form, the approval gate and
+`expo-secure-store`, and Sections 11 and 12 reused `expo-updates` (already installed, never called
+from JS) and `react-native`'s own `AccessibilityInfo`. Section 6 is the exception and could never
+have been anything else: `expo-camera 57.0.4` is a native module, so the parity work has gone from
+"ship a bundle" to "ship an APK", and everything in §6 is unverified until one exists.
+
+---
+
 ## What to do next, in order
 
-1. **Rebuild the APK.** `expo-speech` (read aloud), `expo-local-authentication` (the
-   app lock) and now **SQLCipher** are native, so none of them exists on a device
-   running a build made before them — and the encryption is entirely unverified
-   until one is made. `pnpm run build:apk`.
-2. The ±15% estimator-accuracy corpus, once a real key is available — it needs the
-   gateway's own reported prompt counts to measure against. This is the only item on
-   the original list that is blocked rather than done.
+1. **Build and run it on a device. This is the only item that has not moved, and the list of
+   things riding on it has grown every sprint since.** The native surface is now long enough that
+   a device run is the majority of the remaining verification, not a formality:
+   SQLCipher, `expo-camera`, `expo-speech`, `expo-speech-recognition`, `expo-local-authentication`,
+   `expo-print`, `expo-sharing`, `react-native-webview`, `react-native-gesture-handler`,
+   `expo-blur`, `expo-linear-gradient`, `expo-haptics`, `@expo/vector-icons`, `expo-updates`, and
+   the `intentFilters` block in `app.json`. None of it exists on a device running a build made
+   before it, and none of it can be verified by the gates. `expo-camera` sharpens this from a
+   backlog item into a blocker: it arrived after the 1.0.0 APK, so **no installed build has a
+   camera at all**, and no update can give it one.
 
+   ```bash
+   pnpm build:preview
+   ```
+
+   First launch must be on an **existing** install — that is what exercises the schema migration
+   chain (now v8) and the plaintext→encrypted conversion. Then the native surfaces in one pass:
+   dictation, read aloud, voice mode, the camera (§7 steps 63–68 of
+   [07_Deployment.md](docs/07_Deployment.md) — a rotated or stretched preview is a release blocker,
+   and an emulator's virtual camera will not find it), the drawer at 400 chats (steps 69–71 — the
+   grouped headings, and the two-axis argument between the panel's pan and the list's scroll), one
+   connector end to end (steps 72–75 — a failure there means the catalog entry is stale, not the
+   handset), TalkBack and the two system settings the app reads (steps 76–79 — one *"Reply ready, N
+   words"* per finished turn and never the reply read aloud, *Remove animations* flipped while the
+   app is open, the largest font size), a chart, a generated `.docx` and its preview, "open with"
+   from a file manager, a `run_code` call, the app lock, an export.
+2. **The ±15% estimator-accuracy corpus**, once a real key is available — it needs the gateway's
+   own reported prompt counts to measure against. Blocked rather than undone, and it carries three
+   other unmeasured things with it (D-11, D-15, and whether the gateway honours `cache_control` at
+   all).
+3. **A product decision on Sections 8 and 9 of the Claude-parity checklist, before any code.**
+   They are the only two left, and both are on the PRD's **non-goals** list — sync needs a server
+   and a decision about what that server is allowed to hold, which is a premise change, not a
+   feature, and a long-running agent on a phone is a battery and cost decision nobody has asked to
+   make. Everything that did **not** need the decision has now been taken: **10, then 11 and 12**.
+   What that leaves, if the answer to both is "not yet", is three flagged items that each need a
+   **rebuild** rather than a decision — share-*to* the app (`ACTION_SEND`, which needs a native
+   dependency because the payload arrives in intent extras Expo cannot read), predictive back, and
+   landscape — plus Section 7's own leftover, a per-row menu in the drawer, named below.
+4. **A debt pass over the two unplanned workstreams.** Neither v1.1 nor Sections 1–7 and 10–12 got
+   one, so `06_Eng_Plan.md` §11 is currently a sample rather than a register (D-17).
+
+*(This section previously said `pnpm run build:apk`. There is no such script — the profiles are
+`build:dev`, `build:preview`, `build:preview:local` and `build:production`, with
+`update:preview` / `update:production` / `update:rollback` for JavaScript-only fixes.)*
 
 ---
 
@@ -499,10 +849,10 @@ already exist.
 - ✅ **MCP against a scripted server** (Phase 5) — `src/mcp/client.test.ts` and `src/mcp/protocol.test.ts`: a server error, a timeout, an expired token and a denial all arriving as tool *results*.
 - ✅ **Mocked-transport tool-call loop**: multi-round tool use, an iteration-cap trip, a tool returning an error — `src/stores/__tests__/chat.tools.test.ts`, against an in-memory database double and a scripted transport. Done. The loop's *decisions* were already tested where they are pure (`selectTools`, `resolveSkillCall`, `decideApproval`, `failedCall`); this covers the wiring between them.
 
-Already covered: both transport adapters, the SSE parser (incl. split and malformed events), token counting, request building and validation, search, the markdown parser, the highlighter, the LaTeX subset, link sanitising, fence languages, relative-time formatting, conversation list grouping, the list query plan and keyset paging against real SQLite, FTS integrity checking, long-term memory (parsing, the secret screen, dedupe, budget, and the schema), bulk operations against real SQLite (cascade, transaction rollback, FTS trigger, surviving usage events), the bulk confirmation wording, export in both formats including the key-leak gate, and the harness budgeting layer (turn budget, the trim ladder, tool-manifest slimming and selection, cache breakpoint planning, and the adapter's `cache_control` placement).
+Already covered: both transport adapters, the SSE parser (incl. split and malformed events), token counting, request building and validation, search, the markdown parser, the highlighter, the LaTeX subset, link sanitising, fence languages, relative-time formatting, conversation list grouping, the list query plan and keyset paging against real SQLite, FTS integrity checking, long-term memory (parsing, the secret screen, dedupe, budget, and the schema), bulk operations against real SQLite (cascade, transaction rollback, FTS trigger, surviving usage events), the bulk confirmation wording, export in both formats including the key-leak gate, and the harness budgeting layer (turn budget, the trim ladder, tool-manifest slimming and selection, cache breakpoint planning, and the adapter's `cache_control` placement). Added since: the chart spec parser, the OOXML writer, the preview router, the inbound-intent guard, the voice script, tool labelling, the typewriter's pacing, and — with §12 — the rule that a finished turn is announced to a screen reader **or** notified, never both and never neither.
 
 **Deliverables:**
-- Release APK — `npm run build:apk` (`eas build --platform android --profile preview`); `eas.json` is configured. Must be confirmed to build before the final phase is declared complete.
+- Release APK — `pnpm build:preview` (`eas build --platform android --profile preview`); `eas.json` is configured. Must be confirmed to build before 1.0 is declared complete. **Still outstanding**, and it is item 1 above.
 - ✅ README — setup, layer map, how to add a provider or a transport, the two-base-URL distinction, security posture.
 - ✅ A separate usage guide — [docs/USAGE.md](docs/USAGE.md), rewritten end to end: first launch and the history drawer, the key, the transport, the four-step connection test, chatting, model and reasoning controls, attachments, context pressure, skills (including the zip), MCP, prompts, memory, usage, backup, export and the debug log.
 - A short closing list of anything that couldn't be implemented or verified against the live gateway, and why — "Known gaps" below is that list, plus the two deliberate non-builds under the cleanup sprint.
@@ -511,11 +861,14 @@ Already covered: both transport adapters, the SSE parser (incl. split and malfor
 
 ## Decisions a new session should not silently undo
 
+- **A cost guard asserts a ratio, never a duration.** `src/chat/list-cost.test.ts` measures a quarter of its input and then all of it, and asserts the larger run cost under 12× the smaller — linear is 4, quadratic is 16. It looks roundabout next to `expect(ms).toBeLessThan(2000)`, and the roundabout version is the only one that means anything: the absolute bounds it replaced failed on 2026-09-02 because a *second Jest process* was running, with the parser untouched. Both halves of a ratio meet the same load, so load cancels out. `fastest()` takes the minimum of three runs (contention only ever adds time) and each unit repeats 20× (so the numbers stay well above timer resolution before they are divided). Do not "simplify" any of the three back to a clock reading, and do not add a fourth guard that is one.
 - **`highlight.ts` must not import `refractor`.** It takes the HAST tree as data via its own minimal structural types, the same injection the transports use for `fetch`. refractor is ESM-only with a large `hast-util-*` transitive tree; keeping it out of the pure layer is what lets the whole suite run in the fast `node` environment. `jest.config.js` carries a transform allowlist for that tree, but the *fix* was the layering, not the allowlist — extending the regex instead would mean editing it every time refractor's dependencies shift. The component imports refractor; the pure layer never does.
 - **No `\uXXXX` escapes in string literals** in `href.ts` / `href.test.ts`. Build every non-printable from `String.fromCodePoint(...)`, or a regex from `new RegExp('\\uXXXX')`. `\n`, `\t` and `\r` are fine.
-- **The React Compiler lint rules are on, and they are load-bearing.** Two rules bite constantly and neither should be silenced with a disable comment:
+- **The React Compiler lint rules are on, and they are load-bearing.** Three rules bite constantly and none should be silenced with a disable comment:
   - `react-hooks/preserve-manual-memoization` — a `useMemo` body that reads `obj?.a.b` has `obj` as its real dependency, so listing `obj?.a.b` is rejected. Read the value into a `const` *above* the memo and depend on that.
   - `react-hooks/set-state-in-effect` — no synchronous `setState` in an effect body. Both places this came up had a better fix available: derive the value instead (the conversation list keys its search results by the query that produced them, so "stale" and "still searching" both fall out of one comparison), or let mounting be the reset (`PromptSheet` renders its body only while visible, so cancelling discards with no effect involved).
+  - `react-hooks/purity` — **no `Date.now()` in a render body**, including the render-phase adjustment block that is the sanctioned answer to the rule above. The two rules together mean there is no legal way to re-read the clock in a component that stays mounted, and the fix is not a disable comment: put the thing that needs a clock in a component that *mounts* when the clock should be read, and use `useState(() => Date.now())`. `DrawerHistory` in `Sidebar.tsx` exists for exactly this reason — RN's `Modal` renders `null` while closed, so it remounts per open and its group headings are cut against a clock read on that open. See also [src/chat/list.ts](src/chat/list.ts) `drawerRows`.
+- **The drawer deliberately has no per-row menu.** No rename, no pin, no delete, no archive, no tag, no bulk selection, no export — those are on the full list, one tap away through ACTIONS → *Chats*. The drawer is where you go to *leave* for another chat, and a menu about one row is a menu about staying. This is a repeated decision, not an unfinished one: the row actions would also have to be duplicated out of `app/index.tsx`, where `menuActions` and `confirmDelete` are component-body closures over that screen's selection, prompt and toast state. If the decision is ever reversed, extract them into a shared module first — a second copy of a delete confirmation is how two confirmations end up saying different things.
 - The API key stays out of all Zustand state.
 - **The launch redirect's "already launched" flag is at module scope in `app/index.tsx`.** Moving it into component state makes the conversation list unreachable: the screen re-mounts on every return from a chat and would redirect straight back out.
 - **A quote brought in from another chat goes into the draft, not into the request.** It is visible, editable, and counted by the composer's gauge before it is sent. Attaching it invisibly to the next turn would spend tokens on something the user cannot see, review or delete.- `max_tokens` → `max_completion_tokens` is a rename, not a drop.
@@ -549,10 +902,14 @@ Already covered: both transport adapters, the SSE parser (incl. split and malfor
 - **Thinking is not dropped from an assistant message containing a `tool_use`.** The API requires the thinking block that preceded a tool call to come back with its signature intact; dropping it is a 400, not a smaller request. `thinkingIsLoadBearing()` in `src/chat/trim.ts` is the guard, and a test in `trim.test.ts` fails if it goes.
 - **An image is resized before it is base64'd, and attachments are ingested one at a time.** Both look like premature optimisation and neither is: base64 of a 12 MP photo is a ~9 MB JavaScript string that the bridge copies, and `Promise.all` over four picked photos is four decoded bitmaps resident at once. The sequential loop is also what lets the per-message budget be checked against the accumulated set. Do not turn `ingestAssets` into a parallel map, and do not move the size check after the encode.
 - **Every manipulator and picker temporary is deleted.** One photo down four rungs of the quality ladder writes four multi-megabyte cache files and nothing else in the app would ever remove them. `discard()` stays best-effort and silent — a content URI we cannot delete is not actionable by the user.
+- **A camera shot is not encoded until the user presses *use*.** `CameraMode` holds shots as file URIs and hands the whole set to `captureShots` → `ingestAssets` at the end. Encoding on the shutter would look more responsive and would break the rule above it: four shots encoded eagerly is four base64 strings resident while a fifth is being framed, which is exactly the memory shape `ingestAssets` was made sequential to avoid. The cost is a cache file per shot, and `discardShots`/`discardable` is what pays it — an abandoned session deletes its own JPEGs, which §7 step 65 checks with `adb`.
+- **`cameraPermission` must never be set to `false` on the `expo-image-picker` plugin.** In that plugin `false` does not mean "we don't need it" — it calls `withBlockedPermissions` and actively strips `android.permission.CAMERA` from the merged manifest, which would silently disable `expo-camera`. The key is *absent* for that reason, not set.
 - **Attachment tokens are never multiplied by the calibration factor.** The factor corrects a character-ratio estimate of *prose* against reported prose. An image's 2,500 is a flat provider figure from a pixel rule; scaling it by a text-derived correction makes the gauge worse, not better.
 - **A refused attachment is a returned sentence, not a thrown error, and the sentence carries both numbers.** Four photos added and a fifth over budget is a partial success, not a failure, and the caller must not have to distinguish them — hence `AttachResult.notes`. "Attachment too large" tells the user to try again with something unspecified; `admitDocument` and `admitImage` name the file's size and the limit it missed, and `admitDocument` does it against the *picker-reported* size so a 60 MB PDF costs one sentence rather than an out-of-memory crash.
 - **A document going to a transport with no native block is warned about in the composer, before sending.** `documentSupport` returns three outcomes rather than two for this reason. Afterwards the only evidence that layout and tables were dropped is an answer that ignored them, which reads as the model being stupid rather than the app being lossy.
 - **`flattenContent` lives in `src/db/content.ts`, not `conversations.ts`.** `conversations.ts` imports `expo-sqlite`, so nothing declared in it is reachable from Jest — and this is the §8.3 projection contract, read by the FTS index, the list preview, the derived title and the memory extractor. A document must keep contributing its **name** even when no text could be read: that filename is the only handle a user has on a PDF whose contents are base64 the app cannot read.
+- **The streaming transcript must never carry `accessibilityLiveRegion`, and exactly one of `replyNotice` / `replyAnnouncement` speaks per turn.** The two halves are the same decision. A live region on text that changes on every delta makes TalkBack restart from the top on each token, so the user hears the opening words dozens of times and never reaches the end — which is why the announcement is a single one at the end of the turn instead, `"Reply ready, N words"`, fired from the one place a turn ends. `notifyReplyReady` reads `AppState` **once** and branches; do not add a second call site that asks the same question, because two of them will eventually disagree and the user gets both a banner and a voice, or neither. `announceForAccessibility` is deliberately **not** gated on `isScreenReaderEnabled` — it is already a no-op without one, and the gate would buy a race in exchange for skipping a call that does nothing. `src/lib/__tests__/notify.test.ts` pins the mutual exclusion.
+- **The *Restart to finish updating* row is not a second update mechanism.** `checkAutomatically: 'ON_LOAD'` already downloads and verifies; the row only removes the wait for a cold start, and doing nothing arrives at the same place. So it appears **only** while `useUpdates().isUpdatePending` is true, it says out loud that an unsent draft is lost, and it must not become an unconditional "check for updates" button — that would put a second downloader beside the one `expo-updates` runs, on a screen where a user pressing it repeatedly cannot tell the two apart.
 
 ---
 
@@ -568,9 +925,31 @@ Already covered: both transport adapters, the SSE parser (incl. split and malfor
 
   Two things a device run cannot retire, both in [docs/flaws.md](docs/flaws.md) §3: a
   reply stops streaming if the app is backgrounded mid-turn (the partial text is kept
-  and marked aborted), and `expo-speech` plus `expo-local-authentication` are native
-  modules, so read aloud and the app lock do not exist on a device running a build
-  made before them.
+  and marked aborted), and **the device run predates most of the native surface.** That
+  bullet used to name two modules. The list is now fourteen — `expo-sqlite`,
+  `expo-secure-store`, `expo-crypto`, `expo-local-authentication`, `expo-speech`,
+  `expo-speech-recognition`, `expo-file-system`, `expo-document-picker`,
+  `expo-image-picker`, `expo-image-manipulator`, `expo-camera`, `expo-print`,
+  `expo-sharing`, `react-native-webview`, plus `expo-haptics`, `expo-blur`,
+  `expo-linear-gradient`, `react-native-gesture-handler`,
+  `react-native-reanimated`/`react-native-worklets`
+  and `expo-updates` — and `intentFilters` in `app.json` is native config, not
+  JavaScript, so **"open with" cannot arrive over an update either**. A device running
+  a build made before any of these does not have that feature at all, and no OTA
+  update will give it one. `expo-camera` is the newest and the clearest case: it was
+  added on 2026-09-02, after the device run and after the 1.0.0 APK, so **no installed
+  build has a camera**. This is why item 1 of "what to do next" is a fresh
+  `pnpm build:preview` rather than a code change.
+- **Still unverified, because it needs a fresh device build rather than the gateway:**
+  - **The camera, entirely.** `CameraMode` has never been on a phone, and a camera preview is the least emulator-faithful surface in the app: an AVD's virtual camera renders a synthetic scene at whatever aspect ratio it likes, so it cannot tell you whether the preview is upright, whether the shot matches what the preview showed, whether the flash lamp fires, or whether the front camera's screen flash brightens the display in time for the exposure. [camera.ts](src/chat/camera.ts) is 22 tests of the flash cycle, the slot arithmetic and the status line — every one of them a decision made *around* the camera, none of them the camera itself. Steps 63–68 of [07_Deployment.md](docs/07_Deployment.md) §7 exist for exactly this gap, and a rotated or stretched preview there is a release blocker rather than a cosmetic bug.
+  - **Voice mode as a conversation.** The half-duplex loop — listen, stop, speak, listen again — is unit-tested as a state machine ([voice.test.ts](src/chat/voice.test.ts)), but whether the two OS engines actually hand off cleanly on a real device, and whether barge-in cancels the utterance fast enough to feel like interruption, is a hardware property. It is the single item on this list most likely to need tuning after first contact.
+  - **Charts, and whether the text fallback is the one people read.** `ChartView` is plain `View`s, so it will render; what is unverified is whether the accessible text summary underneath is legible at the type sizes a real screen uses, and whether the `SERIES` palette holds its contrast against the dark theme on an OLED panel rather than a simulator.
+  - **The OOXML previews.** `.docx`, `.xlsx` and `.pptx` are written with `fflate` plus string templating and unzipped back for preview in a WebView. Round-tripping through Jest proves the bytes are a valid archive; it does not prove Word, Excel or Google Docs will open them without a repair prompt. Opening one generated file of each type in a real Office app is the check.
+  - **"Open with" from another app.** `ACTION_VIEW` is registered for eleven MIME types and `+native-intent.tsx` routes the URI, but which apps actually offer this app in their share/open target list, and whether a `content://` URI from an unusual provider survives `incoming.ts`'s refusal path, needs the device.
+  - **`run_code` in the sealed WebView.** The sandbox is tested for what it refuses. Its timing behaviour under a real JavaScript engine on a mid-range phone — how long a runaway loop takes to hit the timeout, and whether the UI stays responsive while it does — is not.
+  - **Haptics, blur and gradient are all no-ops in the test environment.** They cannot fail a gate. Whether the haptic on a send feels like confirmation or like noise, and whether `expo-blur` costs frames on the drawer, are judgement calls that need a hand holding the phone.
+  - **`expo-updates` end to end.** The channel is configured and `runtimeVersion` is `appVersion`, but no update has ever actually been published and picked up by an installed build. Until one has, the rollback path (`pnpm update:rollback`) is theory. The *Restart to finish updating* row in Settings shares that fate: `isUpdatePending` is always `false` in a dev client, so the row has never rendered anywhere.
+  - **Everything §12 claims, because all three claims are a system setting or a synthesised voice.** The screen-reader announcement (`"Reply ready, N words"`) is unit-tested as a string and unverified as speech — whether TalkBack actually queues it, and whether it collides with the notification when the app is on the boundary between foreground and background, needs a device with TalkBack on. Likewise *Remove animations* flipped **while the app is running** (the `AccessibilityInfo` subscription is meant to make that take effect without a relaunch) and Android's largest font size against every screen. That is §7 section **T**, steps 76–79.
 - **Still unverified, because it needs the live gateway rather than a device:**
   - **The two list performance criteria.** 55 fps while scrolling 500 conversations and first paint of a 1,000-message transcript under 2 s are properties of the native renderer. `src/chat/list-cost.test.ts` bounds the JavaScript that runs before layout; it does not and cannot measure either criterion.
   - **Long-term memory end to end.** The distillation pass has never run against the live gateway, so how often a real model returns `[]` versus inventing trivia is unmeasured. The parser, the secret screen and the budget are tested; the *quality* of what gets remembered is not, and it is the thing most likely to need the prompt in `DISTIL_INSTRUCTION` tuned after first contact.
@@ -587,12 +966,26 @@ Already covered: both transport adapters, the SSE parser (incl. split and malfor
 
 ## Dependencies
 
-Installed and in use: `expo ~57.0.15`, `react 19.2.3`, `react-native 0.86.2`, `typescript ~6.0.3`, `expo-router`, `expo-sqlite`, `expo-secure-store`, `expo-clipboard`, `expo-crypto`, `expo-linking`, `expo-image-picker ~57.0.14`, `expo-image-manipulator ~57.0.14`, `expo-document-picker ~57.0.1`, `expo-file-system ~57.0.6`, `zustand 5`, `@react-native-async-storage/async-storage`, `@shopify/flash-list 2.0.2`, `react-native-safe-area-context`, `react-native-screens`, `marked 18`, `refractor 5`, `expo-speech ~57.0.2` (read aloud), `expo-local-authentication 57.0.2` (the app lock), `js-yaml` (Phase 4 frontmatter), `fflate` (skill frontmatter archives — bulk skill import/export).
+Measured from `package.json` on 2026-09-02, not remembered.
 
-Still to install: nothing. `expo-sharing` was pencilled in for a "save as a file" export and is not needed — `expo-file-system` is in the tree for attachments and the skills zip, so a folder-picked write is already available if a transcript ever wants one; the share sheet is the better handover for text. `expo-speech` and `expo-local-authentication` are the only two installs since Phase 5, both official Expo SDK modules, and both **native** — a device running an APK built before them needs a rebuild before read aloud and the app lock exist.
+**Runtime core** — `expo ~57.0.18`, `expo-router ~57.0.17`, `react 19.2.3`, `react-native 0.86.3`, `typescript ~6.0.3`, `zustand ^5.0.15`, `@react-native-async-storage/async-storage 2.2.0`, `@shopify/flash-list 2.0.2`, `react-native-safe-area-context ~5.7.0`, `react-native-screens ~4.26.0`, `@babel/runtime ^7.29.7`, `@expo/metro-runtime ~57.0.14`.
 
-`pnpm audit` reports three advisories, all in build tooling that never reaches the device (Metro's `image-size` ×2, `xcode`'s `uuid`). No override was added; the reasoning is in [docs/flaws.md](docs/flaws.md) §5, which is worth re-running on every Expo or React Native bump.
+**Storage and security** — `expo-sqlite ~57.0.2` (SQLCipher + FTS5 + WAL), `expo-secure-store ~57.0.2`, `expo-crypto ~57.0.2`, `expo-local-authentication ~57.0.2` (the app lock).
 
-Nothing else. `expo-web-browser` / `expo-auth-session` were pencilled in for Phase 5's OAuth flow and turned out to be unnecessary: `expo-linking` was already in the tree for deep links and does both halves of the hand-off.
+**Content and files** — `marked ^18.0.10`, `refractor ^5.0.0`, `fflate ^0.8.3` (skill archives **and** the OOXML writer), `js-yaml ^5.4.1` (skill frontmatter), `expo-file-system ~57.0.6`, `expo-document-picker ~57.0.1`, `expo-image-picker ~57.0.14` (the gallery; its camera path was retired with `captureImage`), `expo-camera 57.0.4` (the in-app viewfinder, with `recordAudioAndroid: false` and `barcodeScannerEnabled: false` in the config plugin so the APK claims no `RECORD_AUDIO` on the camera's account and ships no ML Kit), `expo-image-manipulator ~57.0.14`, `expo-print ^57.0.1` (Markdown → PDF), `expo-sharing ^57.0.16`, `expo-clipboard ~57.0.1`, `react-native-webview 13.16.1` (artifacts, previews and the `run_code` sandbox — one sealed WebView, three uses).
+
+**Voice** — `expo-speech ~57.0.2` (read aloud and the speaking half of voice mode), `expo-speech-recognition ^57.0.0` (dictation and the listening half). No audio library: the two OS engines take turns.
+
+**Presentation and motion** — `react-native-reanimated 4.5.1`, `react-native-worklets 0.10.1`, `react-native-gesture-handler ~2.32.0`, `expo-blur ~57.0.2`, `expo-linear-gradient ~57.0.1`, `expo-haptics ~57.0.2`, `@expo/vector-icons 15.1.1`.
+
+**Platform** — `expo-linking ~57.0.8` (deep links *and* both halves of the MCP OAuth hand-off), `expo-constants ~57.0.16`, `expo-splash-screen ~57.0.8`, `expo-status-bar ~57.0.1`, `expo-notifications ~57.0.15`, `expo-updates 57.0.19`, `expo-dev-client ~57.0.16`, `react-dom 19.2.3` + `react-native-web ^0.21.2` (present for the `web` script; the app targets Android).
+
+**Reanimated and Worklets are pinned exactly, not floated**, because their C++ ABI has to match — a caret on either is how the build breaks in a way no gate can see.
+
+**Deliberately not installed, each with the thing that replaced it:** `react-native-svg` and every chart library (charts are views and text), an XML/OOXML library (`fflate` plus string templating), an audio library (the two OS speech engines), `expo-share-intent` (`ACTION_VIEW` is registered, `ACTION_SEND` is not), `expo-web-browser` + `expo-auth-session` (`expo-linking` does both halves of the OAuth hand-off), `expo-media-library` (a generated file goes to the app's own document directory and out through the folder picker, so nothing needs the shared gallery), `react-native-maps`, `@shopify/react-native-skia`. `expo-camera` was on this list until Section 6 of the parity checklist and is the only thing that has ever come off it — one native module in twelve sections, which is the point rather than an accident.
+
+**Every native module needs a rebuild, and an OTA update cannot carry one.** `expo-updates` is enabled and that is remote-code trust taken deliberately — it is the only route a JavaScript security fix has to a hand-installed APK. The three mitigations are load-bearing: the channel is signed by Expo, `runtimeVersion` is `appVersion` so an update cannot cross a native boundary, and `fallbackToCacheTimeout: 0` means a slow or hostile network delays nothing.
+
+`pnpm audit` reported three advisories at the last check, all in build tooling that never reaches the device (Metro's `image-size` ×2, `xcode`'s `uuid`). No override was added; the reasoning is in [docs/flaws.md](docs/flaws.md) §5, which is worth re-running on every Expo or React Native bump.
 
 `.npmrc` sets `legacy-peer-deps` (an ERESOLVE peer conflict in the Expo 57 tree). `package.json` has an `allowScripts` entry for `unrs-resolver`, whose skipped postinstall was what made Jest fail to resolve `babel-jest` by bare name — hence the `require.resolve('babel-jest')` in `jest.config.js`.

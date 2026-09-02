@@ -59,6 +59,17 @@ export function artifactKind(lang: string | undefined, code: string): ArtifactKi
 }
 
 /**
+ * The same question asked of a filename.
+ *
+ * A file this app wrote gets previewed by its extension rather than a fence tag, and the
+ * answer has to come from the same table — an `.html` the files list will render and an
+ * `html` fence it will not are the sort of pair nobody notices until one of them is wrong.
+ */
+export function artifactKindForFile(name: string): ArtifactKind | null {
+  return KINDS[name.toLowerCase().split('.').pop() ?? ''] ?? null;
+}
+
+/**
  * The content security policy every artifact is rendered under.
  *
  * `data:` is permitted for images and fonts because an inline SVG or a base64 sprite is

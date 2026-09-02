@@ -1,5 +1,15 @@
 # Agent 3 — JORDAN, The Researcher
 
+> **Historical record — see [the status box on the consolidated report](00-consolidated-report.md)
+> before trusting anything below.** Dated 2026-09-01, against a Phase 1 app then called
+> AgentRouter Mobile; it is now SuperAgent. All four of Jordan's findings are closed:
+> the tag filter now reaches the message pass (`searchMessages(trimmed, filters)`,
+> [index.tsx:379](app/index.tsx:379)), archive has a UI, and both list-copy bugs were
+> fixed with a comment left at the fix site naming this report's symptom
+> ([chat.ts:1721](src/stores/chat.ts:1721) for *"No messages yet"* beside *"6 messages"*,
+> [index.tsx:1047](app/index.tsx:1047) for a verdict delivered before the hits arrive).
+> Kept unedited because the 77–349 ms search timings are live-gateway measurements.
+
 **Persona.** Runs many parallel threads and treats the app as a knowledge base, not a chat window. Judges it on retrieval: can I find the thing I asked three weeks ago, and can I keep the list from becoming unusable at fifty conversations?
 
 **Session.** Five conversations created and populated with real replies from `claude-opus-5` — *Machine Learning Basics*, *Python Tips*, *AI Ethics*, *Database Design*, *DevOps Guide* — then tagged, filtered, searched and, where the app allowed it, archived. Seven conversations total by the end of the session.

@@ -3,17 +3,21 @@ import {
   builtinTools,
   capFetched,
   checkFetchUrl,
+  CREATE_DOCUMENT,
   CREATE_PDF,
   FETCH_URL,
   htmlToText,
   MAX_FILE_CHARS,
+  parseDocument,
   parsePdf,
   parseWriteFile,
   READ_RESOURCE,
   RUN_CODE,
   safeBasename,
+  summariseTools,
   WRITE_FILE,
 } from '@/chat/builtins';
+import { blockedInPlanMode } from '@/chat/plan';
 
 describe('safeBasename', () => {
   it('keeps an ordinary name and adds the extension', () => {
@@ -87,6 +91,40 @@ describe('parsePdf', () => {
 
   it('refuses an empty body', () => {
     expect(parsePdf({ name: 'x', markdown: '' })).toMatchObject({ ok: false });
+  });
+});
+
+describe('parseDocument', () => {
+  it('accepts the three formats and fixes the extension to match', () => {
+    expect(parseDocument({ name: 'plan', format: 'docx', markdown: '# hi' })).toEqual({
+      ok: true,
+      name: 'plan.docx',
+      format: 'docx',
+      markdown: '# hi',
+    });
+    expect(parseDocument({ name: 'budget.txt', format: 'XLSX', markdown: 'a' })).toMatchObject({
+      name: 'budget.xlsx',
+      format: 'xlsx',
+    });
+    expect(parseDocument({ name: 'deck', format: 'pptx', markdown: 'a' })).toMatchObject({ format: 'pptx' });
+  });
+
+  it('defaults to a Word document when the format is missing', () => {
+    expect(parseDocument({ name: 'notes', markdown: 'a' })).toMatchObject({ format: 'docx', name: 'notes.docx' });
+  });
+
+  // The one that matters: the format decides which writer runs, so an unknown one is
+  // refused rather than corrected — writing docx bytes into a file called `.pages`
+  // produces something no app will open and no error anyone can act on.
+  it('refuses a format it cannot write, and names the ones it can', () => {
+    const refused = parseDocument({ name: 'x', format: 'pages', markdown: 'a' });
+    expect(refused).toMatchObject({ ok: false });
+    if (refused.ok) throw new Error('unreachable');
+    expect(refused.reason).toContain('docx, xlsx, pptx');
+  });
+
+  it('refuses an empty body', () => {
+    expect(parseDocument({ name: 'x', format: 'docx', markdown: '   ' })).toMatchObject({ ok: false });
   });
 });
 
@@ -166,7 +204,7 @@ describe('capFetched', () => {
 describe('builtinTools', () => {
   it('always offers the file tools', () => {
     const names = builtinTools({ web: false, resources: [] }).map((tool) => tool.name);
-    expect(names).toEqual([WRITE_FILE, CREATE_PDF]);
+    expect(names).toEqual([WRITE_FILE, CREATE_PDF, CREATE_DOCUMENT]);
   });
 
   it('offers web access only when it is switched on', () => {
@@ -191,5 +229,47 @@ describe('builtinTools', () => {
     // the model is offered a tool that comes back "unknown tool".
     const all = builtinTools({ web: true, code: true, resources: ['file:///a'] }).map((tool) => tool.name);
     expect([...all].sort()).toEqual([...BUILTIN_TOOL_NAMES].sort());
+  });
+});
+
+describe('summariseTools', () => {
+  const NONE = { web: false, search: false, code: false, serverTools: 0, servers: 0, skills: 0, plan: false };
+
+  it('names the three that are always there', () => {
+    expect(summariseTools(NONE)).toBe('files, PDFs and documents');
+  });
+
+  it('adds each switch as it comes on', () => {
+    expect(summariseTools({ ...NONE, web: true, search: true, code: true })).toBe(
+      'files, PDFs and documents · web pages · web search · code',
+    );
+  });
+
+  it('counts server tools and the servers they came from', () => {
+    expect(summariseTools({ ...NONE, serverTools: 7, servers: 2 })).toContain('7 tools from 2 servers');
+    expect(summariseTools({ ...NONE, serverTools: 1, servers: 1 })).toContain('1 tool from 1 server');
+  });
+
+  it('counts skills', () => {
+    expect(summariseTools({ ...NONE, skills: 1 })).toContain('1 skill');
+    expect(summariseTools({ ...NONE, skills: 3 })).toContain('3 skills');
+  });
+
+  it('says nothing about servers or skills when there are none', () => {
+    expect(summariseTools(NONE)).not.toMatch(/server|skill/);
+  });
+
+  it('matches what plan mode actually blocks', () => {
+    // The tripwire. `plan.ts` owns the gate and cannot be imported by `builtins.ts`,
+    // so if the split below ever moves, these words have to move with it.
+    expect([WRITE_FILE, CREATE_PDF, CREATE_DOCUMENT].every(blockedInPlanMode)).toBe(true);
+    expect([FETCH_URL, RUN_CODE, READ_RESOURCE].some(blockedInPlanMode)).toBe(false);
+
+    const planning = summariseTools({ ...NONE, web: true, code: true, serverTools: 4, servers: 1, plan: true });
+    expect(planning).toContain('writing blocked');
+    expect(planning).toContain('4 server tools blocked');
+    // The read-only two survive, which is the half a "plan mode is on" badge cannot say.
+    expect(planning).toContain('web pages');
+    expect(planning).toContain('code');
   });
 });

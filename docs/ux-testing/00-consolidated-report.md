@@ -1,5 +1,55 @@
 # AgentRouter Mobile — Consolidated UX Test Report
 
+> **Status: historical record, kept unedited below. Read this box first.**
+>
+> This report is a snapshot of a **Phase 1** app and is deliberately **not** being
+> rewritten to match the current one. It is dated 2026-09-01 and describes
+> "AgentRouter Mobile"; the app is now **SuperAgent** (one constant, `src/lib/app.ts`
+> — see [progress.md](../../progress.md)). Three things have changed since:
+>
+> 1. **The 28 findings have been worked through.** Spot-checked against source on
+>    2026-09-02, every finding sampled is closed: UX-01 is `pickProbeModel`
+>    ([openai.ts:276](src/transports/openai.ts:276)) with an explicit
+>    "switch the profile to a listed model" message; UX-02 is `focusRingStyle`
+>    ([ui.tsx:113](src/components/ui.tsx:113)); UX-03 and UX-13 are
+>    `accessibilityLabel` on `Field` and `SwitchRow`
+>    ([ui.tsx:1028](src/components/ui.tsx:1028), [ui.tsx:767](src/components/ui.tsx:767));
+>    UX-06 passes the filters through (`searchMessages(trimmed, filters)`,
+>    [index.tsx:379](app/index.tsx:379)); UX-07 has an archive UI; UX-08 and UX-26 are
+>    `MIN_TARGET = 48` plus `hitSlop` ([ui.tsx:66](src/components/ui.tsx:66)) rather
+>    than inflated designs; UX-10 is [OfflineBanner.tsx](src/components/OfflineBanner.tsx);
+>    UX-18 keeps every usage field optional so unknown is not zero
+>    ([usage.ts](src/chat/usage.ts)); UX-20 is `app/settings/usage.tsx`; UX-22 and
+>    UX-23 both left comments at the fix site naming this report's symptom
+>    ([chat.ts:1721](src/stores/chat.ts:1721), [index.tsx:1047](app/index.tsx:1047));
+>    UX-28 is `topK` on both transports. **This box is not a per-ticket audit** — it is
+>    a sample. Treat any individual claim in the body below as describing the app as it
+>    was, not as it is.
+> 2. **The scope line is now much narrower than the app.** Multimodal, Skills, MCP and
+>    the offline queue were out of scope here and all four have since shipped, as have
+>    v1.1 and Sections 1–7 plus 10–12 of a Claude-parity checklist (inline visuals, file
+>    reading and generation, voice mode, an in-app camera, a grouped and virtualised
+>    history drawer, a bundled directory of tool servers with a one-line answer to
+>    what a turn can do, a platform pass and an accessibility pass). None of that surface
+>    was ever tested
+>    by these personas, so **the absence of a finding below says nothing about it.**
+>    The accessibility pass matters most to this file, because
+>    [Morgan](05-morgan-accessibility.md) is the report it overlaps: it took the app to 87
+>    labels, 78 roles, 52 hints, 25 state props and `accessibilityViewIsModal` on all eight
+>    modals, and added an end-of-turn screen-reader announcement that did not exist when
+>    Morgan ran. It also inherits Morgan's own closing caveat — **TalkBack itself is still
+>    unverified**, so the pass is a set of properties in the tree, not a measured
+>    experience ([flaws.md](../flaws.md) §3).
+> 3. **The one honest gap this report opened is still open.** Its measurements came
+>    from a live gateway with real credentials; the current record has no working key
+>    ([progress.md](../../progress.md) "Known gaps"), so the timing numbers below —
+>    2.6–3.1 s to first token, 77–349 ms search, 7.6 s to failure — are the **only**
+>    live-gateway measurements this repository has. That is why the file is kept.
+>
+> Current status lives in [progress.md](../../progress.md),
+> [progress-v1.1.md](../../progress-v1.1.md) and
+> [docs/flaws.md](../flaws.md) — not here.
+
 **Scope.** Five personas, 21 scenarios, one live gateway. Phase 1 functionality only; multimodal, Skills, MCP and the offline queue were out of scope and were not tested.
 
 **Method.** The app was driven end to end against the supplied OpenAI-compatible gateway (`claude-opus-5`) with real credentials — real streaming completions, real model discovery, real mid-stream connection loss, real offline relaunch. Timings are measured, contrast ratios are computed from the palette source, touch targets are measured in dp, and tap counts are counted. Where a finding could only be established from source, or could not be verified off a physical Android device, it says so.

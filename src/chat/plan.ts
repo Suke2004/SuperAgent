@@ -25,7 +25,7 @@
  * Pure module, no imports from the loop. The loop calls it; the tests call it too.
  */
 
-import { CREATE_PDF, FETCH_URL, READ_RESOURCE, RUN_CODE, WRITE_FILE } from '@/chat/builtins';
+import { CREATE_DOCUMENT, CREATE_PDF, FETCH_URL, READ_RESOURCE, RUN_CODE, WRITE_FILE } from '@/chat/builtins';
 import { MCP_TOOL_PREFIX } from '@/mcp/protocol';
 
 /**
@@ -38,7 +38,7 @@ import { MCP_TOOL_PREFIX } from '@/mcp/protocol';
 const READ_ONLY_BUILTINS = new Set<string>([FETCH_URL, READ_RESOURCE, RUN_CODE]);
 
 /** Built-ins that produce a file. Named so the reason for blocking them is visible. */
-const WRITING_BUILTINS = new Set<string>([WRITE_FILE, CREATE_PDF]);
+const WRITING_BUILTINS = new Set<string>([WRITE_FILE, CREATE_PDF, CREATE_DOCUMENT]);
 
 /**
  * Whether plan mode should refuse this call.

@@ -24,8 +24,9 @@ export const jsonStorage = createJSONStorage(() => AsyncStorage);
 /**
  * Standard persist options.
  *
- * `version` + `migrate` are wired up front so a future shape change doesn't have
- * to start by discarding the user's profiles.
+ * `version` is set even though nothing has needed a `migrate` yet: without a
+ * version there is no way to tell an old blob from a new one, so the first shape
+ * change would have to start by discarding the user's profiles.
  */
 export function persistConfig<T>(
   name: string,

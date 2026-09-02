@@ -164,6 +164,27 @@ const dark: Palette = {
   thinkingBorder: '#3d3d39',
 };
 
+/**
+ * The chart series ramp, in the order series are drawn.
+ *
+ * Deliberately not a `Palette` token: every entry there is one colour, and
+ * `keyof Palette` is the type a `tone` prop is checked against — an array in that
+ * union would type-check as a colour and then render as nothing.
+ *
+ * A chart is the one place in this app where colour *is* the information rather than
+ * decoration, so these differ in lightness as well as hue and the chart draws a legend
+ * beside them: a reader who cannot separate the clay from the green can still separate
+ * dark from light, and read the names either way. Each measures at least 3:1 against
+ * its own `bg`, which is the WCAG 1.4.11 floor for a graphic that carries meaning.
+ *
+ * Six, which is `MAX_SERIES` in `@/components/markdown/chart` — past that a phone
+ * cannot tell them apart, so the chart refuses rather than cycling the ramp.
+ */
+export const SERIES: Record<ResolvedScheme, readonly string[]> = {
+  light: ['#c1603c', '#3f6f8f', '#3f7a52', '#8a6bab', '#a8802a', '#b04a7a'],
+  dark: ['#d97757', '#7ab0d4', '#7fc494', '#b79ae0', '#e0b95f', '#e88fb5'],
+};
+
 export const spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
 
 export const radius = { sm: 8, md: 12, lg: 16, xl: 20, pill: 999 } as const;
@@ -205,6 +226,8 @@ export const serifFont = Platform.select({
 export interface Theme {
   scheme: ResolvedScheme;
   colors: Palette;
+  /** The chart ramp for this scheme. See {@link SERIES}. */
+  series: readonly string[];
   spacing: typeof spacing;
   radius: typeof radius;
   fontSize: typeof fontSize;
@@ -216,6 +239,7 @@ function buildTheme(scheme: ResolvedScheme): Theme {
   return {
     scheme,
     colors: scheme === 'dark' ? dark : light,
+    series: SERIES[scheme],
     spacing,
     radius,
     fontSize,

@@ -132,6 +132,25 @@ export function buildRows(conversations: readonly Conversation[], now: number): 
 }
 
 /**
+ * The same rows for the drawer, where a search flattens the groups.
+ *
+ * The drawer shows the identical corpus as the list screen and groups it with the
+ * identical {@link buildRows} — but only at rest. A query puts the results in
+ * relevance order, and cutting *those* into date buckets buries the best hit under
+ * a heading: "Pinned", then one row, then "Older", then the row you wanted. So a
+ * search returns a flat run and the drawer labels it "Matches" instead.
+ *
+ * Filtering is folded in so the decision and the input to it cannot drift apart —
+ * grouping by whether the query is empty while filtering by something else is the
+ * one way this goes wrong, and it is not a way it can go wrong from here.
+ */
+export function drawerRows(conversations: readonly Conversation[], query: string, now: number): ListRow[] {
+  const filtered = filterConversations(conversations, { query });
+  if (!query.trim()) return buildRows(filtered, now);
+  return filtered.map((conversation) => ({ kind: 'conversation', key: `conv:${conversation.id}`, conversation }));
+}
+
+/**
  * Tag counts for the filter chips, most used first then alphabetical.
  *
  * Derived from the loaded conversations rather than from {@link allTags} so the
