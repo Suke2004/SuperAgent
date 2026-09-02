@@ -57,8 +57,10 @@ import { buildRequest, composeSystem, validateConfig, hasBlockingIssue } from '@
 import { formatBytes } from '@/chat/attachments';
 import {
   builtinTools,
+  CREATE_DOCUMENT,
   CREATE_PDF,
   FETCH_URL,
+  parseDocument,
   parsePdf,
   parseWriteFile,
   READ_RESOURCE,
@@ -67,6 +69,7 @@ import {
 } from '@/chat/builtins';
 import { parseRunCode, runInSandbox } from '@/chat/sandbox';
 import { writeGeneratedFile, writePdf } from '@/chat/files';
+import { officeDocument } from '@/chat/ooxml';
 import { fetchAsText } from '@/chat/web';
 import { describeWithheldTools, selectTools } from '@/chat/tools';
 import { blockedInPlanMode, describeBlockedCalls, planRefusal } from '@/chat/plan';
@@ -1087,6 +1090,7 @@ async function resolveCall(
   if (call.name === INVOKE_SKILL) return resolveSkillCall(call.input, skills);
   if (call.name === WRITE_FILE) return resolveWriteFile(call.input);
   if (call.name === CREATE_PDF) return resolvePdf(call.input);
+  if (call.name === CREATE_DOCUMENT) return resolveDocument(call.input);
   if (call.name === FETCH_URL) return resolveFetch(call.input);
   if (call.name === RUN_CODE) return resolveRunCode(call.input);
   if (call.name === READ_RESOURCE) return resolveResource(call.input, servers);
@@ -1127,6 +1131,29 @@ async function resolvePdf(input: unknown): Promise<ResolvedCall> {
     };
   } catch (error) {
     return { content: `Could not render that PDF: ${message(error)}`, isError: true };
+  }
+}
+
+/**
+ * Writes the Word, Excel or PowerPoint file.
+ *
+ * The result says the file is editable, which is the whole reason this tool exists next
+ * to `create_pdf`: a model that cannot tell the two apart will reach for the PDF, and a
+ * PDF is where a document goes to stop being changed.
+ */
+async function resolveDocument(input: unknown): Promise<ResolvedCall> {
+  const request = parseDocument(input);
+  if (!request.ok) return { content: request.reason, isError: true };
+  try {
+    const file = await writeGeneratedFile(request.name, officeDocument(request.markdown, request.format));
+    return {
+      content:
+        `Wrote ${file.name} (${formatBytes(file.bytes)}). It is in the app's files, where the user can preview, ` +
+        `edit in Word, Excel or PowerPoint, save to a folder or share it.`,
+      file: { name: file.name, uri: file.uri, bytes: file.bytes },
+    };
+  } catch (error) {
+    return { content: `Could not write that document: ${message(error)}`, isError: true };
   }
 }
 
@@ -1354,7 +1381,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     const selection = selectTools({
       tools: offered,
       budget: Math.round(capabilities.contextWindow * TOOL_BUDGET_SHARE),
-      required: [INVOKE_SKILL, WRITE_FILE, CREATE_PDF],
+      required: [INVOKE_SKILL, WRITE_FILE, CREATE_PDF, CREATE_DOCUMENT],
     });
     const withheldNote = describeWithheldTools(selection.withheld);
 

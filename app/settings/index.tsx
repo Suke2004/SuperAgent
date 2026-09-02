@@ -7,9 +7,11 @@
  */
 
 import { useRouter } from 'expo-router';
+import { reloadAsync, useUpdates } from 'expo-updates';
 import { useEffect, useState } from 'react';
 
 import { Row, Screen, Section, SwitchRow } from '@/components/ui';
+import { summariseTools } from '@/chat/builtins';
 import { appLockAvailable, unlockApp } from '@/lib/appLock';
 import { useMemory } from '@/stores/memory';
 import { useProviders } from '@/stores/providers';
@@ -31,6 +33,9 @@ export default function SettingsHub() {
   const projectCount = useProjects((s) => s.projects.length);
   const active = profiles.find((p) => p.id === activeId);
   const [lockAvailable, setLockAvailable] = useState<boolean | null>(null);
+  // `false` in a dev client and on web, where there is no update channel to check, so
+  // the section below simply never appears rather than needing a platform guard.
+  const { isUpdatePending } = useUpdates();
 
   useEffect(() => {
     void appLockAvailable().then(setLockAvailable);
@@ -38,6 +43,33 @@ export default function SettingsHub() {
 
   return (
     <Screen>
+      {/*
+        First, and only when there is something to say. An update reaching the device is
+        the one route a JavaScript security fix has to an APK that was installed by hand
+        (SECURITY.md), and `checkAutomatically: 'ON_LOAD'` already downloaded and verified
+        it — but it takes effect on the next *cold* start, and a chat app is one people
+        leave resident for days. This row is that wait made optional, not a second update
+        mechanism: doing nothing arrives at the same place.
+      */}
+      {isUpdatePending ? (
+        <Section
+          title="Update"
+          note="Already downloaded and verified. It takes effect the next time the app starts from cold; restarting now is the same thing, sooner."
+        >
+          <Row
+            first
+            icon="retry"
+            label="Restart to finish updating"
+            subtitle="A draft you have typed but not sent is lost — send or copy it first."
+            onPress={() => {
+              // Nothing to catch: `reloadAsync` either replaces this process or rejects
+              // because there was nothing pending after all, and both are fine.
+              void reloadAsync().catch(() => {});
+            }}
+          />
+        </Section>
+      ) : null}
+
       <Section title="Gateway">
         <Row
           first
@@ -112,32 +144,26 @@ export default function SettingsHub() {
       <Section
         title="Built-in tools"
         note={
-          'Writing files and rendering PDFs are always available — they only touch this app’s own storage. ' +
-          'Fetching a page is not: the address can come from something the model just read, so it stays off ' +
-          'until you say otherwise. Local and private network addresses are refused either way.'
+          'What the app’s own tools may do, in every conversation. Writing files and rendering documents are always ' +
+          'available; reaching the network and running code are not.'
         }
       >
-        <SwitchRow
+        <Row
           first
-          icon="external"
-          label="Let the model fetch web pages"
-          subtitle="One GET at a time, text only, no cookies and no credentials"
-          value={settings.allowWebFetch}
-          onChange={(next) => settings.set('allowWebFetch', next)}
-        />
-        <SwitchRow
-          icon="search"
-          label="Let the model search the web"
-          subtitle="Anthropic profiles only · billed per search, and the results enter the context window"
-          value={settings.allowWebSearch}
-          onChange={(next) => settings.set('allowWebSearch', next)}
-        />
-        <SwitchRow
+          chevron
           icon="tools"
-          label="Let the model run code"
-          subtitle="JavaScript in a sandbox with no network, no storage and no access to this app. For arithmetic and parsing it would otherwise guess at."
-          value={settings.allowRunCode}
-          onChange={(next) => settings.set('allowRunCode', next)}
+          label="Built-in tools"
+          value={summariseTools({
+            web: settings.allowWebFetch,
+            search: settings.allowWebSearch,
+            code: settings.allowRunCode,
+            serverTools: 0,
+            servers: 0,
+            skills: 0,
+            plan: false,
+          })}
+          subtitle="Fetch a page, search the web, run code"
+          onPress={() => router.push('/settings/tools')}
         />
       </Section>
 

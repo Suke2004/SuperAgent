@@ -26,7 +26,7 @@ import type { FlashListRef } from '@shopify/flash-list';
 import * as Clipboard from 'expo-clipboard';
 import { Stack as NavStack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, PanResponder, Pressable, ScrollView, View } from 'react-native';
+import { Alert, PanResponder, Platform, Pressable, ScrollView, View } from 'react-native';
 import type { NativeScrollEvent, NativeSyntheticEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Reanimated, { FadeInDown, ReduceMotion } from 'react-native-reanimated';
@@ -46,12 +46,15 @@ import { ContextMenu } from '@/components/ContextMenu';
 import type { Anchor } from '@/components/ContextMenu';
 import { toast } from '@/components/Toast';
 import { CommandBar } from '@/components/chat/CommandBar';
+import { CameraMode } from '@/components/chat/CameraMode';
 import { Composer } from '@/components/chat/Composer';
+import { FilePreview } from '@/components/chat/FilePreview';
 import { MessageView } from '@/components/chat/MessageView';
 import { ReferenceSheet } from '@/components/chat/ReferenceSheet';
 import { ScrollDownButton } from '@/components/chat/ScrollDownButton';
 import { StreamView } from '@/components/chat/StreamView';
 import { VariantPager } from '@/components/chat/VariantPager';
+import { VoiceMode } from '@/components/chat/VoiceMode';
 import {
   Body,
   Button,
@@ -70,11 +73,31 @@ import { formatStopSequences, hasBlockingIssue, mergeParams, parseStopSequences,
 import { replyReservation, sendConfirmation } from '@/chat/budget';
 import { buildCommandIndex, buildMentionIndex, commandQuery, mentionQuery, rankCommands, replaceMention } from '@/chat/commands';
 import type { CommandItem } from '@/chat/commands';
-import { deleteGeneratedFile, listGeneratedFiles, shareGeneratedFile } from '@/chat/files';
+import { deleteGeneratedFile, listGeneratedFiles, saveToFolder, shareGeneratedFile } from '@/chat/files';
 import type { GeneratedFile } from '@/chat/files';
 import { appendQuote, quoteMessage } from '@/chat/reference';
-import { attachExistingFile, captureImage, openAppSettings, pickDocuments, pickImages } from '@/chat/attach';
-import { documentCaveat, documentSupport, formatBytes, imageSupport, MAX_ATTACHMENTS_PER_MESSAGE } from '@/chat/attachments';
+import { previewFor } from '@/chat/preview';
+import { summariseTools } from '@/chat/builtins';
+import {
+  attachExistingFile,
+  attachIncomingFile,
+  captureShots,
+  discardShots,
+  openAppSettings,
+  pickDocuments,
+  pickImages,
+} from '@/chat/attach';
+import {
+  admitAnother,
+  documentCaveat,
+  documentSupport,
+  formatBytes,
+  imageSupport,
+  MAX_ATTACHMENTS_PER_CONVERSATION,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  remainingSlots,
+  sentAttachments,
+} from '@/chat/attachments';
 import { useMemory } from '@/stores/memory';
 import type { ConfigIssue } from '@/chat/request';
 import { parseTags } from '@/chat/list';
@@ -83,6 +106,7 @@ import type { DeliveryMethod } from '@/chat/deliver';
 import type { ExportFormat } from '@/chat/export';
 import { plural } from '@/chat/selection';
 import { speakOrStop } from '@/chat/speech';
+import { speechOptions, styleById } from '@/chat/voice';
 import { toUnifiedMessages } from '@/db/conversations';
 import type { SearchHit, StoredMessage } from '@/db/conversations';
 import * as haptics from '@/lib/haptics';
@@ -129,7 +153,12 @@ export default function ChatScreen() {
   // Already includes the navigation bar on Android, so it replaces `insets.bottom`
   // while the keyboard is open rather than adding to it.
   const keyboardHeight = useKeyboardHeight();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, file, name: fileName, refused } = useLocalSearchParams<{
+    id: string;
+    file?: string;
+    name?: string;
+    refused?: string;
+  }>();
 
   const conversation = useConversation(id);
   const messages = useMessages(id);
@@ -163,7 +192,11 @@ export default function ChatScreen() {
   const memoryEnabled = useSettings((s) => s.memoryEnabled);
   const contextStrategy = useSettings((s) => s.contextStrategy);
   const allowRunCode = useSettings((s) => s.allowRunCode);
+  const allowWebFetch = useSettings((s) => s.allowWebFetch);
+  const allowWebSearch = useSettings((s) => s.allowWebSearch);
   const devPanel = useSettings((s) => s.devPanelEnabled);
+  const voiceStyle = useSettings((s) => s.voiceStyle);
+  const speechRate = useSettings((s) => s.speechRate);
 
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -214,6 +247,10 @@ export default function ChatScreen() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [attachMenu, setAttachMenu] = useState(false);
+  /** Voice mode, a full-screen modal over this screen rather than a route. See `VoiceMode`. */
+  const [voiceMode, setVoiceMode] = useState(false);
+  /** The in-app camera, a modal for the same reason voice mode is. See `CameraMode`. */
+  const [cameraMode, setCameraMode] = useState(false);
   /** The collapsible history drawer. Collapsed is unmounted — see `Sidebar`. */
   const [sidebar, setSidebar] = useState(false);
   /** What this page does while that drawer is coming in. */
@@ -272,10 +309,11 @@ export default function ChatScreen() {
     [],
   );
   const [reference, setReference] = useState(false);
-  /** The generated-files sheet, and the one file whose actions are open. */
+  /** The generated-files sheet, the one file whose actions are open, and the one being read. */
   const [filesOpen, setFilesOpen] = useState(false);
   const [files, setFiles] = useState<GeneratedFile[]>([]);
   const [fileFor, setFileFor] = useState<GeneratedFile | null>(null);
+  const [previewing, setPreviewing] = useState<GeneratedFile | null>(null);
   const [referenceBusy, setReferenceBusy] = useState(false);
   /** What the last pick refused, and whether Settings is the only way to fix it. */
   const [attachNotes, setAttachNotes] = useState<{ notes: string[]; needsSettings: boolean } | null>(null);
@@ -409,6 +447,15 @@ export default function ChatScreen() {
   }, [attachments, transport, caps]);
 
   /**
+   * Attachments already sent in this conversation.
+   *
+   * The other half of the count the pickers check — see
+   * {@link MAX_ATTACHMENTS_PER_CONVERSATION}. Derived from the messages rather than
+   * tracked, so deleting a turn gives its slots back.
+   */
+  const sent = useMemo(() => sentAttachments(messages), [messages]);
+
+  /**
    * Runs one picker and stages what it returned.
    *
    * `attachBusy` is not cosmetic: encoding four photos is seconds of work off the
@@ -437,6 +484,41 @@ export default function ChatScreen() {
     },
     [id, addAttachments],
   );
+
+  /**
+   * A file another app sent in through an "open with" intent.
+   *
+   * The URI arrives as a route param, forwarded by `app/new.tsx` from
+   * `app/+native-intent.tsx`. Staged, never sent — the same rule the `?q=` deep link
+   * follows, and for the same reason: another app must not be able to spend money on
+   * this one's API key without a tap.
+   *
+   * Three things make this longer than a one-line effect:
+   *
+   *  - **It waits for `profile`.** The intent is delivered before `open(id)` has
+   *    resolved, and what a file is allowed to become depends on the model. Deciding
+   *    against the `'openai'` fallback above would refuse a PDF that this
+   *    conversation's model in fact accepts.
+   *  - **`handledIntent`.** The effect depends on the staged set, which the attach
+   *    itself changes, so without a token it would stage the same file again on the
+   *    render its own result caused.
+   *  - **A refusal goes through `runPick` too**, rather than straight to
+   *    `setAttachNotes`. `AttachResult` is already "blocks, and sentences about what did
+   *    not make it", which is exactly what a refused URI is, so one path shows both.
+   */
+  const handledIntent = useRef<string | null>(null);
+  useEffect(() => {
+    const token = refused || file;
+    if (!token || !profile || handledIntent.current === token) return;
+    handledIntent.current = token;
+
+    void runPick(async () =>
+      refused
+        ? { blocks: [], notes: [refused] }
+        : // `token` is the URI here: `refused` is empty, so `file` is what made it truthy.
+          attachIncomingFile(attachments, sent, transport, caps, { uri: token, name: fileName ?? '' }),
+    );
+  }, [file, fileName, refused, profile, attachments, sent, transport, caps, runPick]);
 
   // What this model's own reported prompt counts say about the estimator. Subscribed
   // to rather than read once, so the gauge tightens as soon as a turn lands.
@@ -843,10 +925,15 @@ ${text}` : text);
       },
       {
         label: 'Read aloud',
-        subtitle: message.text ? 'The system voice. Choose it again to stop.' : 'This message has no text to read.',
+        subtitle: message.text
+          ? `${styleById(voiceStyle).label}, ${speechRate}× — choose it again to stop.`
+          : 'This message has no text to read.',
         disabled: !message.text,
         ...(message.text ? {} : { disabledReason: 'This message has no text to read.' }),
-        onPress: () => void speakOrStop(message.text),
+        // The same voice voice mode uses. Before this, the transcript read every message
+        // in the engine's default while voice mode read them in the chosen style, which
+        // made the setting look like it had only worked in one of the two places.
+        onPress: () => void speakOrStop(message.text, speechOptions(voiceStyle, speechRate)),
       },
       {
         label: 'Edit and resend',
@@ -952,6 +1039,26 @@ ${text}` : text);
   const hasThinking = messages.some((message) => message.content.some((block) => block.type === 'thinking'));
 
   /**
+   * The last answer, for voice mode to read.
+   *
+   * Searched from the end rather than taking `messages.at(-1)`: the last row is the user's
+   * own message for the whole time a turn is in flight, and voice mode asking the phone to
+   * read the question back would be a strange thing to hear. An assistant turn that is
+   * pure tool calls has no text and is skipped for the same reason.
+   *
+   * Not memoised, because this sits below the early returns above and a hook here would be
+   * a conditional one. It costs nothing anyway: it breaks on the first assistant row it
+   * meets from the end, which is almost always the first one it looks at.
+   */
+  const lastAnswer = ((): string => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message?.role === 'assistant' && message.text.trim()) return message.text;
+    }
+    return '';
+  })();
+
+  /**
    * The attach sheet.
    *
    * The two image entries are shown even when the model has no vision flag, with
@@ -959,28 +1066,48 @@ ${text}` : text);
    * feature, and the fix — Settings → Models — is only discoverable if the refusal
    * names it. `documentSupport` is asked about PDFs specifically because that is the
    * only document kind a capability can refuse; a text file always goes.
+   *
+   * `room` is the same check each picker makes on the way in, asked one step earlier so
+   * a full chat is a greyed row with a sentence rather than a gallery that opens and
+   * then refuses everything chosen from it.
    */
+  const room = admitAnother(attachments, sent);
+  // Capability before budget: "this model cannot see images" is worth saying ahead of a
+  // count, because it is the one of the two the user cannot fix by sending what is staged.
+  const imageReason = !images.supported ? images.reason : room.ok ? undefined : room.reason;
   const attachActions: SheetAction[] = [
     {
       label: 'Take a photo',
-      subtitle: 'Resized to fit before it leaves the device. Nothing is sent until you press send.',
-      disabled: !images.supported,
-      ...(images.supported ? {} : { disabledReason: images.reason }),
-      onPress: () => void runPick(() => captureImage(attachments)),
+      subtitle:
+        'Opens a viewfinder. Take as many as you like and keep the ones that came out; ' +
+        'nothing is encoded until you press use, and nothing is sent until you press send.',
+      disabled: imageReason !== undefined,
+      ...(imageReason === undefined ? {} : { disabledReason: imageReason }),
+      // Not through `runPick`: this one opens a screen rather than awaiting a picker, and
+      // the encode happens later, from the camera's own *use*. The sheet has to close
+      // first or it would sit under the viewfinder waiting to be dismissed twice.
+      onPress: () => {
+        setAttachMenu(false);
+        setCameraMode(true);
+      },
     },
     {
       label: 'Choose images',
-      subtitle: `Up to ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message.`,
-      disabled: !images.supported,
-      ...(images.supported ? {} : { disabledReason: images.reason }),
-      onPress: () => void runPick(() => pickImages(attachments)),
+      subtitle:
+        `Up to ${MAX_ATTACHMENTS_PER_MESSAGE} per message and ${MAX_ATTACHMENTS_PER_CONVERSATION} in one chat, ` +
+        `because every attachment is re-sent with every later message.`,
+      disabled: imageReason !== undefined,
+      ...(imageReason === undefined ? {} : { disabledReason: imageReason }),
+      onPress: () => void runPick(() => pickImages(attachments, sent)),
     },
     {
       label: 'Attach a document',
       subtitle: pdfs.supported
         ? 'PDFs go as documents; text, Word, Excel and PowerPoint files are read on device.'
         : 'Text, Word, Excel and PowerPoint files are read on device. PDFs are not available here.',
-      onPress: () => void runPick(() => pickDocuments(attachments, transport, caps)),
+      disabled: !room.ok,
+      ...(room.ok ? {} : { disabledReason: room.reason }),
+      onPress: () => void runPick(() => pickDocuments(attachments, sent, transport, caps)),
     },
   ];
 
@@ -1022,6 +1149,27 @@ ${text}` : text);
   const currentProject = projects.find((project) => project.id === conversation.projectId);
 
   /**
+   * What the model may reach on the next message, in one line.
+   *
+   * The four inputs live in four places — three global switches, the conversation's
+   * servers, its skills, and plan mode — and before this row the only way to answer
+   * "can it write a file right now?" was to visit all four. Counted here rather than
+   * inside `summariseTools` because only this screen knows which servers the
+   * conversation chose.
+   */
+  const liveServerNames = conversation.config.servers ?? [];
+  const liveServers = mcpServers.filter((server) => liveServerNames.includes(server.name));
+  const toolSummary = summariseTools({
+    web: allowWebFetch,
+    search: allowWebSearch && profile?.kind === 'anthropic',
+    code: allowRunCode,
+    serverTools: liveServers.reduce((total, server) => total + server.enabled.length, 0),
+    servers: liveServers.length,
+    skills: (conversation.config.skills ?? []).length,
+    plan: conversation.config.planMode === true,
+  });
+
+  /**
    * The ⋯ menu.
    *
    * Subtitles here are the *state* of the thing and nothing else — the model id, the
@@ -1052,6 +1200,14 @@ ${text}` : text);
       // behind another sheet is how it stops being used.
       label: conversation.config.planMode ? 'Plan mode: on — turn it off' : 'Plan mode: off — turn it on',
       onPress: () => void useChat.getState().setConfig(id, { planMode: !conversation.config.planMode }),
+    },
+    {
+      // The roll-up above the two rows that follow it. It navigates rather than toggling:
+      // the three built-in switches are global, and a second copy of a global switch is
+      // two controls over one piece of state.
+      label: 'Tools',
+      subtitle: toolSummary,
+      onPress: () => router.push('/settings/tools'),
     },
     {
       label: 'Skills',
@@ -1335,12 +1491,18 @@ ${text}` : text);
 
     switch (item.kind) {
       case 'file': {
-        const file = files.find((candidate) => candidate.uri === item.id);
-        if (!file) return;
+        // Named `generated` rather than `file`, which at this point in the file is the
+        // route param carrying an inbound "open with" URI.
+        const generated = files.find((candidate) => candidate.uri === item.id);
+        if (!generated) return;
         // Same admission path as the picker, including the size ceiling: a file this
         // app wrote is not exempt from what the request can carry.
         void runPick(() =>
-          attachExistingFile(attachments, transport, caps, { uri: file.uri, name: file.name, size: file.bytes }),
+          attachExistingFile(attachments, sent, transport, caps, {
+            uri: generated.uri,
+            name: generated.name,
+            size: generated.bytes,
+          }),
         );
         return;
       }
@@ -1667,6 +1829,7 @@ ${result.content}` : result.content);
           reserved={reserved}
           model={conversation.model}
           onPressModel={() => setModelMenu(true)}
+          onVoice={() => setVoiceMode(true)}
           attachments={attachments}
           onAttach={() => setAttachMenu(true)}
           onRemoveAttachment={(index) => removeAttachment(id, index)}
@@ -1679,6 +1842,42 @@ ${result.content}` : result.content);
           {...(canContinue && !streaming ? { onContinue: () => continueTurn(id) } : {})}
         />
       </View>
+
+      {/* Voice mode. Rendered here, on the chat screen, so the thread it sends into is
+          this one — closing it reveals the spoken exchange already in the transcript. */}
+      <VoiceMode
+        visible={voiceMode}
+        onClose={() => setVoiceMode(false)}
+        reply={lastAnswer}
+        live={stream?.text ?? ''}
+        streaming={streaming}
+        // The same payload `submit` builds, minus the confirmation dialog: attachments
+        // staged from voice mode's "+" have to travel with the spoken message, or the
+        // photo the user just took is a count on a button and nothing else. The dialog is
+        // dropped on purpose — an alert about context pressure, over a screen designed to
+        // be used without looking at it, is worse than the trimming the store already does.
+        onSend={(text) =>
+          void send(id, { text, ...(attachments.length ? { attachments: [...attachments] } : {}) })
+        }
+        onAbort={() => abort(id)}
+        model={conversation.model}
+        modelActions={modelActions}
+        attachActions={attachActions}
+        staged={attachments.length}
+      />
+
+      {/* The camera. After `VoiceMode` in the tree on purpose: voice mode's "+" opens the
+          same attach sheet, so the camera can be asked for from on top of it, and the
+          modal that mounts last is the one that gets the screen. */}
+      <CameraMode
+        visible={cameraMode}
+        onClose={() => setCameraMode(false)}
+        // Through `runPick`, like every picker: the encode, the staging and the sentences
+        // about what did not fit are the same three steps whatever opened the images.
+        onUse={(shots) => runPick(() => captureShots(attachments, sent, shots))}
+        onDiscard={discardShots}
+        left={remainingSlots(attachments, sent)}
+      />
 
       <Sidebar
         visible={sidebar}
@@ -1732,9 +1931,45 @@ ${result.content}` : result.content);
         actions={
           fileFor
             ? [
+                // Absent for a file nothing here can display — a PDF, a zip. Offering
+                // Open on one would be a tap whose only outcome is a sentence saying it
+                // cannot be opened, and Share, directly below, is that sentence's answer.
+                ...(previewFor(fileFor.name).mode === 'handoff'
+                  ? []
+                  : [
+                      {
+                        label: 'Open',
+                        subtitle: previewFor(fileFor.name).editable
+                          ? 'Read it here, and edit it before you send it anywhere'
+                          : 'Read what is in it without leaving the app',
+                        onPress: () => {
+                          setFileFor(null);
+                          setPreviewing(fileFor);
+                        },
+                      },
+                    ]),
+                {
+                  label: Platform.OS === 'android' ? 'Save to a folder' : 'Save or send',
+                  subtitle:
+                    Platform.OS === 'android'
+                      ? 'Puts a copy where you choose — Downloads, Drive, anywhere'
+                      : 'The share sheet, where "Save to Files" is one of the choices',
+                  onPress: () => {
+                    const target = fileFor;
+                    setFileFor(null);
+                    void saveToFolder(target.uri, target.name).then((result) => {
+                      if (result.ok) {
+                        haptics.confirm();
+                        if (result.where === 'folder') toast(`Saved ${target.name}`);
+                        return;
+                      }
+                      Alert.alert('Not saved', result.reason);
+                    });
+                  },
+                },
                 {
                   label: 'Share',
-                  subtitle: 'Hands the file to another app, or saves it where you choose',
+                  subtitle: 'Hands the file to another app',
                   onPress: () => {
                     const target = fileFor;
                     setFileFor(null);
@@ -1767,6 +2002,14 @@ ${result.content}` : result.content);
             : []
         }
         onClose={() => setFileFor(null)}
+      />
+
+      {/* Reading a file this app wrote, in the app that wrote it. The sizes shown in the
+          files sheet come from disk, so a saved edit has to re-list rather than patch. */}
+      <FilePreview
+        file={previewing}
+        onClose={() => setPreviewing(null)}
+        onSaved={() => void listGeneratedFiles().then(setFiles)}
       />
 
       <ReferenceSheet
@@ -1878,12 +2121,12 @@ ${result.content}` : result.content);
         body={
           mcpServers.length
             ? 'Each server switched on here adds its enabled tools to this conversation’s requests. A call can stop and ask you first.'
-            : 'An MCP server lends its tools over the network. Add one in Settings → MCP servers, then switch it on here.'
+            : 'An MCP server lends its tools over the network. Settings has a short directory of ones you may already use, and takes any server by URL. Add one, then switch it on here.'
         }
         actions={
           mcpServers.length
             ? serverActions
-            : [{ label: 'Open Settings → MCP servers', onPress: () => router.push('/settings/mcp') }]
+            : [{ label: 'Browse connectors', onPress: () => router.push('/settings/mcp') }]
         }
         onClose={() => setServerMenu(false)}
       />

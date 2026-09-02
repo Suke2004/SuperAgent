@@ -30,6 +30,8 @@ import * as ImagePicker from 'expo-image-picker';
 import { Linking } from 'react-native';
 
 import {
+  ACCEPTED_IMAGE_TYPES,
+  admitAnother,
   admitDocument,
   admitImage,
   boundExtractedText,
@@ -37,15 +39,15 @@ import {
   formatBytes,
   imageBlock,
   isTextualDocument,
-  MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_IMAGE_BASE64_CHARS,
   MAX_IMAGE_EDGE,
   mediaTypeFor,
   planResize,
   QUALITY_LADDER,
-  attachmentSize,
+  remainingSlots,
 } from '@/chat/attachments';
 import { APP_NAME } from '@/lib/app';
+import { discardable, type Shot } from '@/chat/camera';
 import { extractOffice, OFFICE_MEDIA_TYPES, officeKind } from '@/chat/office';
 import { log } from '@/lib/log';
 import type { ModelCapabilities } from '@/transports/support';
@@ -146,6 +148,7 @@ async function encodeImage(asset: ImagePicker.ImagePickerAsset): Promise<Encoded
  */
 async function ingestAssets(
   existing: readonly ContentBlock[],
+  sent: number,
   assets: readonly ImagePicker.ImagePickerAsset[],
 ): Promise<AttachResult> {
   const staged: ContentBlock[] = [...existing];
@@ -174,7 +177,7 @@ async function ingestAssets(
       continue;
     }
 
-    const admission = admitImage(staged, encoded);
+    const admission = admitImage(staged, encoded, sent);
     if (!admission.ok) {
       notes.push(admission.reason);
       continue;
@@ -188,11 +191,6 @@ async function ingestAssets(
   return { blocks: added, notes };
 }
 
-/** Room left in the message, so the system picker itself enforces the count. */
-function remainingSlots(existing: readonly ContentBlock[]): number {
-  return Math.max(0, MAX_ATTACHMENTS_PER_MESSAGE - attachmentSize(existing).count);
-}
-
 /**
  * Picks images from the library.
  *
@@ -200,15 +198,15 @@ function remainingSlots(existing: readonly ContentBlock[]): number {
  * picker's own compression happens *before* the downscale, so lowering it throws
  * away pixels that are about to be resampled anyway and leaves visible artefacts in
  * the result. The size control is the manipulator, one step later.
+ *
+ * `sent` is how many attachments the conversation already holds — see
+ * {@link MAX_ATTACHMENTS_PER_CONVERSATION}. Asked *before* the picker opens, because a
+ * gallery that opens and then refuses everything chosen from it is worse than a refusal
+ * on the way in.
  */
-export async function pickImages(existing: readonly ContentBlock[]): Promise<AttachResult> {
-  const slots = remainingSlots(existing);
-  if (slots === 0) {
-    return {
-      blocks: [],
-      notes: [`${MAX_ATTACHMENTS_PER_MESSAGE} attachments is the limit for one message.`],
-    };
-  }
+export async function pickImages(existing: readonly ContentBlock[], sent = 0): Promise<AttachResult> {
+  const room = admitAnother(existing, sent);
+  if (!room.ok) return { blocks: [], notes: [room.reason] };
 
   const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (!permission.granted) {
@@ -226,7 +224,7 @@ export async function pickImages(existing: readonly ContentBlock[]): Promise<Att
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ['images'],
     allowsMultipleSelection: true,
-    selectionLimit: slots,
+    selectionLimit: remainingSlots(existing, sent),
     quality: 1,
     // Location and camera metadata travel with an image otherwise, and an
     // attachment is not a place to leak where the photo was taken.
@@ -234,35 +232,40 @@ export async function pickImages(existing: readonly ContentBlock[]): Promise<Att
   });
   if (result.canceled) return NOTHING;
 
-  return ingestAssets(existing, result.assets);
+  return ingestAssets(existing, sent, result.assets);
 }
 
-/** Takes a photo. Same pipeline; a different permission and a single asset. */
-export async function captureImage(existing: readonly ContentBlock[]): Promise<AttachResult> {
-  if (remainingSlots(existing) === 0) {
-    return {
-      blocks: [],
-      notes: [`${MAX_ATTACHMENTS_PER_MESSAGE} attachments is the limit for one message.`],
-    };
-  }
+/**
+ * Encodes a finished in-app camera session.
+ *
+ * The whole reason `CameraMode` holds file paths instead of images: this is the one place
+ * the shots become base64, in a single sequential pass, through the identical ladder a
+ * gallery pick goes down. A `Shot` is structurally an `ImagePickerAsset` — `uri`, `width`,
+ * `height` and a name — which is the entire adapter, and is why there is no second encoder
+ * here to drift out of step with the first one.
+ *
+ * Each shot's file is deleted as it is read, by `ingestAssets`' own `finally`.
+ */
+export async function captureShots(
+  existing: readonly ContentBlock[],
+  sent: number,
+  shots: readonly Shot[],
+): Promise<AttachResult> {
+  if (!shots.length) return NOTHING;
+  return ingestAssets(existing, sent, shots);
+}
 
-  const permission = await ImagePicker.requestCameraPermissionsAsync();
-  if (!permission.granted) {
-    return {
-      blocks: [],
-      notes: [
-        permission.canAskAgain
-          ? 'Camera access is needed to take a photo. Nothing is uploaded until you press send.'
-          : `Camera access is turned off for ${APP_NAME}. Open Settings → Permissions to allow it.`,
-      ],
-      ...(permission.canAskAgain ? {} : { needsSettings: true }),
-    };
-  }
-
-  const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1, exif: false });
-  if (result.canceled) return NOTHING;
-
-  return ingestAssets(existing, result.assets);
+/**
+ * Throws away shots the user retook or abandoned.
+ *
+ * Not optional and not deferred to the OS: `takePictureAsync` writes a full-resolution JPEG
+ * per press into this app's cache, so a session of six photos where five were retaken is
+ * five multi-megabyte files that nothing else will ever collect. Called on retake and on
+ * cancel, which is why {@link discardable} rather than the caller decides which URIs those
+ * are.
+ */
+export function discardShots(shots: readonly Shot[]): void {
+  for (const uri of discardable(shots)) discard(uri);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -282,15 +285,12 @@ const DOCUMENT_TYPES = ['application/pdf', 'text/*', 'application/json', 'applic
  */
 export async function pickDocuments(
   existing: readonly ContentBlock[],
+  sent: number,
   transport: TransportKind,
   capabilities: ModelCapabilities | undefined,
 ): Promise<AttachResult> {
-  if (remainingSlots(existing) === 0) {
-    return {
-      blocks: [],
-      notes: [`${MAX_ATTACHMENTS_PER_MESSAGE} attachments is the limit for one message.`],
-    };
-  }
+  const room = admitAnother(existing, sent);
+  if (!room.ok) return { blocks: [], notes: [room.reason] };
 
   const result = await DocumentPicker.getDocumentAsync({
     type: DOCUMENT_TYPES,
@@ -312,11 +312,15 @@ export async function pickDocuments(
       continue;
     }
 
-    const admission = admitDocument(staged, {
-      mediaType,
-      name: asset.name,
-      ...(asset.size !== undefined ? { size: asset.size } : {}),
-    });
+    const admission = admitDocument(
+      staged,
+      {
+        mediaType,
+        name: asset.name,
+        ...(asset.size !== undefined ? { size: asset.size } : {}),
+      },
+      sent,
+    );
     if (!admission.ok) {
       notes.push(admission.reason);
       continue;
@@ -335,11 +339,15 @@ export async function pickDocuments(
 
     // A second admission pass, because the first one only saw the file size the
     // picker claimed. Base64 is a third larger, and `size` is optional in the API.
-    const encoded = admitDocument(staged, {
-      mediaType,
-      name: asset.name,
-      size: block.data ? Math.floor((block.data.length * 3) / 4) : (block.text?.length ?? 0),
-    });
+    const encoded = admitDocument(
+      staged,
+      {
+        mediaType,
+        name: asset.name,
+        size: block.data ? Math.floor((block.data.length * 3) / 4) : (block.text?.length ?? 0),
+      },
+      sent,
+    );
     if (!encoded.ok) {
       notes.push(encoded.reason);
       continue;
@@ -353,53 +361,123 @@ export async function pickDocuments(
 }
 
 /**
- * Attaches a file this app already has, by URI.
+ * Attaches a file this app was handed, by URI.
  *
- * Same admission rules as {@link pickDocuments} and deliberately the same code path —
- * a generated file is not exempt from the size ceiling just because the app wrote it,
- * and a 9 MB PDF the model produced would break the request exactly as a picked one
- * does. The one difference is that the source is *not* deleted afterwards: this is the
- * user's file living in the app's own directory, not a copy the picker made in the
- * cache.
+ * Two callers: a file the model generated, from the files list, and a file another app
+ * sent in through an "open with" intent — see `@/chat/incoming`. Same admission rules as
+ * {@link pickDocuments} and deliberately the same code path, because neither origin earns
+ * an exemption from the size ceiling: a 9 MB PDF breaks the request whether this app wrote
+ * it or a file manager did.
+ *
+ * The one difference from the picker is that the source is *not* deleted afterwards. In
+ * both cases it belongs to someone else — the user's own generated document, or another
+ * app's content provider — rather than being a copy the picker made in the cache.
  */
 export async function attachExistingFile(
   existing: readonly ContentBlock[],
+  sent: number,
   transport: TransportKind,
   capabilities: ModelCapabilities | undefined,
   source: { uri: string; name: string; size?: number },
 ): Promise<AttachResult> {
-  if (remainingSlots(existing) === 0) {
-    return { blocks: [], notes: [`${MAX_ATTACHMENTS_PER_MESSAGE} attachments is the limit for one message.`] };
-  }
+  const room = admitAnother(existing, sent);
+  if (!room.ok) return { blocks: [], notes: [room.reason] };
 
   const mediaType = mediaTypeFor(source.name, undefined);
   const support = documentSupport(transport, capabilities, mediaType);
   if (!support.supported) return { blocks: [], notes: [`${source.name}: ${support.reason}`] };
 
-  const admission = admitDocument(existing, {
-    mediaType,
-    name: source.name,
-    ...(source.size !== undefined ? { size: source.size } : {}),
-  });
+  const admission = admitDocument(
+    existing,
+    {
+      mediaType,
+      name: source.name,
+      ...(source.size !== undefined ? { size: source.size } : {}),
+    },
+    sent,
+  );
   if (!admission.ok) return { blocks: [], notes: [admission.reason] };
 
   let block: DocumentBlock;
   try {
     block = await readDocument(source.uri, source.name, mediaType);
   } catch (error) {
-    log.warn('attach', 'could not read a generated file', error);
+    log.warn('attach', 'could not read a file', error);
     return { blocks: [], notes: [`${source.name} could not be read.`] };
   }
 
   // Second pass on the real encoded size, for the same reason `pickDocuments` does it.
-  const encoded = admitDocument(existing, {
-    mediaType,
-    name: source.name,
-    size: block.data ? Math.floor((block.data.length * 3) / 4) : (block.text?.length ?? 0),
-  });
+  const encoded = admitDocument(
+    existing,
+    {
+      mediaType,
+      name: source.name,
+      size: block.data ? Math.floor((block.data.length * 3) / 4) : (block.text?.length ?? 0),
+    },
+    sent,
+  );
   if (!encoded.ok) return { blocks: [], notes: [encoded.reason] };
 
   return { blocks: [block], notes: [] };
+}
+
+/**
+ * Attaches a file another app handed over through an "open with" intent.
+ *
+ * `@/chat/incoming` has already decided the URI is one this app will touch; what is left
+ * is the part that needs the device. Two things have to be resolved here rather than
+ * there:
+ *
+ *  - **The name.** A content URI often carries none — a downloads-provider id is
+ *    `msf:42` — and the name is what types the file, so the provider is asked for its
+ *    display name before anything is refused. A file with no name *and* no extension is
+ *    refused, because guessing at bytes of unknown type is how a `400` happens.
+ *  - **Which kind of block it becomes.** An image has to go down the resize ladder and
+ *    an image block, not be base64'd whole into a document block, so the type decides
+ *    the path rather than the caller.
+ */
+export async function attachIncomingFile(
+  existing: readonly ContentBlock[],
+  sent: number,
+  transport: TransportKind,
+  capabilities: ModelCapabilities | undefined,
+  incoming: { uri: string; name: string },
+): Promise<AttachResult> {
+  let name = incoming.name;
+  let size: number | undefined;
+  try {
+    const file = new File(incoming.uri);
+    if (!name) name = file.name;
+    size = file.size ?? undefined;
+  } catch (error) {
+    // A provider that will not answer is not a crash: the name may still have come
+    // from the URI, and the admission checks below decide on what is actually known.
+    log.warn('attach', 'could not inspect an incoming file', error);
+  }
+
+  const mediaType = mediaTypeFor(name, undefined);
+  if (!mediaType) {
+    return {
+      blocks: [],
+      notes: [
+        'The app that sent that file gave it no name or extension, so there is no way to tell ' +
+          'what it is. Attach it from the composer instead.',
+      ],
+    };
+  }
+
+  if ((ACCEPTED_IMAGE_TYPES as readonly string[]).includes(mediaType)) {
+    // Zero dimensions is the honest input, not a placeholder: a content URI reports
+    // none, and `planResize` has a blind case for exactly this — the manipulator holds
+    // the real bitmap and derives the height from it.
+    return ingestAssets(existing, sent, [{ uri: incoming.uri, width: 0, height: 0, fileName: name }]);
+  }
+
+  return attachExistingFile(existing, sent, transport, capabilities, {
+    uri: incoming.uri,
+    name,
+    ...(size !== undefined ? { size } : {}),
+  });
 }
 
 /**

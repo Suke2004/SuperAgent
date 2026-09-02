@@ -21,9 +21,11 @@ import Reanimated, { FadeIn, FadeOut } from 'react-native-reanimated';
 import { CodeBlock } from '@/components/markdown/CodeBlock';
 import { Markdown } from '@/components/markdown/Markdown';
 import { Glyph } from '@/components/Glyph';
+import { Icon } from '@/components/Icon';
 import { ThinkingDots } from '@/components/chat/ThinkingDots';
 import { useReducedMotion } from '@/components/motion';
 import { Badge, Body, Button, Inline, Note } from '@/components/ui';
+import { describeTool } from '@/chat/toolLabel';
 import { TYPEWRITER_MS, revealStep } from '@/chat/typewriter';
 import { duration } from '@/constants/animations';
 import { APP_NAME } from '@/lib/app';
@@ -126,12 +128,21 @@ function useTypewriter(text: string, snap: boolean): string {
   return reduced || snap ? text : text.slice(0, Math.min(shown, full));
 }
 
+/**
+ * A tool call whose arguments are still arriving.
+ *
+ * The name stays raw here, where a stored call shows {@link describeTool}'s sentence
+ * instead. Two reasons: the label is past tense and this has not happened yet, and
+ * the arguments are worth watching form — a call about to read the wrong path is the
+ * one moment where seeing it is useful rather than noise. Only the glyph is shared,
+ * so the live step and the stored step read as the same family.
+ */
 function PartialTool({ name, partialJson }: { name: string; partialJson: string }) {
   const t = useTheme();
   return (
     <View style={{ gap: t.spacing.xs }}>
       <Inline gap="sm">
-        <Badge label="Tool" tone="accent" />
+        <Icon name={describeTool(name).icon} size="sm" tone="textFaint" />
         <Body size="sm" mono weight="600">
           {name || 'unnamed'}
         </Body>

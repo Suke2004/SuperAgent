@@ -10,10 +10,12 @@
  */
 
 import {
+  MAX_ATTACHMENTS_PER_CONVERSATION,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_EXTRACTED_CHARS,
   MAX_IMAGE_BASE64_CHARS,
   MAX_IMAGE_EDGE,
+  admitAnother,
   admitDocument,
   admitImage,
   attachmentSize,
@@ -29,6 +31,8 @@ import {
   isTextualDocument,
   mediaTypeFor,
   planResize,
+  remainingSlots,
+  sentAttachments,
 } from '@/chat/attachments';
 import { DEFAULT_CAPABILITIES } from '@/transports/support';
 import type { ModelCapabilities } from '@/transports/support';
@@ -276,6 +280,78 @@ describe('admitDocument', () => {
     expect(admitDocument([], { mediaType: 'application/octet-stream', name: 'README.md', size: 10 })).toEqual({
       ok: true,
     });
+  });
+});
+
+/**
+ * The conversation-wide limit, which is a different failure from the per-message one.
+ *
+ * Per-message keeps one request from being too big. This one keeps a chat from becoming
+ * too expensive to continue: every attachment is re-sent with every later turn, so ten
+ * messages of one file each cost fifty-five file-sends by the tenth. The two are tested
+ * together here because the interesting part is which of them binds.
+ */
+describe('the per-conversation limit', () => {
+  const turn = (...content: ContentBlock[]) => ({ content });
+
+  it('counts what a conversation has already sent, ignoring text', () => {
+    expect(sentAttachments([])).toBe(0);
+    expect(
+      sentAttachments([
+        turn({ type: 'text', text: 'here are two' }, image(10), image(10)),
+        turn({ type: 'text', text: 'and the reply' }),
+        turn({ type: 'document', mediaType: 'text/plain', name: 'a.txt', text: 'x' }),
+      ]),
+    ).toBe(3);
+  });
+
+  it('admits one more while both allowances have room', () => {
+    expect(admitAnother([], 0)).toEqual({ ok: true });
+    expect(admitAnother([image(10)], MAX_ATTACHMENTS_PER_CONVERSATION - 2)).toEqual({ ok: true });
+  });
+
+  it('refuses at the chat limit and says to start a new chat, not to send these', () => {
+    const admission = admitAnother([], MAX_ATTACHMENTS_PER_CONVERSATION);
+    if (admission.ok) throw new Error('unreachable');
+    expect(admission.reason).toContain(String(MAX_ATTACHMENTS_PER_CONVERSATION));
+    expect(admission.reason).toMatch(/new chat/);
+  });
+
+  it('counts what is staged towards the chat limit, not only what was sent', () => {
+    // Nineteen sent and one staged is twenty: the staged one is going to be sent too,
+    // so admitting a twenty-first here would break the limit one message later.
+    const admission = admitAnother([image(10)], MAX_ATTACHMENTS_PER_CONVERSATION - 1);
+    if (admission.ok) throw new Error('unreachable');
+    expect(admission.reason).toContain(String(MAX_ATTACHMENTS_PER_CONVERSATION));
+  });
+
+  it('blames the message when that is the smaller allowance', () => {
+    const staged = Array.from({ length: MAX_ATTACHMENTS_PER_MESSAGE }, () => image(10));
+    const admission = admitAnother(staged, 0);
+    if (admission.ok) throw new Error('unreachable');
+    expect(admission.reason).toContain(String(MAX_ATTACHMENTS_PER_MESSAGE));
+    expect(admission.reason).toMatch(/one message/);
+  });
+
+  it('reaches both admit functions, so a full chat refuses an image and a document alike', () => {
+    const full = MAX_ATTACHMENTS_PER_CONVERSATION;
+    const onImage = admitImage([], { mediaType: 'image/jpeg', data: chars(10) }, full);
+    const onDocument = admitDocument([], { mediaType: 'text/plain', name: 'a.txt', size: 1 }, full);
+    if (onImage.ok || onDocument.ok) throw new Error('unreachable');
+    expect(onImage.reason).toMatch(/new chat/);
+    expect(onDocument.reason).toMatch(/new chat/);
+  });
+
+  it('offers the smaller of the two allowances as the picker’s selection limit', () => {
+    expect(remainingSlots([], 0)).toBe(MAX_ATTACHMENTS_PER_MESSAGE);
+    // Two slots left in the chat is two, even though the message could take eight.
+    expect(remainingSlots([], MAX_ATTACHMENTS_PER_CONVERSATION - 2)).toBe(2);
+    expect(remainingSlots([image(10)], MAX_ATTACHMENTS_PER_CONVERSATION - 2)).toBe(1);
+  });
+
+  it('never offers a negative number of slots, however over the line a chat is', () => {
+    // Reachable for real: the limit can be lowered in an update while a long chat exists.
+    expect(remainingSlots([], MAX_ATTACHMENTS_PER_CONVERSATION + 5)).toBe(0);
   });
 });
 

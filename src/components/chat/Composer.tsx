@@ -1,7 +1,7 @@
 /**
  * The composer.
  *
- * Five things share this bar, and the second is the one that earns its place:
+ * Six things share this bar, and the second is the one that earns its place:
  *
  * 1. The input, which grows with its content up to a clamp and then scrolls.
  * 2. The context-pressure gauge. It is measured against *usable* space —
@@ -17,7 +17,9 @@
  *    any sense of what it costs — and it is ~2,500 tokens each, every turn from here
  *    on, not just this one.
  * 5. The mic, which dictates into the draft rather than sending. See `@/lib/dictation`
- *    for why that is not a voice mode.
+ *    for why that is a different intention from the next one.
+ * 6. The sound wave, which hands the conversation to `VoiceMode` — a screen that
+ *    listens on a held button and reads the reply back.
  *
  * The input and its controls live inside one rounded box: the readout, the model chip
  * and the send disc sit on a row beneath the text, so the whole thing reads as a sheet
@@ -382,6 +384,52 @@ function MicButton({ listening, onPress }: { listening: boolean; onPress: () => 
   );
 }
 
+/**
+ * The sound wave: the way into voice mode.
+ *
+ * Next to the mic and not instead of it, because they are different intentions rather than
+ * two routes to one feature. The mic puts words in *this* box for the user to fix before
+ * sending; this hands the conversation over to a screen that listens and talks back. A
+ * single control doing both would have to guess which one was meant.
+ */
+function VoiceButton({ onPress }: { onPress: () => void }) {
+  const t = useTheme();
+  const { ring, handlers } = useFocusRing();
+  const { pressStyle, pressHandlers, onPressHaptic } = usePressFeedback();
+  const slop = targetSlop(SEND_SIZE, SEND_SIZE);
+  return (
+    <Reanimated.View style={pressStyle}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Voice mode"
+        accessibilityHint="Opens a screen where you hold a button to speak and the reply is read back to you"
+        onPress={() => {
+          onPressHaptic();
+          onPress();
+        }}
+        {...handlers}
+        {...pressHandlers}
+        {...(slop ? { hitSlop: slop } : {})}
+        style={({ pressed }) => [
+          {
+            width: SEND_SIZE,
+            height: SEND_SIZE,
+            borderRadius: SEND_SIZE / 2,
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderWidth: StyleSheet.hairlineWidth,
+            borderColor: t.colors.border,
+            backgroundColor: pressed ? t.colors.surfaceActive : 'transparent',
+          },
+          ring,
+        ]}
+      >
+        <Icon name="voice" size="lg" tone="textDim" />
+      </Pressable>
+    </Reanimated.View>
+  );
+}
+
 /** The model in play, as a chip on the composer's bottom row. */
 function ModelChip({ model, onPress }: { model: string; onPress?: () => void }) {
   const t = useTheme();
@@ -448,6 +496,7 @@ export function Composer({
   calibration,
   model,
   onPressModel,
+  onVoice,
   attachments,
   onAttach,
   onRemoveAttachment,
@@ -484,6 +533,8 @@ export function Composer({
   model?: string;
   /** Present ⇒ the model chip opens the picker. */
   onPressModel?: () => void;
+  /** Present ⇒ the sound-wave button is shown, and opens voice mode. */
+  onVoice?: () => void;
   /** Staged attachments. Their cost is in the gauge before they are sent. */
   attachments?: readonly ContentBlock[];
   /** Present ⇒ the attach button is shown. */
@@ -738,6 +789,11 @@ export function Composer({
                 onPress={() => (dictation.listening ? dictation.stop() : void dictation.start(value))}
               />
             ) : null}
+
+            {/* Hidden while this instance is dictating: voice mode holds the same
+                recogniser, and a button that opens a screen which cannot start until
+                this session lets go of the microphone is a button that does nothing. */}
+            {onVoice && !dictation.listening ? <VoiceButton onPress={onVoice} /> : null}
 
             {model !== undefined ? (
               <ModelChip model={model} {...(onPressModel ? { onPress: onPressModel } : {})} />

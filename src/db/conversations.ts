@@ -66,9 +66,14 @@ import type {
 export interface ConversationConfig {
   params?: Partial<SamplingParams>;
   reasoning?: ReasoningConfig;
-  /** Skill ids enabled for this conversation. Phase 4. */
+  /**
+   * Skill names enabled for this conversation. Phase 4.
+   *
+   * Names, not ids, because the model has to type one back as the `invoke_skill`
+   * argument — which is also why `skills.name` is unique.
+   */
   skills?: string[];
-  /** MCP server ids enabled for this conversation. Phase 5. */
+  /** MCP server names enabled for this conversation. Phase 5. Names, as above. */
   servers?: string[];
   /** Overrides the global context strategy for this conversation. */
   contextStrategy?: 'warn' | 'drop_oldest' | 'summarise';
