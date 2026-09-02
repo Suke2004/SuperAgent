@@ -200,10 +200,13 @@ export class McpClient {
       ...(this.options.headers ?? {}),
       ...(extra ?? {}),
     };
-    // The app's own headers last, so no configured header can displace them. `flaws.md`
-    // §1c fixed exactly this in `transports/http.ts` and the same spread order was
-    // still here: a configured `User-Agent` used to win, which makes the "one honest,
-    // static User-Agent" claim a default rather than an enforcement.
+    // Credential and identity headers are enforced here, not merely defaulted — the same
+    // scope, and the same spread order, as `buildHeaders` in `transports/http.ts`.
+    // `flaws.md` §1c fixed exactly this there and it was still open here: a configured
+    // `User-Agent` used to win, which makes the "one honest, static User-Agent" claim a
+    // default rather than an enforcement. `Content-Type` and `Accept` above are *not*
+    // enforced, deliberately — a gateway that wants a charset on one of them is the
+    // reason a server row can set headers at all.
     for (const name of Object.keys(headers)) {
       if (/^(?:user-agent|authorization)$/i.test(name)) delete headers[name];
     }
@@ -258,7 +261,7 @@ export class McpClient {
       if (header) sessionId = header;
       // A notification gets a 202 with no body, and nothing is waiting on it.
       if (id === null) return {};
-      return readRpcResult(response, id);
+      return readRpcResult(response, id, timeoutMs);
     };
 
     /** One request, with its id captured before the POST rather than after it. */
@@ -395,8 +398,14 @@ async function httpFailure(response: ResponseLike): Promise<McpError> {
  *
  * A Streamable HTTP server may answer either way for the same request, so the
  * content type decides rather than the caller.
+ *
+ * `timeoutMs` is the caller's budget, and has to be passed in: `fetchWithTimeout` clears
+ * its abort timer as soon as the response resolves, which for a streamed body is when the
+ * *headers* arrive. Everything after that is governed here. Hard-coding `CALL_TIMEOUT_MS`
+ * meant a server that answers over SSE ignored a configured `timeoutMs` entirely, and gave
+ * `initialize` 60s when its caller asked for `CONNECT_TIMEOUT_MS`.
  */
-async function readRpcResult(response: ResponseLike, id: number): Promise<Record<string, unknown>> {
+async function readRpcResult(response: ResponseLike, id: number, timeoutMs: number): Promise<Record<string, unknown>> {
   const contentType = response.headers.get('content-type') ?? '';
   if (!contentType.includes('text/event-stream')) {
     const text = await response.text();
@@ -417,7 +426,7 @@ async function readRpcResult(response: ResponseLike, id: number): Promise<Record
 
   const events = new EventStream(response.body.getReader());
   try {
-    return await events.awaitResult(id, CALL_TIMEOUT_MS);
+    return await events.awaitResult(id, timeoutMs);
   } finally {
     events.cancel();
   }

@@ -6,7 +6,10 @@
  * the theme rather than being scattered through the chat UI.
  */
 
+import { Alert } from 'react-native';
+
 import { Note, Row, Screen, Section, Segmented, Stack, Stepper, SwitchRow } from '@/components/ui';
+import * as haptics from '@/lib/haptics';
 import { useSettings } from '@/stores/settings';
 import type { ContextStrategy } from '@/stores/settings';
 import { useTheme } from '@/theme';
@@ -27,6 +30,34 @@ const STRATEGY_OPTIONS = [
 export default function Appearance() {
   const t = useTheme();
   const settings = useSettings();
+
+  /**
+   * Asked first, like every other destructive action in the app.
+   *
+   * It reaches much further than the screen it sits on: the defaults it restores
+   * include the app lock, the three "let the model…" tool switches and the default
+   * system prompt, none of which are visible from here and none of which come back
+   * with an undo. A single mis-tap in a list of switches turning the lock off
+   * silently is the case worth one extra tap.
+   */
+  const confirmReset = (): void => {
+    Alert.alert(
+      'Reset all preferences?',
+      'Every preference goes back to its default — including the app lock, the built-in tool switches and your ' +
+        'default system prompt. Conversations, provider profiles and API keys are untouched.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reset',
+          style: 'destructive',
+          onPress: () => {
+            haptics.warn();
+            settings.reset();
+          },
+        },
+      ],
+    );
+  };
 
   return (
     <Screen>
@@ -122,7 +153,7 @@ export default function Appearance() {
           destructive
           label="Reset all preferences"
           subtitle="Conversations, profiles and keys are untouched"
-          onPress={() => settings.reset()}
+          onPress={confirmReset}
         />
       </Section>
     </Screen>

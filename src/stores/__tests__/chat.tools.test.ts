@@ -38,6 +38,7 @@ jest.mock('@/db/conversations', () => {
     createdAt: number;
   };
   const mockRows: MockRow[] = [];
+  const mockUpdates: { id: string; patch: Record<string, unknown> }[] = [];
   const mockConversation = {
     id: 'c1',
     title: 'A conversation',
@@ -77,7 +78,11 @@ jest.mock('@/db/conversations', () => {
     },
     async recordUsage() {},
     async updateConversation() {},
-    async updateMessage() {},
+    async updateMessage(id: string, patch: Record<string, unknown>) {
+      mockUpdates.push({ id, patch });
+      const row = mockRows.find((candidate) => candidate.id === id);
+      if (row) Object.assign(row, patch);
+    },
     async deleteMessagesFrom() {},
     // The variant model, stubbed flat: nothing here regenerates, and a turn with no
     // alternatives is exactly what an empty set means.
@@ -112,6 +117,7 @@ jest.mock('@/db/conversations', () => {
     async deleteConversation() {},
     async deleteConversations() {},
     __rows: mockRows,
+    __updates: mockUpdates,
   };
 });
 
@@ -261,6 +267,7 @@ import { useChat } from '@/stores/chat';
 
 const rows = (db as unknown as { __rows: { role: string; content: ContentBlock[]; meta?: Record<string, unknown> }[] })
   .__rows;
+const updates = (db as unknown as { __updates: { id: string; patch: Record<string, unknown> }[] }).__updates;
 
 /** One round that asks for the skill, then stops. */
 function asksForSkill(id: string): StreamEvent[] {
@@ -291,6 +298,7 @@ function toolResults(): { role: string; content: ContentBlock[] }[] {
 
 beforeEach(() => {
   rows.length = 0;
+  updates.length = 0;
   mockScript.length = 0;
   mockSent.length = 0;
   mockFinished.length = 0;
@@ -400,6 +408,38 @@ test('arguments cut off mid-stream are refused, not forwarded to the server', as
   expect(block?.type === 'tool_result' && block.content).toContain('arrived incomplete');
 });
 
+/**
+ * The user's own exclusion has to outlive a send.
+ *
+ * Two things write the `excluded` column: this action, and the context strategy,
+ * which recomputes every turn's exclusions from scratch. With `warn` — the strategy
+ * here, and the one that trims nothing — that recomputation clears the column for
+ * every eligible row, so the manual flag used to last exactly until the next
+ * message, and the message it was meant to hide went out anyway.
+ */
+test('a message the user excluded stays off the wire and stays excluded', async () => {
+  mockScript.push(answers('Understood.'));
+  rows.push({
+    id: 'm_old',
+    conversationId: 'c1',
+    seq: 0.5,
+    createdAt: 900,
+    role: 'user',
+    content: [{ type: 'text', text: 'Forget this bit.' }],
+    excluded: true,
+    meta: { userExcluded: true },
+  } as never);
+
+  await useChat.getState().send('c1', { text: 'Carry on.' });
+
+  const sent = JSON.stringify(mockSent[0]?.messages ?? []);
+  expect(sent).not.toContain('Forget this bit.');
+  expect(sent).toContain('Carry on.');
+  // And nothing reset the flag on its way past.
+  expect(updates.filter((update) => update.id === 'm_old')).toEqual([]);
+  expect(rows.find((row) => (row as { id?: string }).id === 'm_old')?.meta?.userExcluded).toBe(true);
+});
+
 test('a tool the app does not have is a tool result, not a failed turn', async () => {
   mockScript.push(
     [
@@ -422,4 +462,33 @@ test('a tool the app does not have is a tool result, not a failed turn', async (
   // stored as an errored message.
   expect(rows.some((row) => 'error' in row && row.error)).toBe(false);
   expect(useChat.getState().streams.c1).toBeUndefined();
+});
+
+/**
+ * One turn per conversation, claimed synchronously.
+ *
+ * `streams[conversationId]` is what the actions used to check, and it is *published*
+ * — three awaits of real SQLite into the send, after the user's row is already
+ * stored. A second tap on Send inside that window passed the check, wrote the draft
+ * twice and started a second turn whose `AbortController` replaced the first's, so
+ * Stop could only reach one of them.
+ */
+test('a second send during the same turn is dropped, not stored and billed twice', async () => {
+  // Two rounds scripted, so a leak shows up as a second request rather than as the
+  // transport running out of script.
+  mockScript.push(answers('Once.'), answers('Twice.'));
+
+  // Deliberately not awaited in turn: this is the double tap.
+  await Promise.all([
+    useChat.getState().send('c1', { text: 'Only once, please.' }),
+    useChat.getState().send('c1', { text: 'Only once, please.' }),
+  ]);
+
+  expect(mockSent).toHaveLength(1);
+  expect(rows.filter((row) => row.role === 'user')).toHaveLength(1);
+  expect(mockScript).toHaveLength(1); // The second round was never asked for.
+
+  // And the conversation is free again afterwards.
+  await useChat.getState().send('c1', { text: 'Now the next one.' });
+  expect(mockSent).toHaveLength(2);
 });

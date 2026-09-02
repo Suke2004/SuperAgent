@@ -44,6 +44,8 @@ import { onNotificationTap } from '@/lib/notify';
 import { clearCache, primeRedactorWithStoredKeys } from '@/lib/secureKey';
 import { useMemory } from '@/stores/memory';
 import { useChat } from '@/stores/chat';
+import { useProjects } from '@/stores/projects';
+import { usePrompts } from '@/stores/prompts';
 import { startSendQueue } from '@/stores/queue';
 import { useSkills } from '@/stores/skills';
 import { useMcp } from '@/stores/mcp';
@@ -244,11 +246,21 @@ export default function RootLayout() {
   // empty at that moment would silently produce a memory-free first request.
   // Not a render gate — a missing memory block degrades the reply, it doesn't break
   // it, and blocking the first frame on SQLite would be the worse trade.
+  //
+  // Prompts and projects are here for a related reason: both are read by screens that
+  // do not own them and so do not load them. The backup screen gathers
+  // `usePrompts.getState().prompts` synchronously, so on a cold start straight into
+  // Settings → Backup it wrote `"prompts": []` into the file and said "Prompts 0" —
+  // a backup silently missing the library, which is the one bug here a user finds out
+  // about later. The Settings hub counts both the same way. Loading them at start is
+  // one small SELECT each and removes the class rather than the two symptoms.
   useEffect(() => {
     if (!hydrated) return;
     void useMemory.getState().load();
     void useSkills.getState().load();
     void useMcp.getState().load();
+    void usePrompts.getState().load();
+    void useProjects.getState().load();
   }, [hydrated]);
 
   // The offline queue's two triggers live for as long as the app does: a request

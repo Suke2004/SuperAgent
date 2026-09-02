@@ -635,6 +635,9 @@ export interface OpenAiStreamState {
   toolNames: Map<number, string>;
   nextToolIndex: number;
   openToolIndexes: Set<number>;
+  /** What a `start` has already reported, so a repeat is not re-announced. */
+  announcedId?: string;
+  announcedModel?: string;
 }
 
 export function createStreamState(): OpenAiStreamState {
@@ -669,7 +672,14 @@ export function translateChunk(raw: SseEvent, state: OpenAiStreamState): StreamE
     });
   }
 
-  if (chunk.id || chunk.model) {
+  // On a change, not on presence. Every chunk of an OpenAI stream repeats the same
+  // `id` and `model`, and `start` is an event consumers treat as rare and worth
+  // showing at once — the store commits stream state immediately for anything that
+  // is not a text or thinking delta. Re-announcing per chunk therefore forced a
+  // re-render per chunk and defeated that throttle for the whole transport.
+  if ((chunk.id && chunk.id !== state.announcedId) || (chunk.model && chunk.model !== state.announcedModel)) {
+    if (chunk.id) state.announcedId = chunk.id;
+    if (chunk.model) state.announcedModel = chunk.model;
     events.push({
       type: 'start',
       ...(chunk.id ? { id: chunk.id } : {}),

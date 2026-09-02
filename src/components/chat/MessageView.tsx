@@ -82,14 +82,19 @@ function MetaBadges({ message }: { message: StoredMessage }) {
   if (meta?.toolRounds !== undefined && meta.toolRounds > 0) {
     badges.push({ label: meta.toolRounds === 1 ? '1 tool round' : `${meta.toolRounds} tool rounds`, tone: 'neutral' });
   }
-  for (const skill of meta?.skillsInvoked ?? []) badges.push({ label: skill, tone: 'accent' });
+  // A `Set`: a turn can call `invoke_skill` twice for the same skill, and `skillsInvoked`
+  // records one entry per call. The badge means "this reply used pdf-processing", not
+  // "used it twice", so the second one is only a repeated chip and a duplicate React key.
+  for (const skill of new Set(meta?.skillsInvoked ?? [])) badges.push({ label: skill, tone: 'accent' });
 
   if (badges.length === 0) return null;
 
   return (
     <Inline gap="xs">
-      {badges.map((badge) => (
-        <Badge key={badge.label} label={badge.label} tone={badge.tone} />
+      {badges.map((badge, index) => (
+        // By position, not by label: a skill can be named anything, including the
+        // literal text of one of the badges above it.
+        <Badge key={index} label={badge.label} tone={badge.tone} />
       ))}
     </Inline>
   );
@@ -115,7 +120,10 @@ function Footer({
   // the gateway did not say what it was, and that is worth one word rather than a
   // silent gap that reads like a free reply.
   else if (message.role === 'assistant' && !message.error) parts.push('tokens not reported');
-  if (cost) parts.push(`~$${formatCost(cost.total)}`);
+  // No currency symbol: the rates behind this are typed in by hand on the model screen,
+  // which deliberately does not ask which currency they are in, so a `$` here invents a
+  // fact about someone's money. The explanation behind the tap names the rates instead.
+  if (cost) parts.push(`~${formatCost(cost.total)}`);
 
   const label = parts.join('  ·  ');
 

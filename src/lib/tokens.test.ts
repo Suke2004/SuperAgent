@@ -9,6 +9,7 @@ import {
   formatCost,
   formatTokens,
   formatUsage,
+  readPricing,
   selectMessagesWithinBudget,
 } from '@/lib/tokens';
 import type { ContentBlock, UnifiedMessage } from '@/transports/types';
@@ -311,6 +312,33 @@ describe('estimateCost', () => {
   it('treats a missing field as zero rather than NaN', () => {
     const cost = estimateCost({ output: 10 }, { inputPerMTok: 3, outputPerMTok: 15 });
     expect(Number.isFinite(cost?.total ?? NaN)).toBe(true);
+  });
+});
+
+describe('readPricing', () => {
+  it('reads a filled pair', () => {
+    expect(readPricing('3', '15')).toEqual({ ok: true, pricing: { inputPerMTok: 3, outputPerMTok: 15 } });
+    expect(readPricing('0', '0.5')).toEqual({ ok: true, pricing: { inputPerMTok: 0, outputPerMTok: 0.5 } });
+  });
+
+  it('treats both blank as clearing the price, not as an error', () => {
+    expect(readPricing('', '')).toEqual({ ok: true });
+    expect(readPricing('  ', '')).toEqual({ ok: true });
+  });
+
+  it('refuses a half-filled pair instead of silently doing nothing', () => {
+    // The bug this function exists for: one side typed and the other blank used to
+    // commit neither and say nothing, so the screen showed a price the registry
+    // did not have.
+    const half = readPricing('3', '');
+    expect(half.ok).toBe(false);
+    expect(half.ok ? '' : half.issue).toMatch(/Both prices/);
+    expect(readPricing('', '15').ok).toBe(false);
+  });
+
+  it('refuses text and negative numbers', () => {
+    expect(readPricing('free', '15').ok).toBe(false);
+    expect(readPricing('3', '-1').ok).toBe(false);
   });
 });
 

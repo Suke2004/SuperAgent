@@ -28,7 +28,7 @@
  * is guessable from a dimmed button.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import Reanimated, { interpolateColor, useAnimatedStyle } from 'react-native-reanimated';
 
@@ -543,6 +543,15 @@ export function Composer({
   // Dictation writes straight into the draft, so it needs nothing from the screen
   // above: the composer already owns the draft's text.
   const dictation = useDictation(onChangeText);
+  const { listening, stop: stopDictation } = dictation;
+
+  // The mic is hidden while a turn streams (see the row below), and a session left
+  // running behind it holds the microphone open with no button left to stop it — and
+  // every result it hears overwrites the draft the user is typing next. Ending the
+  // session is what the hidden button would have done.
+  useEffect(() => {
+    if (streaming && listening) stopDictation();
+  }, [streaming, listening, stopDictation]);
 
   const factor = calibration?.factor ?? 1;
   const staged = attachments ?? EMPTY_ATTACHMENTS;

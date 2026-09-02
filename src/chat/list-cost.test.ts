@@ -15,6 +15,14 @@
  * today, because CI runners are shared and a tight bound would fail for reasons
  * that have nothing to do with the code. They catch a change in *complexity*,
  * not a change in constant factors.
+ *
+ * That looseness is not enough on its own, which is why {@link fastest} exists: the
+ * filter workload really costs ~2ms, and a single wall-clock sample of it still went
+ * over the 150ms bound once, in a full-suite run where 72 suites share the machine's
+ * cores. No threshold survives that — contention is unbounded. Taking the best of
+ * several runs is the fix that actually holds, because contention and JIT warm-up can
+ * only ever make a run *slower*: the floor is the code's own cost, and a complexity
+ * regression raises the floor.
  */
 
 import { buildRows, filterConversations, tagCounts } from '@/chat/list';
@@ -63,10 +71,15 @@ function markdown(i: number): string {
   ].join('\n');
 }
 
-function elapsed(work: () => void): number {
-  const started = performance.now();
-  work();
-  return performance.now() - started;
+/** The cost of the fastest of `runs` attempts. See the module comment. */
+function fastest(work: () => void, runs = 3): number {
+  let best = Infinity;
+  for (let run = 0; run < runs; run++) {
+    const started = performance.now();
+    work();
+    best = Math.min(best, performance.now() - started);
+  }
+  return best;
 }
 
 describe('the conversation list', () => {
@@ -74,7 +87,7 @@ describe('the conversation list', () => {
 
   it('groups 500 conversations into rows quickly', () => {
     let rows = 0;
-    const ms = elapsed(() => {
+    const ms = fastest(() => {
       rows = buildRows(conversations, NOW).length;
     });
     // Every conversation plus at most one heading per group.
@@ -84,7 +97,7 @@ describe('the conversation list', () => {
   });
 
   it('filters and counts tags without rescanning per row', () => {
-    const ms = elapsed(() => {
+    const ms = fastest(() => {
       for (const query of ['conv', 'conversation 4', 'opus', 'nothing matches this']) {
         filterConversations(conversations, { query });
       }
@@ -98,7 +111,8 @@ describe('a 1,000-message transcript', () => {
   it('parses every message body inside the first-paint budget', () => {
     const sources = Array.from({ length: 1000 }, (_, i) => markdown(i));
     let blocks = 0;
-    const ms = elapsed(() => {
+    const ms = fastest(() => {
+      blocks = 0;
       for (const source of sources) blocks += parseMarkdown(source).length;
     });
 
