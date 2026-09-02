@@ -3,7 +3,8 @@
  *
  * The app opens on a chat, so the list is no longer the thing you arrive at — and a
  * history you have to navigate away from the conversation to read is a history you
- * stop reading. This is the same rows as the list screen, minus everything that
+ * stop reading. This is the same rows as the list screen, grouped by the same
+ * `buildRows` and virtualised through the same FlashList, minus everything that
  * screen does that a drawer should not: no bulk selection, no export, no archive
  * toggle, no tag filter. Those still live on the full list, one tap away at the
  * bottom.
@@ -33,6 +34,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { FlashList } from '@shopify/flash-list';
 import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
 import Reanimated, {
   Easing,
@@ -51,7 +53,8 @@ import type { IconName } from '@/components/Icon';
 import { drawerProgress, useReducedMotion } from '@/components/motion';
 import { Body, Divider, Field, Heading, SkeletonRows, MIN_TARGET } from '@/components/ui';
 import { curve, duration, spring } from '@/constants/animations';
-import { filterConversations } from '@/chat/list';
+import { drawerRows } from '@/chat/list';
+import type { ListRow } from '@/chat/list';
 import type { Conversation } from '@/db/conversations';
 import { APP_NAME } from '@/lib/app';
 import { useChat } from '@/stores/chat';
@@ -177,8 +180,6 @@ export function Sidebar({
   const { width: screenWidth } = useWindowDimensions();
   const width = Math.min(MAX_WIDTH, Math.round(screenWidth * WIDTH_FRACTION));
 
-  const conversations = useChat((s) => s.conversations);
-  const listLoading = useChat((s) => s.listLoading);
   /**
    * The active gateway profile, read here rather than passed in.
    *
@@ -190,7 +191,6 @@ export function Sidebar({
   const profiles = useProviders((s) => s.profiles);
   const activeProfileId = useProviders((s) => s.activeId);
   const activeProfile = profiles.find((p) => p.id === activeProfileId);
-  const [query, setQuery] = useState('');
 
   /**
    * Mounted separately from `visible`.
@@ -240,11 +240,6 @@ export function Sidebar({
     );
   }, [visible, reduced]);
 
-  // Titles, previews, models and tags — the fast pass only. Message text is what
-  // `onReference` is for, and mixing "open this chat" and "quote this line" into
-  // one result list is how you paste a paragraph when you meant to navigate.
-  const filtered = useMemo(() => filterConversations(conversations, { query }), [conversations, query]);
-
   const backdrop = useAnimatedStyle(() => ({ opacity: drawerProgress.value }));
   const slide = useAnimatedStyle(() => ({ transform: [{ translateX: -width * (1 - drawerProgress.value) }] }));
 
@@ -293,89 +288,14 @@ export function Sidebar({
               <Heading style={{ fontSize: t.fontSize.xxl }}>{APP_NAME}</Heading>
             </View>
 
-            <ScrollView
-              // `flex: 1`, or the scroller sizes itself to its content: four hundred
-              // chats then push the account footer off the bottom of the screen and
-              // there is nothing left that scrolls. This is the one line that makes the
-              // list usable at any length.
-              style={{ flex: 1 }}
-              contentContainerStyle={{ paddingBottom: t.spacing.md }}
-              keyboardShouldPersistTaps="handled"
-              // A drag that started vertically stays vertical, so it cannot fight the
-              // panel's own horizontal gesture halfway down the list.
-              directionalLockEnabled
-            >
-              {/* Actions first, because they are a fixed short list and the history
-                  below is unbounded — a nav row under 400 chats is a nav row nobody
-                  reaches. Hidden while searching: a filter over the chats should not
-                  leave unrelated rows sitting above the results. */}
-              {query ? null : (
-                <>
-                  <GroupLabel>Actions</GroupLabel>
-                  {/* The only accent row in the drawer. One coloured row is a
-                      primary action; two are a decorated list. */}
-                  <NavRow icon="newChat" label="New chat" accent onPress={onNew} />
-                  <NavRow icon="chats" label="Chats" onPress={onAllConversations} />
-                  <NavRow icon="quote" label="Bring in a message…" onPress={onReference} />
-                  {links.map((link) => (
-                    <NavRow
-                      key={link.label}
-                      icon={link.icon}
-                      label={link.label}
-                      {...(link.detail !== undefined ? { detail: link.detail } : {})}
-                      onPress={link.onPress}
-                    />
-                  ))}
-                  <Divider />
-                </>
-              )}
-
-              <View style={{ paddingHorizontal: t.spacing.md, paddingTop: t.spacing.md }}>
-                <Field
-                  value={query}
-                  onChangeText={setQuery}
-                  placeholder="Search chats"
-                  returnKeyType="search"
-                  right={
-                    query ? (
-                      <Pressable
-                        onPress={() => setQuery('')}
-                        accessibilityRole="button"
-                        accessibilityLabel="Clear search"
-                        hitSlop={12}
-                      >
-                        <Icon name="close" tone="textFaint" />
-                      </Pressable>
-                    ) : (
-                      <Icon name="search" tone="textFaint" />
-                    )
-                  }
-                />
-              </View>
-
-              <GroupLabel>{query ? 'Matches' : 'History'}</GroupLabel>
-
-              {listLoading && !conversations.length ? (
-                <View style={{ paddingHorizontal: t.spacing.md, paddingVertical: t.spacing.sm }}>
-                  <SkeletonRows count={6} label="Loading your chats" />
-                </View>
-              ) : filtered.length ? (
-                filtered.map((conversation) => (
-                  <Row
-                    key={conversation.id}
-                    conversation={conversation}
-                    current={conversation.id === currentId}
-                    onPress={() => onOpen(conversation.id)}
-                  />
-                ))
-              ) : (
-                <View style={{ padding: t.spacing.md }}>
-                  <Body size="sm" tone="faint">
-                    {query ? 'No chat title, model or tag matches that.' : 'No other chats yet.'}
-                  </Body>
-                </View>
-              )}
-            </ScrollView>
+            <DrawerHistory
+              currentId={currentId}
+              onOpen={onOpen}
+              onNew={onNew}
+              onAllConversations={onAllConversations}
+              onReference={onReference}
+              links={links}
+            />
 
             {/* Account, pinned to the bottom rather than scrolling with the history:
                 it is about the app, not about this list, and it is the row a user
@@ -394,8 +314,180 @@ export function Sidebar({
   );
 }
 
-/** A section heading in the drawer. The same tier as `Section`'s title on a screen. */
-function GroupLabel({ children }: { children: string }) {
+/**
+ * The searchable, grouped, virtualised history — everything between the wordmark and
+ * the account footer.
+ *
+ * Its own component for one reason that is not decomposition for its own sake: it is
+ * mounted only while the drawer is, because RN's `Modal` renders nothing when it is
+ * closed. So `useState(() => Date.now())` here reads the clock *on each open*, which
+ * is what the group headings need and what the parent could not give them — the
+ * parent outlives every open, and a render-phase `Date.now()` is impure and rightly
+ * rejected by `react-hooks/purity`. Per-open is also the correct staleness: the
+ * alternative is re-bucketing on every keystroke, and "Today" becoming "Yesterday"
+ * under a finger at midnight is a worse answer than one a few minutes old.
+ *
+ * `query` lives here for the same reason, and gains something by it: a search no
+ * longer survives the close, so the drawer always reopens on the whole history
+ * rather than on whatever was typed into it last week.
+ */
+function DrawerHistory({
+  currentId,
+  onOpen,
+  onNew,
+  onAllConversations,
+  onReference,
+  links,
+}: {
+  currentId: string;
+  onOpen: (id: string) => void;
+  onNew: () => void;
+  onAllConversations: () => void;
+  onReference: () => void;
+  links: readonly SidebarLink[];
+}) {
+  const t = useTheme();
+  const conversations = useChat((s) => s.conversations);
+  const listLoading = useChat((s) => s.listLoading);
+  const [query, setQuery] = useState('');
+  const [now] = useState(() => Date.now());
+
+  /**
+   * The same grouped rows the list screen builds, from the same function.
+   *
+   * The drawer used to render one flat run of chats under a single "History"
+   * heading, which is the one place it diverged from the screen it is derived from:
+   * pinned chats stayed wherever their timestamp put them, and forty rows had
+   * nothing to tell you where last week ended. `buildRows` already answered both,
+   * so {@link drawerRows} is a reuse of it rather than a second implementation —
+   * and the one thing the drawer does differently, flattening the groups while a
+   * search is running, is a decision with a test rather than a branch in JSX.
+   *
+   * Titles, previews, models and tags — the fast pass only. Message text is what
+   * `onReference` is for, and mixing "open this chat" and "quote this line" into one
+   * result list is how you paste a paragraph when you meant to navigate.
+   */
+  const rows = useMemo<readonly ListRow[]>(() => drawerRows(conversations, query, now), [conversations, query, now]);
+
+  return (
+    <FlashList
+      // Virtualised, where this used to be a `.map()` inside a ScrollView. Four
+      // hundred chats meant four hundred mounted rows every time the drawer opened,
+      // on the same data the list screen has always paged through a FlashList.
+      // `renderScrollComponent` keeps Gesture Handler's scroller, which is what puts
+      // the panel's horizontal pan and this vertical one in one arbitration; the
+      // default RN scroller would take the drag back and the panel would stop
+      // following the finger over the rows.
+      data={rows}
+      renderScrollComponent={ScrollView}
+      // Read from the closure by every row and absent from `data`, so without this a
+      // recycled cell keeps the previously open chat's marker.
+      extraData={currentId}
+      keyExtractor={(row) => row.key}
+      getItemType={(row) => row.kind}
+      renderItem={({ item }) =>
+        item.kind === 'header' ? (
+          <GroupLabel count={item.count}>{item.label}</GroupLabel>
+        ) : (
+          <Row
+            conversation={item.conversation}
+            current={item.conversation.id === currentId}
+            onPress={() => onOpen(item.conversation.id)}
+          />
+        )
+      }
+      ListHeaderComponent={
+        <>
+          {/* Actions first, because they are a fixed short list and the history
+              below is unbounded — a nav row under 400 chats is a nav row nobody
+              reaches. Hidden while searching: a filter over the chats should not
+              leave unrelated rows sitting above the results. */}
+          {query ? null : (
+            <>
+              <GroupLabel>Actions</GroupLabel>
+              {/* The only accent row in the drawer. One coloured row is a primary
+                  action; two are a decorated list. */}
+              <NavRow icon="newChat" label="New chat" accent onPress={onNew} />
+              <NavRow icon="chats" label="Chats" onPress={onAllConversations} />
+              <NavRow icon="quote" label="Bring in a message…" onPress={onReference} />
+              {links.map((link) => (
+                <NavRow
+                  key={link.label}
+                  icon={link.icon}
+                  label={link.label}
+                  {...(link.detail !== undefined ? { detail: link.detail } : {})}
+                  onPress={link.onPress}
+                />
+              ))}
+              <Divider />
+            </>
+          )}
+
+          <View style={{ paddingHorizontal: t.spacing.md, paddingTop: t.spacing.md }}>
+            <Field
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search chats"
+              returnKeyType="search"
+              right={
+                query ? (
+                  <Pressable
+                    onPress={() => setQuery('')}
+                    accessibilityRole="button"
+                    accessibilityLabel="Clear search"
+                    hitSlop={12}
+                  >
+                    <Icon name="close" tone="textFaint" />
+                  </Pressable>
+                ) : (
+                  <Icon name="search" tone="textFaint" />
+                )
+              }
+            />
+          </View>
+
+          {/* Only while searching. Unsearched, every group below carries its own
+              heading, and a "History" label above "Pinned" would be a heading over
+              a heading. */}
+          {query ? <GroupLabel>Matches</GroupLabel> : null}
+        </>
+      }
+      ListEmptyComponent={
+        listLoading && !conversations.length ? (
+          <View style={{ paddingHorizontal: t.spacing.md, paddingVertical: t.spacing.sm }}>
+            <SkeletonRows count={6} label="Loading your chats" />
+          </View>
+        ) : (
+          <View style={{ padding: t.spacing.md }}>
+            <Body size="sm" tone="faint">
+              {query ? 'No chat title, model or tag matches that.' : 'No other chats yet.'}
+            </Body>
+          </View>
+        )
+      }
+      // `flex: 1`, or the list sizes itself to its content: four hundred chats then
+      // push the account footer off the bottom of the screen and there is nothing
+      // left that scrolls. This is the one line that makes the list usable at any
+      // length.
+      style={{ flex: 1 }}
+      contentContainerStyle={{ paddingBottom: t.spacing.md }}
+      keyboardShouldPersistTaps="handled"
+      // A drag that started vertically stays vertical, so it cannot fight the
+      // panel's own horizontal gesture halfway down the list.
+      directionalLockEnabled
+    />
+  );
+}
+
+/**
+ * A section heading in the drawer. The same tier as `Section`'s title on a screen.
+ *
+ * `count` is what the date groups carry — "TODAY · 4" — matching the list screen's
+ * headings so the same corpus reads the same way in both places. It is announced as
+ * part of the header, because a screen reader landing on "Today" wants to know how
+ * far the group runs before deciding to skip it.
+ */
+function GroupLabel({ children, count }: { children: string; count?: number }) {
   const t = useTheme();
   return (
     <View
@@ -403,7 +495,7 @@ function GroupLabel({ children }: { children: string }) {
       style={{ paddingHorizontal: t.spacing.md, paddingTop: t.spacing.md, paddingBottom: t.spacing.xs }}
     >
       <Body size="xs" tone="faint" weight="600" style={{ letterSpacing: 0.9, textTransform: 'uppercase' }}>
-        {children}
+        {count === undefined ? children : `${children} · ${count}`}
       </Body>
     </View>
   );

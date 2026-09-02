@@ -1,13 +1,15 @@
 /**
- * What the banner says, and — more importantly — when it says nothing.
+ * What the app says when a turn ends, and — more importantly — when it says nothing.
  *
  * A notification for a reply the user is already looking at, or for a turn they
  * cancelled themselves, is the kind of thing that gets an app's notifications turned
  * off for good. Those two cases and the empty-turn case are the whole point of
- * `replyNotice` being a separate, testable function.
+ * `replyNotice` being a separate, testable function. `replyAnnouncement` is its mirror
+ * for a screen reader, and the pair has one property worth a test of its own: exactly
+ * one of them speaks for any given turn.
  */
 
-import { replyNotice, tappedConversation } from '@/lib/notify';
+import { replyAnnouncement, replyNotice, tappedConversation } from '@/lib/notify';
 
 jest.mock('expo-notifications', () => ({
   setNotificationHandler: jest.fn(),
@@ -20,7 +22,11 @@ jest.mock('expo-notifications', () => ({
   AndroidImportance: { DEFAULT: 3 },
 }));
 
-jest.mock('react-native', () => ({ AppState: { currentState: 'background' }, Platform: { OS: 'android' } }));
+jest.mock('react-native', () => ({
+  AccessibilityInfo: { announceForAccessibility: jest.fn() },
+  AppState: { currentState: 'background' },
+  Platform: { OS: 'android' },
+}));
 
 const base = { title: 'Cache design', text: 'Use a write-through cache.', foreground: false };
 
@@ -47,6 +53,32 @@ describe('replyNotice', () => {
 
   test('an unnamed conversation still gets a title', () => {
     expect(replyNotice({ ...base, title: '  ' })?.title).toBeTruthy();
+  });
+});
+
+describe('replyAnnouncement', () => {
+  test('says how much arrived, not what it says', () => {
+    expect(replyAnnouncement({ ...base, foreground: true })).toBe('Reply ready, 4 words');
+    // Singular, because "1 words" in a synthesised voice is worse than in print.
+    expect(replyAnnouncement({ ...base, foreground: true, text: 'Yes.' })).toBe('Reply ready, 1 word');
+  });
+
+  test('stays silent for the turns it must not interrupt for', () => {
+    // Backgrounded is the notification's job, and TalkBack drops it anyway.
+    expect(replyAnnouncement(base)).toBeNull();
+    // They pressed stop.
+    expect(replyAnnouncement({ ...base, foreground: true, stopReason: 'aborted' })).toBeNull();
+    // Nothing arrived; the transcript's error row is focusable and more useful.
+    expect(replyAnnouncement({ ...base, foreground: true, text: ' \n\t ' })).toBeNull();
+  });
+
+  test('exactly one of the two speaks for any turn', () => {
+    // The invariant the pair exists to hold: `foreground` decides which, and neither
+    // case is left with nothing said or with both said at once.
+    for (const foreground of [true, false]) {
+      const said = [replyNotice({ ...base, foreground }), replyAnnouncement({ ...base, foreground })];
+      expect(said.filter(Boolean)).toHaveLength(1);
+    }
   });
 });
 

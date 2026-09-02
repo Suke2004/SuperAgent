@@ -20,7 +20,51 @@
       },
       "predictiveBackGestureEnabled": false,
       "softwareKeyboardLayoutMode": "resize",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "category": [
+            "DEFAULT"
+          ],
+          "data": [
+            {
+              "mimeType": "application/pdf"
+            },
+            {
+              "mimeType": "text/*"
+            },
+            {
+              "mimeType": "application/json"
+            },
+            {
+              "mimeType": "application/xml"
+            },
+            {
+              "mimeType": "image/jpeg"
+            },
+            {
+              "mimeType": "image/png"
+            },
+            {
+              "mimeType": "image/gif"
+            },
+            {
+              "mimeType": "image/webp"
+            },
+            {
+              "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            },
+            {
+              "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            },
+            {
+              "mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            }
+          ]
+        }
+      ],
       "permissions": [
+        "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ]
     },
@@ -53,8 +97,15 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "SuperAgent needs your photo library to attach an image to a message. Attachments stay on this device until you press send.",
-          "cameraPermission": "SuperAgent needs the camera to attach a photo to a message. The photo stays on this device until you press send."
+          "photosPermission": "SuperAgent needs your photo library to attach an image to a message. Attachments stay on this device until you press send."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "SuperAgent uses the camera so you can photograph something and ask about it. The photo stays on this device until you press send.",
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": false
         }
       ],
       [

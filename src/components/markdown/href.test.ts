@@ -1,4 +1,4 @@
-import { safeHref } from '@/components/markdown/href';
+import { hostOf, safeHref } from '@/components/markdown/href';
 
 /**
  * The characters `safeHref` removes.
@@ -158,5 +158,28 @@ describe('safeHref', () => {
       expect(once).not.toBeNull();
       expect(safeHref(once as string)).toBe(once);
     }
+  });
+});
+
+describe('hostOf', () => {
+  it('labels a chip with the publication, not the plumbing', () => {
+    expect(hostOf('https://www.NYTimes.com/2026/01/a?b=c#d')).toBe('nytimes.com');
+    expect(hostOf('http://example.co.uk/x')).toBe('example.co.uk');
+  });
+
+  it('drops userinfo and the port', () => {
+    expect(hostOf('https://user:pw@example.com:8443/x')).toBe('example.com');
+  });
+
+  it('returns null for anything that is not an http URL', () => {
+    for (const raw of ['mailto:a@b.co', 'tel:123', 'example.com', 'https://', '', undefined]) {
+      expect(hostOf(raw)).toBeNull();
+    }
+  });
+
+  it('sees the same string safeHref does', () => {
+    // Both strip first, so a host smuggled behind a control character cannot be
+    // shown as one domain while the tap opens another.
+    expect(hostOf('https://\u0000evil.test/x')).toBe('evil.test');
   });
 });

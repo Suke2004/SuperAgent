@@ -1,5 +1,16 @@
 # Agent 2 — ALEX, The Power User
 
+> **Historical record — see [the status box on the consolidated report](00-consolidated-report.md)
+> before trusting anything below.** Dated 2026-09-01, against a Phase 1 app then called
+> AgentRouter Mobile; it is now SuperAgent. Alex's own findings have since been
+> addressed: `topK` exists on both transports, cost has a screen
+> (`app/settings/usage.tsx`), and unknown token counts are optional fields rather than
+> printed zeros ([usage.ts](src/chat/usage.ts)). The 600×-off composer estimate is the
+> one that grew a mechanism rather than a fix — a persisted calibration store that
+> corrects the character-ratio estimate from real reported usage, and deliberately does
+> *not* correct the flat per-image figure. Kept unedited because the raw request bodies
+> and billed-token comparisons here came from a live gateway.
+
 **Persona.** Uses three gateways, knows what `top_p` does, and chose this app specifically because it exposes the controls the official clients hide. Will read a raw request body for fun. Expects to be trusted with dangerous settings and warned before they cost money.
 
 **Session.** Same environment as Maya: real gateway, OpenAI-compatible transport, `claude-opus-5`, existing conversations with real replies to edit and fork.

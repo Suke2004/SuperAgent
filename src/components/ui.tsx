@@ -1119,6 +1119,11 @@ export function Stepper({
  * `−` and `+` read as nothing useful aloud, so each carries the name of what it
  * changes. The box stays 40×36 to keep settings rows dense; hitSlop takes it past
  * 48dp on both axes.
+ *
+ * The glyph does not scale with the system font size, for the same reason `Icon` does
+ * not: this is the one control in the file whose box is a fixed height rather than a
+ * `minHeight`, so at Android's largest text setting a scaling `+` grows out of a box
+ * that cannot grow with it. Everything else here is text and scales.
  */
 function StepButton({
   glyph,
@@ -1157,7 +1162,9 @@ function StepButton({
         ring,
       ]}
     >
-      <Text style={{ color: t.colors.text, fontSize: t.fontSize.lg }}>{glyph}</Text>
+      <Text allowFontScaling={false} style={{ color: t.colors.text, fontSize: t.fontSize.lg }}>
+        {glyph}
+      </Text>
     </Pressable>
   );
 }

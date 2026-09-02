@@ -1,5 +1,6 @@
 import {
   buildRows,
+  drawerRows,
   filterConversations,
   matchesQuery,
   parseTags,
@@ -209,6 +210,33 @@ describe('buildRows', () => {
     );
     const keys = rows.map((row) => row.key);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe('drawerRows', () => {
+  it('groups exactly like the list screen when nothing is being searched', () => {
+    const list = [conv({ pinned: true }), conv(), conv({ updatedAt: noon(2026, 5, 14) })];
+    expect(drawerRows(list, '', NOW)).toEqual(buildRows(list, NOW));
+  });
+
+  it('drops every heading while searching, so the best hit is the first row', () => {
+    const list = [
+      conv({ pinned: true, title: 'Pinned draft' }),
+      conv({ title: 'Draft of the letter' }),
+      conv({ title: 'Something else' }),
+    ];
+    const rows = drawerRows(list, 'draft', NOW);
+    expect(headers(rows)).toEqual([]);
+    expect(ids(rows)).toEqual([list[0]?.id, list[1]?.id]);
+  });
+
+  it('treats whitespace as no search rather than as a query nothing matches', () => {
+    const list = [conv(), conv()];
+    expect(headers(drawerRows(list, '   ', NOW))).toEqual([{ label: 'Today', count: 2 }]);
+  });
+
+  it('is empty when the query matches nothing', () => {
+    expect(drawerRows([conv({ title: 'Groceries' })], 'taxes', NOW)).toEqual([]);
   });
 });
 

@@ -118,6 +118,7 @@ function Navigator() {
         <Stack.Screen name="settings/memory" options={{ title: 'Memory' }} />
         <Stack.Screen name="settings/skills" options={{ title: 'Skills' }} />
         <Stack.Screen name="settings/mcp" options={{ title: 'MCP servers' }} />
+        <Stack.Screen name="settings/tools" options={{ title: 'Built-in tools' }} />
         <Stack.Screen name="settings/prompts" options={{ title: 'Prompts' }} />
         <Stack.Screen name="settings/projects" options={{ title: 'Projects' }} />
         <Stack.Screen name="settings/usage" options={{ title: 'Usage' }} />

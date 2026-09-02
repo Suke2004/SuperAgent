@@ -44,3 +44,26 @@ export function safeHref(raw: string | undefined): string | null {
   if (!ALLOWED.test(cleaned.toLowerCase())) return null;
   return cleaned;
 }
+
+/**
+ * The domain a URL points at, for labelling a source chip.
+ *
+ * A regex rather than `new URL`, because a citation chip is not worth depending on
+ * a global whose Hermes implementation is a partial polyfill — and because the
+ * failure mode of a throwing parser here is a crashed transcript, where the failure
+ * mode of no match is a chip labelled with the URL.
+ *
+ * Userinfo and the port are dropped, and so is a leading `www.`: what the label is
+ * for is "which publication is this", and `www.` has never been part of the answer.
+ * The result is lowercased, which is safe — a host is case-insensitive, unlike the
+ * path {@link safeHref} deliberately leaves alone.
+ */
+export function hostOf(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const match = /^https?:\/\/([^/?#]+)/i.exec(raw.replace(STRIPPED, ''));
+  if (!match) return null;
+  const authority = match[1];
+  if (!authority) return null;
+  const host = authority.slice(authority.lastIndexOf('@') + 1).split(':')[0] ?? '';
+  return host.replace(/^www\./i, '').toLowerCase() || null;
+}

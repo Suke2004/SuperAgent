@@ -19,6 +19,7 @@ import type { TextStyle } from 'react-native';
 
 import { parseMarkdown } from '@/components/markdown/blocks';
 import type { MdBlock } from '@/components/markdown/blocks';
+import { ChartView } from '@/components/markdown/ChartView';
 import { CodeBlock } from '@/components/markdown/CodeBlock';
 import { InlineText } from '@/components/markdown/Inline';
 import { BlockMath } from '@/components/markdown/MathView';
@@ -70,8 +71,10 @@ function BlockView({ block, spacedTop }: { block: MdBlock; spacedTop: boolean })
 
     case 'code':
       // A mermaid fence is a diagram first; `MermaidView` falls back to a `CodeBlock`
-      // itself for anything it cannot draw, so the source is never lost.
+      // itself for anything it cannot draw, so the source is never lost. A ```chart
+      // fence is the same bargain one step further: JSON that is a picture if it can be.
       if (block.lang?.toLowerCase() === 'mermaid') return <MermaidView code={block.code} />;
+      if (block.lang?.toLowerCase() === 'chart') return <ChartView code={block.code} />;
       return <CodeBlock code={block.code} {...(block.lang ? { lang: block.lang } : {})} />;
 
     case 'math':

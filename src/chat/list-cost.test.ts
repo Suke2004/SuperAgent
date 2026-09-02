@@ -11,18 +11,13 @@
  * that turns accidentally quadratic, a filter that recomputes a haystack per
  * keystroke.
  *
- * The bounds are loose by design — an order of magnitude above what these cost
- * today, because CI runners are shared and a tight bound would fail for reasons
- * that have nothing to do with the code. They catch a change in *complexity*,
- * not a change in constant factors.
- *
- * That looseness is not enough on its own, which is why {@link fastest} exists: the
- * filter workload really costs ~2ms, and a single wall-clock sample of it still went
- * over the 150ms bound once, in a full-suite run where 72 suites share the machine's
- * cores. No threshold survives that — contention is unbounded. Taking the best of
- * several runs is the fix that actually holds, because contention and JIT warm-up can
- * only ever make a run *slower*: the floor is the code's own cost, and a complexity
- * regression raises the floor.
+ * The bounds are ratios, not clock readings, and that is the whole point: each
+ * guard measures a quarter of the input and then all of it, and asserts the
+ * larger run cost about four times the smaller. A wall-clock ceiling conflates
+ * a slow algorithm with a busy machine — all three of these guards have failed
+ * on a loaded machine while the code was fine. A ratio cannot, because both
+ * halves are measured under the same load. They catch a change in *complexity*,
+ * never a change in constant factors.
  */
 
 import { buildRows, filterConversations, tagCounts } from '@/chat/list';
@@ -82,44 +77,78 @@ function fastest(work: () => void, runs = 3): number {
   return best;
 }
 
+/**
+ * Load only ever *adds* time, so the fastest of a few runs is the cleanest
+ * estimate of what the code costs. A single reading measures the machine as
+ * much as the algorithm — this suite has failed on a loaded machine before.
+ */
+function fastest(work: () => void, runs = 3): number {
+  let best = Infinity;
+  for (let i = 0; i < runs; i++) best = Math.min(best, elapsed(work));
+  return best;
+}
+
+/**
+ * How much four times the input is allowed to cost. Linear is 4; quadratic is
+ * 16. Three times linear leaves room for cache effects and timer jitter while
+ * still landing well below the shape this is here to catch.
+ */
+const LINEAR_ENOUGH = 12;
+
+/** Repeats keep a measured unit far enough above timer resolution to divide. */
+const REPS = 20;
+
+const QUERIES = ['conv', 'conversation 4', 'opus', 'nothing matches this'];
+
 describe('the conversation list', () => {
   const conversations = Array.from({ length: 500 }, (_, i) => conversation(i));
+  const quarter = conversations.slice(0, 125);
 
-  it('groups 500 conversations into rows quickly', () => {
+  it('groups conversations into rows in linear time', () => {
     let rows = 0;
-    const ms = fastest(() => {
-      rows = buildRows(conversations, NOW).length;
-    });
+    const group = (list: Conversation[]) => () => {
+      for (let r = 0; r < REPS; r++) rows = buildRows(list, NOW).length;
+    };
+    const part = fastest(group(quarter));
+    const whole = fastest(group(conversations));
+
     // Every conversation plus at most one heading per group.
     expect(rows).toBeGreaterThan(500);
     expect(rows).toBeLessThan(510);
-    expect(ms).toBeLessThan(150);
+    expect(whole / part).toBeLessThan(LINEAR_ENOUGH);
   });
 
   it('filters and counts tags without rescanning per row', () => {
-    const ms = fastest(() => {
-      for (const query of ['conv', 'conversation 4', 'opus', 'nothing matches this']) {
-        filterConversations(conversations, { query });
+    const search = (list: Conversation[]) => () => {
+      for (let r = 0; r < REPS; r++) {
+        for (const query of QUERIES) filterConversations(list, { query });
+        tagCounts(list);
       }
-      tagCounts(conversations);
-    });
-    expect(ms).toBeLessThan(150);
+    };
+    const part = fastest(search(quarter));
+    const whole = fastest(search(conversations));
+
+    expect(whole / part).toBeLessThan(LINEAR_ENOUGH);
   });
 });
 
 describe('a 1,000-message transcript', () => {
-  it('parses every message body inside the first-paint budget', () => {
+  it('parses every message body without super-linear cost', () => {
     const sources = Array.from({ length: 1000 }, (_, i) => markdown(i));
+    const quarter = sources.slice(0, 250);
     let blocks = 0;
-    const ms = fastest(() => {
+
+    // The 2 s first-paint criterion is a device property; a wall-clock bound
+    // here fails when the machine is busy, which says nothing about the parser.
+    const part = fastest(() => {
+      for (const source of quarter) parseMarkdown(source);
+    });
+    const whole = fastest(() => {
       blocks = 0;
       for (const source of sources) blocks += parseMarkdown(source).length;
     });
 
     expect(blocks).toBeGreaterThan(1000);
-    // Well under the 2 s first-paint criterion, and this is the whole
-    // transcript: FlashList only parses the handful of rows it mounts, so the
-    // budget here is deliberately the pessimistic case.
-    expect(ms).toBeLessThan(2000);
+    expect(whole / part).toBeLessThan(LINEAR_ENOUGH);
   });
 });

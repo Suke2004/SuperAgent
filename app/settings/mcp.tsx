@@ -1,10 +1,16 @@
 /**
  * MCP servers.
  *
- * Add a server by URL, sign in if it wants OAuth, see what it advertises, and switch
- * individual tools on and off. The list and the form share this file for the same
- * reason the skills screen does: the "that name is taken" message has to land next to
- * the field that caused it.
+ * Browse a connector, or add one by URL; sign in if it wants OAuth, see what it
+ * advertises, and switch individual tools on and off. The list, the directory and the
+ * form share this file for the same reason the skills screen does: the "that name is
+ * taken" message has to land next to the field that caused it.
+ *
+ * The directory (`@/mcp/catalog`) is a shortcut into the form, not a second way to
+ * create a server. Tapping an entry fills the same fields you would have typed and
+ * stops there, so the URL, the transport and the auth kind are all on screen before
+ * anything is saved — which is what keeps a bundled list of other people's endpoints
+ * honest when one of them moves.
  *
  * Two things on this screen are security decisions rather than layout ones:
  *
@@ -37,6 +43,8 @@ import {
   Spinner,
   SwitchRow,
 } from '@/components/ui';
+import { CATALOG_AS_OF, connectorAdded, draftFromEntry, searchConnectors } from '@/mcp/catalog';
+import type { ConnectorEntry } from '@/mcp/catalog';
 import { qualifyToolName, slugFromHost } from '@/mcp/protocol';
 import type { ApprovalMode } from '@/mcp/protocol';
 import type { McpAuthKind, McpServer, McpServerDraft } from '@/db/mcp';
@@ -69,6 +77,10 @@ export default function McpScreen() {
   const [menuFor, setMenuFor] = useState<McpServer | null>(null);
   /** Resource lists run to hundreds on a file server; the first 20 answer "is it working?". */
   const [allResources, setAllResources] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
+  const [query, setQuery] = useState('');
+  /** The catalogue entry a draft came from, so the editor can say what it will reach. */
+  const [source, setSource] = useState<ConnectorEntry | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -87,7 +99,25 @@ export default function McpScreen() {
     setHeaders(server ? Object.entries(server.headers).map(([key, value]) => ({ key, value })) : []);
     setToken('');
     setProblem(null);
+    setSource(null);
     setEditing(server ? server.id : 'new');
+  };
+
+  /**
+   * A catalogue entry, opened as a new-server draft.
+   *
+   * Deliberately the same editor rather than a one-tap add: the entry is a dated guess
+   * at somebody else's endpoint, and the user seeing the URL before it is saved is the
+   * whole safeguard.
+   */
+  const openConnector = (entry: ConnectorEntry): void => {
+    setDraft(draftFromEntry(entry));
+    setHeaders([]);
+    setToken('');
+    setProblem(null);
+    setSource(entry);
+    setBrowsing(false);
+    setEditing('new');
   };
 
   const submit = async (): Promise<void> => {
@@ -176,8 +206,14 @@ export default function McpScreen() {
   if (editing !== null) {
     return (
       <Screen>
-        <Section title={editing === 'new' ? 'Add a server' : 'Edit server'}>
+        <Section title={editing === 'new' ? (source ? `Add ${source.name}` : 'Add a server') : 'Edit server'}>
           <View style={{ padding: t.spacing.md, gap: t.spacing.md }}>
+            {source ? (
+              <Note tone="warning">
+                What it can see: {source.reach} These details were published as of {CATALOG_AS_OF} and are filled in
+                here, not verified — if connecting fails, check {source.docs} for the current endpoint.
+              </Note>
+            ) : null}
             <Field
               label="URL"
               value={draft.url}
@@ -361,6 +397,63 @@ export default function McpScreen() {
     );
   }
 
+  if (browsing) {
+    const found = searchConnectors(query);
+    return (
+      <Screen>
+        <Section
+          title="Connectors"
+          note={`Servers other people run, with the endpoint each one published as of ${CATALOG_AS_OF}. Tapping one fills in the add form so you can check it before saving; it is not saved, and nothing here is a recommendation.`}
+        >
+          <View style={{ padding: t.spacing.md }}>
+            <Field
+              label="Search"
+              value={query}
+              onChangeText={setQuery}
+              placeholder="issues, docs, payments…"
+              autoCapitalize="none"
+              hint="Matches the name, what it does, and the address."
+            />
+          </View>
+          {found.length === 0 ? (
+            <View style={{ padding: t.spacing.md }}>
+              <Empty
+                icon="search"
+                title="Nothing matches"
+                body="This is a short hand-written list, not a registry. Add the server by URL instead."
+              />
+            </View>
+          ) : (
+            found.map((entry, index) => {
+              const added = connectorAdded(entry, servers);
+              return (
+                <Row
+                  key={entry.id}
+                  first={index === 0}
+                  label={entry.name}
+                  subtitle={`${authWord(entry.authKind)} · ${entry.blurb}`}
+                  onPress={() => openConnector(entry)}
+                  {...(added ? { right: <Badge tone="success" label="Added" /> } : { chevron: true })}
+                  accessibilityHint={added ? 'Already added — opens the form again' : 'Fills in the add form'}
+                />
+              );
+            })
+          )}
+        </Section>
+
+        <Inline gap="md">
+          <Button label="Back" variant="ghost" onPress={() => setBrowsing(false)} />
+          <Button label="Add by URL" size="sm" variant="ghost" onPress={() => openEditor(null)} />
+        </Inline>
+
+        <Body tone="dim" size="sm">
+          A server you add can see whatever you send its tools, and its results go into the model’s context. The line
+          under each name says what that means for that one.
+        </Body>
+      </Screen>
+    );
+  }
+
   return (
     <Screen>
       <Section
@@ -376,7 +469,11 @@ export default function McpScreen() {
           </View>
         ) : servers.length === 0 ? (
           <View style={{ padding: t.spacing.md }}>
-            <Empty icon="servers" title="No servers yet" body="Add one by URL. Streamable HTTP and SSE only." />
+            <Empty
+              icon="servers"
+              title="No servers yet"
+              body="Browse the connectors for one you already use, or add any server by URL. Streamable HTTP and SSE only."
+            />
           </View>
         ) : (
           servers.map((server, index) => (
@@ -396,7 +493,15 @@ export default function McpScreen() {
       {outcome ? <Note tone="info">{outcome}</Note> : null}
 
       <Inline gap="md">
-        <Button label="Add a server" size="sm" onPress={() => openEditor(null)} />
+        <Button
+          label="Browse connectors"
+          size="sm"
+          onPress={() => {
+            setQuery('');
+            setBrowsing(true);
+          }}
+        />
+        <Button label="Add by URL" size="sm" variant="ghost" onPress={() => openEditor(null)} />
       </Inline>
 
       <Body tone="dim" size="sm">
@@ -427,6 +532,13 @@ function approvalLabel(mode: ApprovalMode | undefined): string {
   if (mode === 'always') return 'Always allow';
   if (mode === 'deny') return 'Never allow';
   return 'Ask every time';
+}
+
+/** What adding a connector will cost the user before it works. The first thing they need. */
+function authWord(kind: McpAuthKind): string {
+  if (kind === 'oauth') return 'Sign in';
+  if (kind === 'bearer') return 'Needs a token';
+  return 'No sign-in';
 }
 
 /** The host, as a slug, or '' for something not yet a URL. */

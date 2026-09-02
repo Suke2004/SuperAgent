@@ -54,6 +54,21 @@ export const MAX_MESSAGE_ATTACHMENT_CHARS = 4_500_000;
 export const MAX_ATTACHMENTS_PER_MESSAGE = 8;
 
 /**
+ * Hard cap on attachments across a whole conversation.
+ *
+ * A separate limit rather than a bigger version of the one above, because it guards a
+ * different failure. Every attachment is re-sent with every later turn, so eight files
+ * in one message cost eight files *once*, while eight messages of one file each cost
+ * eight on the eighth turn, thirty-six across the conversation, and grow from there.
+ * The per-message limit keeps a single request from being too big; this one keeps a
+ * conversation from becoming too expensive to continue.
+ *
+ * 20 matches the number the Claude apps use, which is the reason it is 20 and not 16 —
+ * a user who has learned the limit elsewhere should find the same one here.
+ */
+export const MAX_ATTACHMENTS_PER_CONVERSATION = 20;
+
+/**
  * Compression attempts, in order, all at {@link MAX_IMAGE_EDGE}.
  *
  * Re-encoding is tried before refusing, because "that photo is too big" is a
@@ -270,6 +285,19 @@ export function attachmentTokens(blocks: readonly ContentBlock[]): number {
   return attachmentSize(blocks).tokens;
 }
 
+/**
+ * Attachments already sent in a conversation, for {@link MAX_ATTACHMENTS_PER_CONVERSATION}.
+ *
+ * Counted from the messages rather than tracked as a running total, so it stays correct
+ * across a deleted message, an edited turn and a conversation loaded from SQLite in a
+ * new process — none of which a counter would survive.
+ */
+export function sentAttachments(messages: readonly { readonly content: readonly ContentBlock[] }[]): number {
+  let count = 0;
+  for (const message of messages) count += attachmentSize(message.content).count;
+  return count;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Admission                                                                  */
 /* ------------------------------------------------------------------------- */
@@ -285,15 +313,48 @@ export type Admission = { ok: true } | { ok: false; reason: string };
 
 const OK: Admission = { ok: true };
 
-function countLimit(existing: readonly ContentBlock[]): Admission {
+/**
+ * Whether there is room for one more attachment at all, by count.
+ *
+ * Exported because the pickers ask it *before* opening a system dialog: a sheet that
+ * opens the gallery and then refuses everything picked from it is worse than a row
+ * that says why it is unavailable. It is also the single copy of both sentences, which
+ * is what keeps the refusal shown at the sheet identical to the one shown per file.
+ */
+export function admitAnother(existing: readonly ContentBlock[], sent = 0): Admission {
   const { count } = attachmentSize(existing);
-  if (count < MAX_ATTACHMENTS_PER_MESSAGE) return OK;
-  return {
-    ok: false,
-    reason:
-      `${MAX_ATTACHMENTS_PER_MESSAGE} attachments is the limit for one message. ` +
-      `Send these first — the next message can carry more.`,
-  };
+  if (count >= MAX_ATTACHMENTS_PER_MESSAGE) {
+    return {
+      ok: false,
+      reason:
+        `${MAX_ATTACHMENTS_PER_MESSAGE} attachments is the limit for one message. ` +
+        `Send these first — the next message can carry more.`,
+    };
+  }
+  if (sent + count >= MAX_ATTACHMENTS_PER_CONVERSATION) {
+    return {
+      ok: false,
+      reason:
+        `This chat is at its ${MAX_ATTACHMENTS_PER_CONVERSATION}-file limit. Every attachment is re-sent with ` +
+        `every message, so start a new chat rather than adding more here.`,
+    };
+  }
+  return OK;
+}
+
+/**
+ * Room left for more attachments, as a count.
+ *
+ * The smaller of the two allowances, so the system picker's own `selectionLimit` can
+ * enforce whichever one is binding and the user never selects files that are then
+ * refused one by one.
+ */
+export function remainingSlots(existing: readonly ContentBlock[], sent = 0): number {
+  const { count } = attachmentSize(existing);
+  return Math.max(
+    0,
+    Math.min(MAX_ATTACHMENTS_PER_MESSAGE - count, MAX_ATTACHMENTS_PER_CONVERSATION - sent - count),
+  );
 }
 
 function budgetLimit(existing: readonly ContentBlock[], addedChars: number): Admission {
@@ -316,10 +377,14 @@ function budgetLimit(existing: readonly ContentBlock[], addedChars: number): Adm
  * Called after the resize-and-recompress ladder has finished, so a refusal here
  * means the image is still too large at the bottom of the ladder — which is worth
  * saying, because the obvious user response ("I'll crop it") does work.
+ *
+ * `sent` is how many attachments the conversation already carries. Zero is the honest
+ * default for a caller that has no conversation yet, not a way to skip the check.
  */
 export function admitImage(
   existing: readonly ContentBlock[],
   candidate: { mediaType: string; data: string },
+  sent = 0,
 ): Admission {
   if (!(ACCEPTED_IMAGE_TYPES as readonly string[]).includes(candidate.mediaType)) {
     return {
@@ -330,7 +395,7 @@ export function admitImage(
     };
   }
 
-  const counted = countLimit(existing);
+  const counted = admitAnother(existing, sent);
   if (!counted.ok) return counted;
 
   if (candidate.data.length > MAX_IMAGE_BASE64_CHARS) {
@@ -356,8 +421,9 @@ export function admitImage(
 export function admitDocument(
   existing: readonly ContentBlock[],
   candidate: { mediaType: string; name?: string; size?: number },
+  sent = 0,
 ): Admission {
-  const counted = countLimit(existing);
+  const counted = admitAnother(existing, sent);
   if (!counted.ok) return counted;
 
   const mediaType = candidate.mediaType;
