@@ -30,13 +30,15 @@ the lockfile fails there rather than producing a build nobody can reproduce.
 
 ## The gates
 
-Run all of them before pushing. CI runs the same four on every push and pull request.
+There are five. CI runs the first four on every push and pull request; the fifth is a
+device pass, which no runner can do for you.
 
 ```bash
 pnpm gates
 ```
 
-That is typecheck + lint + tests with coverage thresholds. CI adds the fourth:
+That is typecheck + lint + tests with coverage thresholds — three of the four. CI adds
+the bundle:
 
 ```bash
 pnpm expo export --platform android --output-dir .expo-export
@@ -44,7 +46,16 @@ pnpm expo export --platform android --output-dir .expo-export
 
 A full Metro bundle whose output is discarded. It is the only gate that can see a
 broken screen: `jest.config.js` matches `*.test.ts` only, so no component is ever
-imported by the suite.
+imported by the suite. Run it yourself whenever imports or assets moved — a `require`
+cycle, a missing asset or a native-only import pulled into a shared module fails here
+and nowhere else. `.expo-export/` is gitignored, so there is nothing to clean up.
+
+The fifth gate is the device protocol in [docs/GUIDELINES.md](docs/GUIDELINES.md) §13.
+It matters more than it sounds: the app now depends on well over a dozen native
+modules, and a feature that needs one simply does not exist on a build made before it.
+It is also the only gate that can hear a screen reader, so every accessibility label,
+role and focus trap in the app is unverified until someone walks it — steps 76–79 of the
+full protocol ([docs/07_Deployment.md](docs/07_Deployment.md) §7).
 
 Rules about the gates:
 
@@ -54,6 +65,11 @@ Rules about the gates:
   is true that the tool cannot see.
 - New pure logic ships with tests in the same change. Logic in a component is logic
   no test can reach — put it in `src/chat/`, `src/lib/` or `src/db/` and test it there.
+- **A tested module's whole import graph has to stay off `react-native`.** The suite
+  runs under `testEnvironment: 'node'` with no setup file, so one transitive import of
+  `react-native` or `expo-file-system/legacy` anywhere in the graph takes the suite
+  down rather than the module. This is the constraint behind the house pattern of a
+  pure `.ts` module paired with a `.tsx` view that renders it.
 
 ## Pull requests
 
@@ -63,9 +79,11 @@ Rules about the gates:
   rejects every request ([docs/flaws.md](docs/flaws.md) §1), and native changes cannot
   be verified without a build — "unverified on device" is a useful thing to write down
   and a bad thing to leave implied.
-- If your change touches native config (`app.json`, a config plugin, a dependency with
-  native code), say so: it means a new APK rather than a JS change, and reviewers need
-  to know that.
+- If your change touches native config (`app.json`, `intentFilters`, a config plugin, a
+  dependency with native code), say so, and tick the second box under **Native impact**.
+  JavaScript can reach an installed build over the `expo-updates` channel; native config
+  cannot, at any version — it needs `pnpm build:preview` and a device pass, and reviewers
+  need to know which of the two your change is.
 
 ## Commit messages
 

@@ -1,5 +1,15 @@
 # Agent 1 — MAYA, The New User
 
+> **Historical record — see [the status box on the consolidated report](00-consolidated-report.md)
+> before trusting anything below.** Dated 2026-09-01, against a Phase 1 app then called
+> AgentRouter Mobile; it is now SuperAgent. Maya's own findings have since been
+> addressed: the hardcoded probe model is `pickProbeModel`
+> ([openai.ts:276](src/transports/openai.ts:276)), which now also says *"switch the
+> profile to a listed model"* rather than reporting `403`; the offline gap is
+> [OfflineBanner.tsx](src/components/OfflineBanner.tsx); and the model name reached the
+> header. Kept unedited because the first-run timings here are the only ones measured
+> against a live gateway with real credentials.
+
 **Persona.** First-time user. Has an API key from a gateway a friend recommended, no mental model of "transports", "profiles" or "capability flags". Wants to be talking to a model inside two minutes.
 
 **Session.** Fresh database, real gateway (`https://api.justwoker.icu/`, OpenAI-compatible, model `claude-opus-5`), web export of the Expo app driven through Chrome DevTools, with a local CORS proxy standing in for Android's absence of CORS. Timings are wall-clock from the harness; anything that could not be measured off-device is marked.

@@ -1,5 +1,36 @@
 # Agent 5 — MORGAN, The Accessibility User
 
+> **Historical record — see [the status box on the consolidated report](00-consolidated-report.md)
+> before trusting anything below.** Dated 2026-09-01, against a Phase 1 app then called
+> AgentRouter Mobile; it is now SuperAgent. This was the report that found both
+> Criticals that closed the app to a user group, and both are fixed: focus is
+> `focusRingStyle` ([ui.tsx:113](src/components/ui.tsx:113)) with a `useFocusRing` hook so
+> a control cannot forget it, and inputs and switches carry `accessibilityLabel`
+> ([ui.tsx:1028](src/components/ui.tsx:1028), [ui.tsx:767](src/components/ui.tsx:767)).
+> `textFaint` was retoned to `#6b6862` and now measures 5.3:1 on `bg` and 4.8:1 on the
+> sunk surface — the theme source records why the warmer `#74716a` was rejected at 4.2:1
+> on `#f0eee6`, which is exactly the reasoning this report asked for
+> ([index.tsx:103](src/theme/index.tsx:103)). The 11 pt type problem and every undersized
+> target went the same way as Casey's: `MIN_TARGET = 48` plus `hitSlop`.
+>
+> Two caveats still stand and are worth carrying forward rather than closing: TalkBack
+> itself was never run (the findings were read out of the accessibility tree, and that is
+> still how they are verified), and there is no automated contrast gate — the ratios in
+> the theme source are comments, so a future palette edit can silently undo this.
+>
+> **A later accessibility pass — Section 12 of the Claude-parity checklist, 2026-09-02 —
+> closed two more of the findings here and answered one of the open questions.**
+> MORGAN-03's focus half is `accessibilityViewIsModal` on all eight modals, so a reader
+> can no longer wander behind an open sheet; the Escape half does not apply on Android,
+> where the back gesture dismisses and always did. MORGAN-05's names are in. The answered
+> question is the one in *Not verified* below — "interruption behaviour during
+> streaming" — and the answer is that **nothing announces during a stream, deliberately.**
+> A screen reader re-reads a changing region from the top, so a live region over streaming
+> text reads the reply from the beginning several times a second; what ships instead is one
+> announcement when the turn ends, and exactly one of that and the background notification
+> fires per turn. The verbosity-and-ordering half of that caveat is still open and is now
+> steps 76–79 of [07_Deployment.md](../07_Deployment.md) §7.
+
 **Persona.** Navigates by keyboard, uses TalkBack for parts of the day, and needs contrast above 4.5:1 to read comfortably. Also the persona most likely to be using the app in a degraded state — poor light, poor signal, a half-configured install.
 
 **Session.** Keyboard traversal measured stop by stop with computed focus styles captured at each stop; contrast computed from the palette source rather than estimated from screenshots; graceful-degradation paths traced through the stores. TalkBack itself could not be run against a web harness, so screen-reader findings are drawn from the accessibility properties actually present in the tree — which is where the defects are, and is verifiable without the reader.

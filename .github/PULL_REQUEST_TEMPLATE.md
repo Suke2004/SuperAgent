@@ -22,13 +22,17 @@
 - [ ] No secret, key, token or unredacted export in the diff or the description.
 - [ ] Nothing in [docs/GUIDELINES.md](../blob/main/docs/GUIDELINES.md) §14 ("decisions
       not to silently undo") was undone — or if it was, this PR argues for it.
+- [ ] Every new interactive element has an accessibility label (and a hint where the
+      outcome is not obvious); no `accessibilityLiveRegion` on anything that streams.
+      Components are structurally untested here, so review is the only gate this passes.
 - [ ] Docs updated if behaviour, setup or the release process changed.
 
 ## Native impact
 
-- [ ] JavaScript only — reaches a device as a rebuild of the same config
-- [ ] Touches native config (`app.json`, a config plugin, a dependency with native
-      code) — needs a new APK and a device pass before release
+- [ ] JavaScript only — can reach an installed build over the `expo-updates` channel
+- [ ] Touches native config (`app.json`, `intentFilters`, a config plugin, a dependency
+      with native code) — **no update can carry this.** Needs a new build
+      (`pnpm build:preview`) and a device pass before release.
 
 ## Related
 

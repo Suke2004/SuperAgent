@@ -2,14 +2,32 @@
 
 Audited at commit `f6db5a5`, 2026-08-30, revised the same day after the second fix
 pass, again on 2026-08-31 after cross-checking a third-party audit against the code,
-and a fourth time the same day during the V1 release-readiness sweep — §4 items 19–25,
-which is where the findings from actually running the build live. Nothing here is a feature request — the outstanding feature work is in
+a fourth time the same day during the V1 release-readiness sweep — §4 items 19–25,
+which is where the findings from actually running the build live — and a fifth time on
+2026-09-02, after the v1.1 feature work (charts, document generation, inbound file
+intents, dictation and voice mode, the WebView sandbox, the motion and icon
+vocabularies). That fifth pass reopened §2.7 and added §3a. §3a was then extended in
+place, still on 2026-09-02, for parity Sections 6, 7 and 10 — the in-app camera, the
+history drawer, and the connector directory with its per-conversation tool summary.
+That extension is **not** a full pass over any of them: it records the
+limitations each feature ships with, and the register-level admission that neither
+out-of-order workstream has had a real debt review is
+[06_Eng_Plan.md](06_Eng_Plan.md) D-17, still open.
+§3a was extended once more, the same day, for parity Sections **11 and 12** — the platform
+pass and the accessibility pass. That extension is different in kind from the others,
+because Section 11 was a survey rather than a build: it found the platform integration
+largely already correct, and what it added here is mostly a list of **deliberate absences**
+with the reason each one is a rebuild or a platform-owned control. Section 12's contribution
+is in §3 instead, as the one thing it cannot claim — that no gate in this repository can run
+a screen reader, so the whole accessibility surface is asserted rather than measured.
+Nothing here is a feature request — the outstanding feature work is in
 [06_Eng_Plan.md](06_Eng_Plan.md) and `progress.md`. This file is the list of things
 that are wrong, missing, or unverified in what already exists.
 
 Every finding is kept even once fixed, with the fix recorded under it: the original
 reasoning is the useful part, and a file that deletes its closed items reads as if
-the app were never wrong. §4 is the running queue, §5 the dependency audit.
+the app were never wrong. **A fix that is later reversed keeps both halves** — §2.7 is
+the worked example. §4 is the running queue, §5 the dependency audit.
 
 ---
 
@@ -220,18 +238,51 @@ Fixed by deletion: the `localStorage` path is gone and web keys live in a
 module-scoped `Map` for the session only. Re-pasting a key after a refresh is the
 whole cost, and web is not a supported target.
 
-### 2.7 `expo-updates` is an unpinned remote-code channel — ✅ fixed
+### 2.7 `expo-updates` is an unpinned remote-code channel — ✅ fixed, then **deliberately reversed**
 
 `updates.url` pointed at the EAS project with `runtimeVersion: appVersion` and no
 `checkAutomatically` or `fallbackToCacheTimeout` configuration. Whoever controls
 that project id could replace the JS bundle inside an installed APK.
 
-Now `updates.enabled: false` with `checkAutomatically: "NEVER"` in
-[`app.json`](../app.json). Nothing in the repo publishes an update — there is no
-`eas update` script and no release process that expects one — so the channel was
-pure attack surface. The dependency stays for the build config; the URL stays so
-turning OTA back on is a one-line change, and if it is ever wanted the same change
-should add `expo-updates` code signing rather than trusting the project id alone.
+The first fix set `updates.enabled: false` with `checkAutomatically: "NEVER"` in
+[`app.json`](../app.json), on the reasoning that nothing in the repo published an update —
+no `eas update` script, no release process expecting one — so the channel was pure attack
+surface.
+
+**That reasoning stopped being true, and the decision was reversed in commit `0803d51`.**
+The repo now has `update:preview`, `update:production` and `update:rollback` scripts and
+two channels in [`eas.json`](../eas.json), and `updates.enabled` is `true` with
+`checkAutomatically: "ON_LOAD"`. Anyone who read the paragraph above needs to know that:
+the app now accepts remote JavaScript at launch.
+
+Why the reversal is the better trade rather than a regression. Distribution is a direct
+APK — there is no store update channel, and a user who installed by hand has no
+notification path. So the alternative to OTA is not "no remote code", it is "a JavaScript
+security fix never reaches an installed device". Against that, three mitigations that were
+taken rather than assumed:
+
+- **The channel is signed by Expo**, and publishing needs the account's credentials.
+- **`runtimeVersion` policy stays `appVersion`**, so an update is scoped to the native
+  surface the APK was built with. An update structurally *cannot* introduce a native
+  change; anything touching a native module, a config plugin or `app.json` still ships as
+  a build.
+- **`fallbackToCacheTimeout: 0`**, so a slow or hostile network delays the cold start by
+  nothing at all and falls back to the bundle already on the device.
+
+**One thing changed on this path in the platform pass, and it is worth being precise about
+what it does not change.** Settings now shows an *Update → Restart to finish updating* row
+while `useUpdates()` reports a pending bundle, calling `reloadAsync()`. That is not a
+fourth mitigation and not a new mechanism: `expo-updates` still decides what to download
+and when to check, and the row does not appear unless a bundle is already on disk. What it
+changes is *who chooses the moment the new code starts executing.* Before it, a downloaded
+bundle sat unapplied until the OS happened to kill the process — for a resident app,
+possibly days, which is the case that makes "a fix reaches installed devices" untrue in
+practice. The row makes the application deliberate and visible instead of incidental. It
+neither widens nor narrows the trust placed in the project id.
+
+Still not done, and still the honest gap: **`expo-updates` code signing.** The three
+mitigations bound the blast radius; code signing is what would remove the trust in the
+project id itself. Recorded in §4 as outstanding rather than closed.
 
 ### 2.8 The key stays in the heap for the process lifetime — ✅ fixed
 
@@ -315,12 +366,23 @@ No injection or code-execution issues found.
 - `safeHref` is a scheme **allowlist** that strips C0/C1 controls, soft hyphen and
   the zero-width/bidi family *before* reading the scheme — the correct order, and
   the part most implementations get wrong.
-- No WebView, no `eval`, no `Function()`, no `dangerouslySetInnerHTML`.
+- No `eval`, no `Function()`, no `dangerouslySetInnerHTML`. **There is now a WebView**
+  — the earlier "no WebView" line above was written before artifact previews and
+  `run_code` existed and no longer holds. What holds instead is that it is sealed:
+  `default-src 'none'` with only inline style and script, no network, no storage, no
+  bridge back into the app, navigation away from the first document refused and
+  reported, and a `run_code` program abandoned after five seconds. The engine that runs
+  model output is deliberately not the engine holding the keys.
 - FTS5 `MATCH` expressions are built by a dedicated escaping layer, not
   concatenated.
 - `redact()` handles cycles and `Error` stacks; exports redact twice.
 - Retry policy is genuinely conservative: 429/5xx/network only, honours
   `Retry-After`, full jitter, elapsed-time cap, never retries mid-stream.
+- An inbound "open with" intent is refused unless it is a `content://` URI from a
+  system provider, so a crafted `file:///data/data/<package>/…` cannot name the app's
+  own encrypted database.
+- `fetch_url` re-checks the address it landed on, not just the one it was given, so a
+  public host cannot redirect the fetch onto a link-local or private address.
 
 ---
 
@@ -341,14 +403,45 @@ starting another. A semaphore in `HttpClient` would be real machinery — with i
 deadlock and starvation modes — against a bound the interface already imposes. Left
 undone deliberately rather than forgotten.
 
-**Physical-device verification: done.** The keyboard fix under edge-to-edge,
-FlashList anchoring mid-stream, markdown baseline geometry, the attachment pipeline
-and the share sheet have all been exercised on a real Android device by the author.
-The two things a device run cannot retire are listed above (backgrounded streaming)
-and below (`.expo/types/`). Note that `expo-speech` and
-`expo-local-authentication` are native modules: both need a dev-client or APK
-rebuild before "Read aloud" and the app lock exist on a device running an older
-build.
+**Physical-device verification: done, but the native surface has outgrown the run.**
+The keyboard fix under edge-to-edge, FlashList anchoring mid-stream, markdown baseline
+geometry, the attachment pipeline and the outgoing share sheet (export, through React
+Native's `Share`) have all been exercised on a real Android device by the author. The two
+things a device run cannot retire are listed above (backgrounded streaming) and below
+(`.expo/types/`).
+
+What a device run *has not* covered, because the modules arrived after it, and each needs
+an APK or dev-client rebuild before the feature exists at all:
+`expo-speech` and `expo-speech-recognition` (read aloud, dictation, voice mode),
+`expo-local-authentication` (app lock), `expo-print` and `expo-sharing` (PDF and document
+generation), `react-native-webview` (artifact preview, `run_code`),
+`react-native-gesture-handler`, `expo-blur`, `expo-linear-gradient` and
+`@expo/vector-icons` (the motion and icon work), **`expo-camera` (the in-app viewfinder —
+the only camera there is, so on any installed build this feature does not exist yet)**,
+SQLCipher (the plaintext→encrypted
+conversion, which only ever runs once per install and is therefore the single riskiest
+unverified path), and the `intentFilters` block in `app.json` ("open with"). An OTA
+update cannot close this gap — updates are scoped to the `runtimeVersion` the APK was
+built with.
+
+**`expo-updates` itself has never been exercised end to end**, and it is the one item on
+that list whose failure is silent. It is configured and now called from JavaScript — the
+platform pass added the *Restart to finish updating* row (§2.7) — but no bundle has ever
+been published to a channel and picked up by an installed APK on this project. Everything
+believed about the update path is believed from configuration: that `ON_LOAD` checks, that
+`fallbackToCacheTimeout: 0` does not stall the splash, that `appVersion` scoping refuses a
+mismatched bundle, and that the Settings row appears when one is pending. A broken update
+channel looks exactly like a working one until the moment a fix is needed.
+
+**Nothing accessible is verified, and that is a different kind of gap from the rest of this
+section.** The parity accessibility pass shipped 87 labels, 78 roles, 52 hints, 25 state
+props and `accessibilityViewIsModal` on all eight modals. No gate in this repository can
+run a screen reader, so every one of those is an assertion about what TalkBack *would*
+say. The failure mode is not an absent label — that is at least visible in a diff — but a
+plausible label in the wrong place, or two controls claiming the same name, or a focus
+order that jumps. A wrong label reads to a screen-reader user as a confident wrong answer,
+which is worse than silence. Device steps 76–79 in [07_Deployment.md](07_Deployment.md) §7
+are the check, tracked as D-20 in [06_Eng_Plan.md](06_Eng_Plan.md) §11.
 
 **`.expo/types/` has never been generated**, so `experiments.typedRoutes: true`
 enforces nothing and route-path typos are invisible. Generated by the dev server
@@ -365,9 +458,183 @@ coverage. `selectTools`/`describeWithheldTools` are built with no call site (D-1
 last-used tracking on a credential that gates paid credits. Unchanged: rotation is
 the gateway console's job, and the app cannot revoke a token it can only send.
 
+### 3a. Gaps that arrived with the features of v1.1 and the parity sections
+
+Each of these is a stated limitation rather than a defect to fix quietly. They are here
+so nobody has to discover them.
+
+**Spoken replies use the device's engine, not a provider.** The five voice styles are
+pitch and rate settings on the system voice, and the picker says so rather than implying
+five recordings. There is no TTS provider wired up and none is planned: a hosted voice
+means uploading the reply text to a third party, which is a larger decision than "make it
+sound nicer". Two consequences the user can see: a device with no installed TTS voice
+falls silent, and the app says so instead of pretending, and because `expo-speech` reports
+word boundaries on **iOS only**, the on-screen highlight moves a paragraph at a time on
+Android rather than a word at a time. That is also why the script is one utterance per
+step driven by `onDone`.
+
+**The in-app camera has never been on a phone.** `expo-camera 57.0.4` is a dependency as
+of 2026-09-02 and *Take a photo* opens a viewfinder in this app: multiple shots, a review
+strip that removes one by tapping it, front/back, and a flash cycle that only offers the
+modes the facing side has. What has not happened is a device pass. A camera preview is the
+single least emulator-faithful surface on Android — orientation, aspect ratio, the flash
+lamp and the front camera's screen flash are all things a virtual camera reports and does
+not do — so treat every visual claim about it as unverified until [07_Deployment.md](07_Deployment.md)
+§7's camera steps have been walked on hardware. The system-camera row it replaced is gone,
+which means there is currently **no fallback path** if `CameraView` fails to mount on some
+device: the screen says so and offers to close, and that is all it can do.
+
+**No barcode or document scanning.** `barcodeScannerEnabled: false` is set in the
+`expo-camera` config plugin on purpose — it drops the ML Kit dependency and the APK weight
+that comes with it — so there is no QR mode, and there is no edge detection, deskew or crop
+either. A photograph of a page goes to the model as a photograph of a page.
+
+**No `expo-media-library`.** A generated file is saved through the system folder picker,
+with the share sheet as the fallback — not written into the gallery. That is one
+permission fewer and one fewer place a file can end up without the user choosing it, but
+it does mean a generated image does not appear in Photos on its own. It also means a photo
+taken in the in-app camera is **not** kept: the JPEG lives in this app's cache until it is
+encoded into the message, and is deleted either way.
+
+**Half of Android's file hand-off is unimplemented.** `ACTION_VIEW` ("open with") works.
+`ACTION_SEND` ("share to") does not, because React Native's `Linking` never exposes the
+`EXTRA_STREAM` that carries the file, and nothing in the managed workflow can reach it.
+Left unhandled rather than half-pretended: the app does not advertise a share target it
+cannot serve. `expo-share-intent` would fix it and is a native dependency.
+
+**A generated Office file cannot be edited in the app.** `src/chat/ooxml.ts` writes
+`.docx`/`.xlsx`/`.pptx` and reads them back well enough to preview, but the reader recovers
+words, not layout — so a save would silently drop every piece of formatting the writer put
+in. The preview is read-only and says why. The honest fix is a real OOXML round-trip, which
+is a library-sized problem.
+
+**Attachments are base64 in the request body.** So the per-file ceiling is well under what
+a provider would accept, a conversation holds twenty, and the bytes live in memory for the
+turn and never reach SQLite or an export. A Files API on the gateway is the real fix and
+does not exist. The ceilings are stated in the attach sheet rather than discovered by
+failure.
+
+**`src/chat/list-cost.test.ts` measures a cost ratio, not a duration** — and the change is
+worth knowing, because this file used to warn that it was the one test in the suite that
+could flake on a loaded machine, and then it did, twice, under nothing more than a second
+Jest run on the same box. It held absolute ceilings (2,000 ms for a 1,000-body markdown
+parse, 150 ms for the two list guards). Each guard now times a quarter of the input, then
+all of it, and asserts the larger run cost **under 12× the smaller** — linear is 4,
+quadratic is 16 — so load hits both halves and cancels. `fastest()` takes the minimum of
+three runs because contention only ever adds time, and each unit repeats its work 20× to
+stay clear of timer resolution. The property being guarded is unchanged: rendering a long
+list must not become super-linear, and there is no cheaper proxy for that. Do not convert
+one of these back to an absolute budget, and prefer counting operations to timing them in
+anything new.
+
+**Charts support three shapes and refuse the rest.** Bar, line and scatter, at most 6
+series, 40 bars, 400 points. Anything else returns `{kind: 'unsupported', why}` and the
+fence degrades to a code block carrying the reason. That is the cost of drawing with views
+and text instead of a canvas — and the benefit is that a chart spec written by a model
+cannot execute.
+
+**The history drawer has no per-row menu, and that is a decision rather than an omission.**
+The drawer opens a chat, starts a new one, searches, and jumps to the full list; it does not
+rename, pin, archive, export or delete. Those actions exist once, on the list screen, as
+component-body closures in `app/index.tsx` over that screen's selection, prompt and toast
+state (`confirmDelete` at [index.tsx:524](../app/index.tsx:524), `menuActions` at
+[index.tsx:553](../app/index.tsx:553)). A copy in the drawer would be a **second delete
+confirmation**, free to drift from the first, which is a worse failure than a missing menu.
+Reversing this means extracting both out of the screen before either caller changes — not
+adding a menu beside them.
+
+**The drawer's two visible claims are unverified.** Its row *building* is tested — `drawerRows`
+in [src/chat/list.ts](../src/chat/list.ts) is pure and covered — but what Section 7 actually
+promises is a frame rate through hundreds of rows and a horizontal pan that reliably loses its
+argument with the vertical scroller. Neither is visible to any of the four automated gates.
+[07_Deployment.md](07_Deployment.md) §7 steps 69–71 exist for exactly this, and until they are
+walked the drawer is code that type-checks rather than a drawer known to scroll. It does at
+least reach an installed build over the update channel: no new dependency, no native change.
+
+**The connector directory is a dated snapshot of other people's endpoints, and no gate in this
+repository can tell you it is still true.** [src/mcp/catalog.ts](../src/mcp/catalog.ts) bundles
+eleven MCP servers so that connecting to one does not require knowing its URL. Every part of that
+sentence is a liability the design has to absorb, because the URLs belong to vendors who may move
+them without telling anyone, and a connector that fails reads to a user as an app bug rather than
+as a stale constant. Four things contain it, and they are worth knowing before the first one goes
+stale:
+
+- `CATALOG_AS_OF` dates the list — set to the knowledge cutoff (**May 2026**), deliberately *not*
+  the build date, because the build date is the flattering number and the cutoff is the true one.
+  The add form shows it, so a user reading a prefilled URL knows how old it is.
+- Every entry carries a vendor `docs` URL, shown in the same note, for the case where the endpoint
+  has moved and the current one has to be looked up.
+- Tapping an entry **prefills the existing add form and saves nothing.** There is exactly one code
+  path that creates a server, the directory is a shortcut into it, and the user confirms the URL
+  before it is written. A second creation path would be a second place for validation to drift.
+- `catalog.test.ts` proves every bundled URL is one `parseServerUrl` accepts and every slug
+  survives `qualifyToolName` unchanged. It does **not** check that anything answers: that needs the
+  network, and a suite that goes red when a vendor has an outage is a suite people learn to ignore.
+
+Liveness is [07_Deployment.md](07_Deployment.md) §7 step 72, and that step says what a failure
+means — the entry is **stale**, fix `src/mcp/catalog.ts`, do not fix it only on the handset. The
+`reach` line on each entry ("what it can see once connected") is written from vendor documentation
+and is not enforced by anything: an MCP server can offer whatever tools it likes, and the approval
+gate, not that sentence, is what stands between the model and them. **Nothing in the list is a
+recommendation**, which the screen says out loud; it is a list of servers that exist.
+
+**Three built-in tools have no off switch, on purpose.** `write_file`, `create_pdf` and
+`create_document` are always available, and [app/settings/tools.tsx](../app/settings/tools.tsx)
+says so rather than showing three switches that are always on. The reasoning: they write into this
+app's own cache and go nowhere until the user chooses a destination through the system picker, so
+there is no reach to withhold. Plan mode still blocks them — by effect, because planning is when
+a write is wrong regardless of trust. If a future writer ever reaches outside the sandbox, it needs
+a switch and this paragraph is where to notice that.
+
+**The tool summary describes what is configured, not what the model was sent.** `summariseTools`
+reads the three global switches, the conversation's servers and skills, and the plan-mode flag.
+Two ways it can be optimistic: web search is Anthropic-only and provider-side, so the summary
+already gates it on `profile.kind`, but nothing here re-checks that the model in use actually
+honours it; and a server that is switched on but unreachable still contributes its tool count,
+because the count comes from what was discovered at connect time and not from a live probe.
+There is also duplicated knowledge inside it — `src/chat/plan.ts` imports `src/chat/builtins.ts`,
+so `summariseTools` cannot ask `blockedInPlanMode` which tools plan mode blocks, and the wording
+is a copy. That copy is held in step by a tripwire test in `builtins.test.ts`, which is the only
+module allowed to import both; if the split ever moves, that test fails rather than the summary
+quietly lying.
+
+**There is no *Share to SuperAgent* in the Android share sheet, and it cannot be added from
+JavaScript.** Android puts a shared payload in `EXTRA_TEXT` or `EXTRA_STREAM`; both
+`Linking.getInitialURL()` and Expo Router's [+native-intent.tsx](../app/+native-intent.tsx) can only
+see `getIntent().getData()`, which `ACTION_SEND` does not set. No arrangement of routes reaches it.
+What ships is the other half — *Open with → SuperAgent* from a file manager, through
+`intentFilters` — and that covers "I am looking at a file and want to ask about it" while missing
+"I am in another app and want to send this here". Closing it needs a native dependency, a manifest
+`intent-filter` and a rebuild, so it is recorded as flagged rather than half-built: an entry that
+appears in the share sheet and then drops the file is worse than no entry. **This is the one
+genuine feature gap left in the parity checklist that is not a product decision.**
+
+**Portrait only, no landscape, no predictive back, no launcher shortcuts** — four platform
+affordances deliberately absent, grouped because they fail the same way. Each is a change to
+`app.json` or the manifest, which means a rebuild, which means an OTA update cannot carry it; and
+none of them is a rebuild's worth of value on its own. Landscape is the largest of the four: the
+transcript would reflow, but the composer, the attach sheet and the camera viewfinder all assume a
+tall window, so "allow rotation" is a layout pass, not a flag. Predictive back needs
+`android:enableOnBackInvokedCallback` plus a per-screen predictive handler, and the current
+`BackHandler` behaviour is correct without it — just not animated. Launcher shortcuts (long-press
+the icon → *New chat*) need a static `shortcuts.xml`. They are listed so the absence reads as a
+decision and so the next rebuild has a shopping list.
+
+**A draft does not survive process death.** Type half a message, get killed by the OS, come back to
+an empty composer. It survives navigation, which is the case that actually happens; persisting it
+would put AsyncStorage in `src/stores/chat.ts`'s import graph and add a rehydrate-versus-keystroke
+race where the restored draft lands on top of what is being typed. The wrong text in a composer is
+a worse failure than an empty one.
+
+**There is no in-app haptics switch and no in-app notification switch**, and both are the same
+refusal: Android already owns those controls (*Touch feedback* and the per-app notification
+channel). An app-level copy is a second switch over one piece of state, free to disagree with the
+one the user already found in system settings. Destructive confirmations therefore always carry a
+haptic on activation, and the OS decides whether it is felt.
+
 ---
 
-## 4. Fix queue — ✅ everything on it is done
+## 4. Fix queue — one item outstanding
 
 The original five, ascending by size:
 
@@ -451,6 +718,23 @@ from running the checks rather than reading the code:
     Dependabot, and a README that documents what is in the repository rather than what
     was intended.
 
+The fifth pass, 2026-09-02 — the v1.1 feature work reopened one closed item and added
+one:
+
+26. ⬜ **`expo-updates` code signing — outstanding.** §2.7 was closed by disabling OTA
+    and then deliberately reopened by enabling it (commit `0803d51`), because a direct-APK
+    install has no other route for a JavaScript security fix. The three mitigations in
+    place — Expo's own channel signing, `runtimeVersion: appVersion`,
+    `fallbackToCacheTimeout: 0` — bound the blast radius but still trust the EAS project
+    id. Code signing is what removes that trust. This is the only item on the queue that
+    is not done.
+27. ✅ Documentation reconciled with the code, 2026-09-02. `app.json` and every doc
+    disagreed about whether OTA was on; `README.md` cited a test count three passes stale
+    and a `build:apk` script that does not exist; `README.md` and `SECURITY.md` both said
+    "no WebView" after the sandbox landed; `USAGE.md` §3 said there was no in-app
+    dictation while the composer had a microphone in it. All corrected, and §2.7 and §3a
+    above now carry the reasoning rather than only the conclusion.
+
 Audit findings rejected, with the reason, so they do not come back:
 
 - **Migration 5→6 back-approving memories.** The app is version 1.0.0 / versionCode
@@ -467,10 +751,17 @@ Audit findings rejected, with the reason, so they do not come back:
   (§2.4) and its input is a full-entropy API key, so there is nothing to brute-force
   back. It exists to tell two keys apart in the UI, not to protect the key.
 
-What is left is in §3, and each item there now says why it is left rather than
+What is left is in §3 and §3a, and each item there now says why it is left rather than
 implying it is next: backgrounded streaming needs the bare workflow, the concurrency
 cap is machinery against a bound the UI already imposes, `.expo/types/` cannot exist
-in CI, and key rotation belongs to the gateway console.
+in CI, key rotation belongs to the gateway console, and the feature-level gaps —
+device-engine speech, a camera that exists in the source but not on any installed build,
+`ACTION_SEND`, read-only Office previews, base64 attachments, portrait-only with no
+predictive back, a draft that does not survive process death, and an accessibility surface
+no automated gate can hear — are each a stated trade rather than an oversight. Two of
+those need no code at all, only a device: the update channel and the screen-reader pass
+(steps 76–79). The one thing genuinely queued as a *fix* is item 26,
+`expo-updates` code signing.
 
 ---
 

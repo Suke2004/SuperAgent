@@ -4,11 +4,11 @@
 
 | | |
 |---|---|
-| **Version** | 1.4 |
-| **Status** | Current — Phases 0–4 complete (the harness budgeting layer having landed ahead of schedule inside Phase 4's scope), Phase 5 next |
+| **Version** | 1.9 |
+| **Status** | Current — Phases 0–5 complete; Phase 6 partly delivered out of order. Two large workstreams have landed **outside this plan's phase structure** entirely (the v1.1 list, and Sections 1–7 plus 10–12 of the Claude-parity checklist — ten of its twelve), which is now the main thing this document has to be read against |
 | **Planning horizon** | 2026-08-29 → 2027-04 (six phases, twelve 2-week sprints) |
 | **Audience** | Engineers picking up a sprint, and anyone deciding what to cut |
-| **Companion docs** | [05_Data_Model.md](05_Data_Model.md) · [07_Deployment.md](07_Deployment.md) · [PRD.md](../PRD.md) · [TRD.md](../TRD.md) · [ARCHITECTURE.md](../ARCHITECTURE.md) · [progress.md](../progress.md) |
+| **Companion docs** | [05_Data_Model.md](05_Data_Model.md) · [07_Deployment.md](07_Deployment.md) · [PRD.md](../PRD.md) · [TRD.md](../TRD.md) · [ARCHITECTURE.md](../ARCHITECTURE.md) · [progress.md](../progress.md) · [progress-v1.1.md](../progress-v1.1.md) |
 
 ---
 
@@ -16,9 +16,11 @@
 
 This document turns the product intent in [PRD.md](../PRD.md) into a sequenced, estimated, testable plan: what gets built in which two-week sprint, what "done" means for each feature, what could go wrong, and which gate stops a bad change from reaching a device. It is written for the engineer who has been handed a sprint and needs to know not just the tasks but the *order constraints* — because in this codebase the ordering is where the risk lives. Streaming transport must land before retry policy, and retry policy before error classification, since each one's correctness is defined in terms of the previous one's observable behaviour.
 
-The project is a solo-maintained, offline-first Android chat client for LLM gateways with no server component and no telemetry. That shapes every plan decision in this document. There is no staged server rollout to hide a bad release behind, no analytics to tell us a feature is unused, and no way to fix a corrupted device database remotely. The compensating controls are heavy static verification (TypeScript strict, ESLint, a 996-test Jest suite that runs in about five seconds), a deliberate architectural rule that all non-trivial logic lives in pure `.ts` modules where it can be tested, and physical-device verification as a release gate rather than a nice-to-have.
+The project is a solo-maintained, offline-first Android chat client for LLM gateways with no server component and no telemetry. That shapes every plan decision in this document. There is no staged server rollout to hide a bad release behind, no analytics to tell us a feature is unused, and no way to fix a corrupted device database remotely. The compensating controls are heavy static verification (TypeScript strict, ESLint, a 1,600-test Jest suite that runs in about five seconds), a deliberate architectural rule that all non-trivial logic lives in pure `.ts` modules where it can be tested, and physical-device verification as a release gate rather than a nice-to-have.
 
-Phases 0 through 4 are complete: foundation, both transport adapters, the SQLite schema, streaming chat, search, error handling, CI, list virtualisation and paging, tags, pin/archive, two-tier search, bulk operations, export, attachments and documents, and context management — the last of which arrived in two parts, the **harness budgeting layer** (§4.1) out of sprint order at the maintainer's request, then Sprints 9–10 closing the defects it left behind (§4.2). Phases 5 and 6 — MCP and tools, and polish/observability — are planned here at sprint granularity with story points, acceptance criteria and risks. §5 is the critical path. §10 is the risk register, and the five risks the product brief calls out by name (auth failure, mid-stream network loss, context overflow, Keystore unavailability, FTS5 absence) each have a named mitigation that is already partly in code. §11 is the technical-debt register, seeded from the hazards identified in [05_Data_Model.md](05_Data_Model.md) §12.
+Phases 0 through 5 are complete: foundation, both transport adapters, the SQLite schema, streaming chat, search, error handling, CI, list virtualisation and paging, tags, pin/archive, two-tier search, bulk operations, export, attachments and documents, context management, and MCP with its approval gate and bounded tool loop. Context management arrived in two parts, the **harness budgeting layer** (§4.1) out of sprint order at the maintainer's request, then Sprints 9–10 closing the defects it left behind (§4.2). Phase 6 — polish and observability — is partly delivered already: the debug log screen, per-request timings and an accessibility pass all shipped early, alongside a great deal of work this plan never scheduled. That accessibility pass was later extended by parity Section 12, which is where the end-of-turn screen-reader announcement and the modal focus traps came from — and which also produced the one debt item in §11 that no gate here can ever close, D-20.
+
+**Two workstreams have landed outside the phase structure, and that is now the dominant fact about this document.** The v1.1 list ([progress-v1.1.md](../progress-v1.1.md)) delivered skills, prompts, projects, memory, backup/restore, an app lock, SQLCipher at rest, message variants and web search. Sections 1–7 and 10–12 of a twelve-section Claude-parity checklist then delivered speech-to-text, text-to-speech, voice mode, charts, Office documents in both directions, in-app file preview and editing, an inbound "open with" intent, readable tool labels, one shared vocabulary of motion, an in-app camera, a history drawer grouped and virtualised by the list screen's own row builder, a bundled connector directory with a per-conversation answer to *what tools does this turn have*, an end-of-turn screen-reader announcement, and a pending update the user can apply without waiting for a cold start — see [CHANGELOG.md](../CHANGELOG.md) `[Unreleased]`. **That checklist is now closed at ten of twelve**, with 8 (sync) and 9 (cowork) left behind a product decision rather than an estimate. None of it appears in §4's sprint tables, because none of it was planned there. §5 remains the critical path and its ordering held throughout. §10 is the risk register, and the five risks the product brief calls out by name (auth failure, mid-stream network loss, context overflow, Keystore unavailability, FTS5 absence) each have a named mitigation that is already partly in code. §11 is the technical-debt register, seeded from the hazards identified in [05_Data_Model.md](05_Data_Model.md) §12.
 
 **The one thing to take away:** the quality gates in §8 are not negotiable per-sprint, because with no server and no telemetry, a gate skipped is a defect shipped to a device we cannot reach.
 
@@ -26,21 +28,22 @@ Phases 0 through 4 are complete: foundation, both transport adapters, the SQLite
 
 ## 1. Baseline: where the project actually is
 
-| Dimension | Status as of 2026-08-30 |
+| Dimension | Status as of 2026-09-02 |
 |---|---|
-| Phases complete | 0 (foundation + transport), 1 (core chat), 2 (list & organisation), 3 (attachments & documents), 4 (context management, part of it pre-built by the harness sprint — §4.1, §4.2) |
-| Phases remaining | 5 (MCP & tools), 6 (polish & observability). The PRD's Phase 3 also listed speech-to-text, TTS, image generation and share-target registration, and its Phase 4 row listed skills; this plan never scheduled either set and they are unbuilt |
-| Test suite | 996 tests / 34 suites, ~5 s — measured, and enforced by CI |
-| Coverage | lines 64.05% · statements 63.10% · branches 62.40% · functions 51.34%, against a floor of 64 / 63 / 62 / 51 |
-| Source size | ~34,100 lines (`src` + `app`) |
-| Schema | `PRAGMA user_version = 3` (`conversations`/`messages` → FTS5 → `memories`) |
-| Toolchain | Expo SDK 57, RN 0.86.2, React 19.2.3, TypeScript 6.0.3, New Architecture on |
+| Phases complete | 0 (foundation + transport), 1 (core chat), 2 (list & organisation), 3 (attachments & documents), 4 (context management, part of it pre-built by the harness sprint — §4.1, §4.2), 5 (MCP & tools — §4.3) |
+| Phases remaining | 6 (polish & observability), and three of its five stories have already shipped out of order (§4.4). What is left of it is the streaming-partial scratch row (D-10), the performance panel, and the 1.0 checklist |
+| Delivered outside this plan | The **v1.1 list** ([progress-v1.1.md](../progress-v1.1.md)): skills, prompts, projects, memory, backup/restore, app lock, SQLCipher at rest, message variants, web search. **Sections 1–7 and 10–12 of the Claude-parity checklist**: speech-to-text, text-to-speech, voice mode, charts, Office read *and* write, in-app file preview and editing, inbound "open with", readable tool labels, shared motion constants, an in-app camera, a grouped and virtualised history drawer, a bundled connector directory, a live per-conversation tool summary, an end-of-turn screen-reader announcement and a user-applied pending update. See §4.5 |
+| Test suite | **1,603 tests / 80 suites, ~4–6 s** plain and ~6–8 s with coverage — measured in this worktree, and enforced by CI. A cold first run on this Windows filesystem is several times that; the figures above are warm |
+| Coverage | statements 70.05% · branches 66.24% · functions 64.49% · lines 71.62%, against the `jest.config.js` floor of 66 / 63 / 58 / 68 (statements / branches / functions / lines) |
+| Source size | ~47,800 lines of shipped code across 163 files (`src` + `app` + `plugins`, excluding the 80 test files and two test helpers); ~64,100 including them |
+| Schema | `PRAGMA user_version = 8` (`src/db/ddl.ts`), reached by eight migrations — see [05_Data_Model.md](05_Data_Model.md) §10.1 |
+| Toolchain | Expo SDK ~57.0.18, RN 0.86.3, React 19.2.3 (React Compiler on), TypeScript ~6.0.3, New Architecture on |
 | CI | **Green.** [`ci.yml`](../.github/workflows/ci.yml) runs the three gates plus a coverage floor on every push and PR; [`build-apk.yml`](../.github/workflows/build-apk.yml) builds by hand or by `v*` tag (§9) |
 | Live gateway verification | **Blocked** on a real API key |
 
 Two honest caveats that affect planning:
 
-1. **The gates were re-run, and coverage is now a gate rather than a note.** `tsc --noEmit`, `eslint .` and `jest` are green in this worktree at the figures in the table above; `jest.config.js` carries a `coverageThreshold` set two points under the measured run, so the number is enforced by the runner instead of transcribed into a markdown file. This was the first task of Sprint 5 and the reason CI exists at all.
+1. **The gates were re-run, and coverage is now a gate rather than a note.** `tsc --noEmit`, `eslint .` and `jest --coverage` are green in this worktree at the figures in the table above; `jest.config.js` carries a `coverageThreshold` set a few points under the measured run, so the number is enforced by the runner instead of transcribed into a markdown file. This was the first task of Sprint 5 and the reason CI exists at all. One consequence worth naming: the suite was read at ~11 s at the time, which looked like it was **over P-12's <10 s target** (§12). The re-measure it asked for happened on 2026-09-02 and the reading was wrong, not the target: 1,600 tests run in ~4–6 s warm and `calibration.test.ts` — blamed for ten of the eleven seconds — takes 0.64 s. See §11 D-19, closed.
 2. **No end-to-end verification against a live gateway has happened.** Every transport behaviour is verified against injected `fetch` fixtures built from the documented wire formats. That is genuinely good coverage of *our* parsing and *our* error mapping; it is zero coverage of the gateway actually behaving as documented. This is the single largest source of unknown-unknowns in the plan and it is tracked as R-01.
 
 ### 1.1 Decisions that are settled
@@ -54,6 +57,8 @@ These are recorded in `progress.md` as "decisions a new session should not silen
 - MCP over HTTP/SSE only. **No stdio** — Android cannot spawn local processes.
 - No telemetry, no analytics, no third-party crash reporting. Everything stays on device.
 - Logic lives in pure `.ts` modules because Jest matches `.ts` only; components are deliberately not unit-tested.
+- **The database is encrypted with SQLCipher and nothing is backed up.** The raw key lives in SecureStore, `android:allowBackup` is false, and the consequence is accepted: a lost key means unrecoverable conversations ([05_Data_Model.md](05_Data_Model.md) §12.7). Any future feature that copies the database off-device re-opens this decision rather than inheriting it.
+- **There is no in-app "clear all data".** Settings offers backup, restore and per-item deletion; uninstalling is the only complete wipe. Building one is a real task with a four-tier checklist (§13), not a checkbox.
 
 ---
 
@@ -84,18 +89,37 @@ PHASE 4         ████████████ (COMPLETE — divergences i
   S9  Week 17-18 pressure gauge · drop_oldest · exclusions        ✔ 26 pts
   S10 Week 19-20 rolling summary · throughSeq · budget selection  ✔ 31 pts
 
-PHASE 5                                             ░░░░░░░░░░░░  MCP & tools
-  S11 Week 21-22 MCP over HTTP/SSE · tool_use loop                 34 pts
-  S12 Week 23-24 tool approval UX · result rendering · limits      26 pts
+PHASE 5         ████████████ (COMPLETE — divergences in the §4.3 retrospective)
+  S11 Week 21-22 MCP over HTTP/SSE · tool_use loop                ✔ 34 pts
+  S12 Week 23-24 tool approval UX · result rendering · limits      ✔ 26 pts
+
+  V   out of order  v1.1: skills · prompts · projects · memory ·  ✔ (§4.5)
+                    backup/restore · app lock · SQLCipher ·
+                    variants · web search
+
+  C   out of order  Claude parity, Sections 1-7 + 10-12: STT ·     ✔ (§4.5)
+                    TTS · voice mode · charts · Office in+out ·
+                    file preview & edit · open-with · tool
+                    labels · motion vocabulary · in-app camera ·
+                    grouped history drawer · connector
+                    directory + live tool summary · reply
+                    announced to a screen reader · pending
+                    update applied on request
+                    — takes three of S13's five stories with it,
+                      and Section 6 makes the next release a build
 
 PHASE 6                                                         ░░░░░░  polish
-  S13 Week 25-26 observability · perf hardening · a11y · 1.0        24 pts
+  S13 Week 25-26 observability · perf hardening · a11y · 1.0     ◐ 24 pts
         │           │           │           │           │           │           │
         └─ alpha ───┴───────────┴─ beta ────┴───────────┴───────────┴─ 1.0 ─────┘
            (self)                (5-10 testers)                       (release)
 ```
 
+`◐` is Sprint 13 partly delivered: the debug log screen, per-request timings and the accessibility pass all landed early (§4.4), leaving the performance panel, the scratch row (D-10, cuttable) and the 1.0 checklist.
+
 Sprint numbering continues across phases because the sprint is the unit of commitment; the phase is the unit of user-visible value. A phase that needs a third sprint takes it from the next phase rather than compressing its own testing — the alternative is a phase that is "done" with its device verification skipped, which is not done ([§18](#18-definition-of-done)).
+
+**Read the two out-of-order blocks as the plan's real shape.** Three of the six blocks on this chart — `H`, `V` and `C` — were not scheduled here, and together they are larger than Phases 3, 4 and 5 combined. That is not a planning failure to apologise for; it is what a solo project with a live maintainer looks like, and the honest response is to record it on the chart rather than to keep drawing a plan the work no longer follows. The one thing it costs is velocity data: §6.2's projection is computed from planned points only, so it now under-counts what has actually been built by a wide margin (§6.4).
 
 ### 2.1 Phase intent, in one line each
 
@@ -108,6 +132,8 @@ Sprint numbering continues across phases because the sprint is the unit of commi
 | 4 | Context management | Long conversations stop failing at the window boundary |
 | 5 | MCP & tools | The model can use remote tools |
 | 6 | Polish & observability | Diagnose a problem without a debugger; ship 1.0 |
+| — (`V`) | v1.1, unplanned | Reusable skills and prompts, projects, remembered facts, a backup, a locked app |
+| — (`C`) | Claude parity 1–7 + 10–12, unplanned | Talk to it and be talked back to; read and write real documents; open a file from another app; find an old chat in the drawer without leaving it; connect a tool server from a list instead of a URL, and see what the turn can actually do; be told a reply has landed when you cannot see the screen, and finish a downloaded update without waiting for a cold start |
 
 ---
 
@@ -162,14 +188,14 @@ Phase 1 is documented at the same granularity as the future sprints, for two rea
 
 | Story | Pts | Acceptance criteria |
 |---|---|---|
-| `GatewayError` with 15 kinds; verbatim gateway text preserved | 5 | Every kind maps to one actionable hint; no kind renders "Unknown error" |
+| `GatewayError` with 14 kinds; verbatim gateway text preserved | 5 | Every kind maps to one actionable hint; no kind renders "Unknown error" |
 | Retry policy (4 attempts, 500 ms base, ×2, 20 s cap, 90 s elapsed) | 5 | `Retry-After` honoured, clamped to `[computed, maxDelayMs]` |
 | Failover to the parity origin on `network` only | 3 | A 401 does **not** fail over and does not double-spend credits |
 | Markdown → closed AST via `marked`, syntax highlighting | 5 | A 5,000-line reply renders without blocking input |
 | FlashList v2 bottom anchoring, 60 ms publish throttle | 3 | Streaming does not fight the user's scroll position |
 | Physical device pass (Pixel 6, Samsung S22) | 3 | Both devices: send, stream, background mid-stream, return, search |
 
-**Why last.** Error handling is defined in terms of retry, which is defined in terms of the transport's observable failures (§5). Building the error UI first produces a taxonomy that does not match what actually happens on the wire — which is precisely the drift visible in `progress.md`'s stale 8-kind list versus the 15 kinds in `errors.ts` ([05_Data_Model.md](05_Data_Model.md) Appendix D).
+**Why last.** Error handling is defined in terms of retry, which is defined in terms of the transport's observable failures (§5). Building the error UI first produces a taxonomy that does not match what actually happens on the wire — which is precisely the drift visible in `progress.md`'s stale 8-kind list versus the 14 kinds actually in `errors.ts` ([05_Data_Model.md](05_Data_Model.md) Appendix D). Earlier revisions of this document said 15, which was the count before `client_rejected` and `key_rejected` were merged into one `unauthorized`; the merge is described in §1.1 and the row above now reads 14.
 
 **Velocity baseline: 27 pts/sprint** (108 across four sprints). Phases 2–6 are estimated against that, with no assumption of speed-up.
 
@@ -283,6 +309,8 @@ merge-aware marker placement in `src/transports/anthropic.ts`; `promptCache` in
 | Story | Pts | Acceptance criteria | Test strategy |
 |---|---|---|---|
 | Camera + library picker (`expo-image-picker`) with permission copy | 3 | Denied permission shows a settings deep link, not a dead button | device |
+
+*(The camera half of that first row was later replaced outright: `expo-image-picker`'s camera path was deleted in parity Section 6 in favour of an in-app viewfinder on `expo-camera`. The gallery half, the permission copy and the settings deep link are unchanged — see §4.5 `C`.)*
 | Downscale and re-encode before base64 | 8 | A 12 MP photo becomes ≤1568 px on the long edge and <1.5 MB base64 | unit on the sizing function + device |
 | `ImageBlock` storage and both wire encodings | 5 | Round-trip identity per adapter ([05_Data_Model.md](05_Data_Model.md) §9) | unit |
 | Attachment size guard with a per-request budget | 5 | Adding an image that would exceed the budget is refused *before* the request, with the number shown | unit |
@@ -367,7 +395,7 @@ The harness sprint (§4.1) had already delivered Sprint 9's denominator, its orp
 
 **One story is deferred, not delivered:** the ±15% estimator-accuracy corpus needs the gateway's own reported prompt counts to measure against, so it moves with **D-11** to the first live session.
 
-### Sprint 11 · Phase 5 · MCP over HTTP/SSE and the tool loop · 34 pts
+### Sprint 11 · Phase 5 · MCP over HTTP/SSE and the tool loop · 34 pts · ✅ shipped
 
 | Story | Pts | Acceptance criteria | Test strategy |
 |---|---|---|---|
@@ -380,7 +408,7 @@ The harness sprint (§4.1) had already delivered Sprint 9's denominator, its orp
 
 **Bounded loops are a hard requirement, not a nicety.** A model that keeps calling a tool that keeps failing will spend money until the user notices. The max-iteration guard, its default, and the message shown when it trips are part of the acceptance criteria.
 
-### Sprint 12 · Phase 5 · Tool approval and rendering · 26 pts
+### Sprint 12 · Phase 5 · Tool approval and rendering · 26 pts · ✅ shipped (two stories deviate — §4.3)
 
 | Story | Pts | Acceptance criteria | Test strategy |
 |---|---|---|---|
@@ -393,7 +421,7 @@ The harness sprint (§4.1) had already delivered Sprint 9's denominator, its orp
 
 **Approval defaults to ask.** A remote tool call is arbitrary code running somewhere else with the user's data. The convenient default is dangerous, so the default is the safe one.
 
-### Sprint 13 · Phase 6 · Observability, performance, 1.0 · 24 pts
+### Sprint 13 · Phase 6 · Observability, performance, 1.0 · 24 pts · ◐ partly shipped (§4.4)
 
 | Story | Pts | Acceptance criteria | Test strategy |
 |---|---|---|---|
@@ -403,6 +431,53 @@ The harness sprint (§4.1) had already delivered Sprint 9's denominator, its orp
 | Accessibility pass | 5 | TalkBack reads the transcript in order; targets ≥44 dp; contrast ≥4.5:1 | device + audit |
 | Streaming-partial scratch row (data model §12.3), if justified | 5 | Process death mid-stream recovers the partial reply, one row rewritten per tick | integration |
 | 1.0 release checklist and docs refresh | 3 | [07_Deployment.md](07_Deployment.md) checklist fully green; `progress.md` accurate | review |
+
+### 4.3 Phase 5 retrospective — what MCP actually cost
+
+Both sprints delivered, and unusually for this plan the estimates held: the tool loop was the 34-point sprint it was estimated as. What the plan got wrong was the *shape* of two stories and the *scope* of one.
+
+| Sprint wording | What shipped | Why |
+|---|---|---|
+| "MCP client over HTTP/SSE (**no stdio**)" | **Two** HTTP transports, not one: Streamable HTTP (the current spec, answering either `application/json` or SSE) *and* the 2024-11-05 HTTP+SSE flow (`GET` for a stream, read the `endpoint` event, `POST` there) | Which one you get is the server's choice, not ours, and a large share of deployed servers still serve the old one. `parseServerUrl` rejects a non-HTTP scheme at the field the user types it into, so there is no stdio path and no code that could grow one |
+| — (not scheduled at all) | **OAuth 2.1 with PKCE and dynamic client registration** (`src/mcp/oauth.ts`) | The plan assumed a bearer header the user pastes. Real servers ask for a browser round trip. It is a public client with no secret, because a secret shipped in an app is not a secret, and the token carries a `resource` indicator so it cannot be replayed against a different server. The token goes to SecureStore through the same path as the API key, which registers it with the redactor the moment it exists |
+| — (not scheduled at all) | MCP **prompts** and **resources**, not just tools | A server that publishes prompts and resources and is only asked for tools looks broken to its author. `renderPromptMessages` and `resourcesFrom` were the cheap half of a spec we were already speaking |
+| "Per-server rate and payload limits · a tool returning 10 MB is truncated with a visible notice" | A **payload ceiling on images only** (`MAX_TOOL_IMAGE_BASE64`, ~1.5 MB of pixels; past it the image is *described* rather than inlined), plus `MAX_PAGES = 20` on `tools/list` paging. **No rate limit, and no general text truncation** | Recorded rather than ticked. The 10 MB text case is real and still open; the image case was the one that could silently spend a whole context window on a screenshot nobody asked to look at, which is the failure that looks like the model forgetting the conversation |
+| "Kill switch: disable all MCP in one tap" | **Not built as written.** What exists is per-conversation server selection (`/servers`), a per-tool enable switch, per-tool approval modes, and `confirmToolCalls` | Also recorded rather than ticked. Three controls that each answer "which tools can run here" are not the same as one control that answers "stop everything now", and the one-tap version is still worth building — it is the control you want during an incident, when picking through per-tool switches is exactly what you cannot do |
+
+**The approval gate is the design worth keeping.** An approval has to happen *mid-turn*: the model has asked for a tool, the turn is blocked on the answer, and the user is looking at a transcript. `useMcp.invoke` parks a promise in `pending` and the sheet resolves it. Three consequences fell out, and each one is load-bearing:
+
+- **A denial is a tool *result*, not an exception.** The model is told the user said no, which is information it can act on. An unanswered `tool_use` would make every *later* request in that conversation invalid.
+- **"Always allow" is per tool, never global, and persisted** — so it survives the app dying, which is the only way the setting is worth anything.
+- **Leaving the screen resolves nothing.** The sheet is rendered from the store, so coming back shows the same question rather than a turn that silently gave up.
+
+**Timeouts are three numbers, not one.** `CONNECT_TIMEOUT_MS = 30_000` waits for headers; `CALL_TIMEOUT_MS = 60_000` bounds one whole call including a tool that genuinely runs for a while; `maxToolIterations` bounds the rounds. The reason the middle one exists at all is that the loop needs *an answer* to put in a `tool_result`, and "the server timed out" is an answer.
+
+**One deliberate simplification, marked in the source.** `McpClient` opens one session per call — initialize, call, close. A tool holding per-session state on the server (a cursor, a temp directory) will not see it again next call. It costs one round trip and no lifecycle bugs; holding the session open is the upgrade if that turns out to matter.
+
+**D-13 closed here.** `selectTools` and `describeWithheldTools` had tests and no call site when §4.1 landed them; they are now wired at [src/stores/chat.ts:1381](../src/stores/chat.ts:1381), which is what the debt item asked for.
+
+### 4.4 Phase 6, partly delivered out of order
+
+Three of Sprint 13's six stories shipped before Phase 6 opened, because each was needed by something else first.
+
+| Story | State | Note |
+|---|---|---|
+| Debug log screen: filter, copy, share | **Shipped** | [app/settings/debug.tsx](../app/settings/debug.tsx). Both mandated redaction tests exist and pass — see §7.3 |
+| Per-request timing surfaced | **Shipped** | `meta.firstTokenMs` / `meta.latencyMs`, behind `devPanelEnabled`, which is off by default because it is an eighth item in a menu people use to copy text |
+| Accessibility pass | **Substantially shipped** | Labels and roles across 31 component and screen files; the long-press menu is the only route to a row's actions *and* the only one a screen reader reaches, which was the point. The TalkBack transcript-order audit is device work and still owed — parity Section 12 (§4.5) extended the pass to 87 labels, 78 roles, 52 hints and eight modal traps, and turned the owed audit into named steps: **76–79** in [07_Deployment.md](07_Deployment.md) §7, tracked as D-20 |
+| Performance panel (fps, DB timings) | **Not built** | The timings are in `meta`; the UI is not. §6.3 already lists it as cuttable |
+| Streaming-partial scratch row | **Not built** | D-10, still cuttable |
+| 1.0 release checklist and docs refresh | **In progress** | This revision is part of it |
+
+### 4.5 The two unplanned workstreams
+
+Neither of these has a sprint table anywhere, and that is the honest record: they were requested and built directly, in the order the maintainer wanted them, without being decomposed into estimated stories first. Recording them here as one block each is better than back-dating a plan they never followed.
+
+**`V` — the v1.1 list** ([progress-v1.1.md](../progress-v1.1.md)). Skills (`invoke_skill` with a zip importer), a prompts library, projects with extracted knowledge, remembered facts, backup and restore, an app lock, **SQLCipher at rest**, message variants with a ‹ 2/3 › navigator, and provider-side web search. Two of these changed the shape of the data model rather than adding to it: encryption moved the whole database behind a raw key in SecureStore ([05_Data_Model.md](05_Data_Model.md) §12.7), and variants added three columns to `messages` instead of the parent-pointer tree the obvious design would have used (§10.1, migration 7 → 8).
+
+**`C` — Sections 1–7 and 10–12 of the Claude-parity checklist**, a twelve-section list of UI/UX gaps against the Claude mobile app, worked in order. Sections 1–7 delivered: message rendering (typewriter reveal paced off the backlog, a long-press menu that opens where you pressed, toasts, one motion vocabulary), inline visuals (charts drawn with views and text — no chart library, no SVG, no WebView), file *reading* (Office formats in, in-app preview), file *generating and editing* (`create_document` writing real `.docx`/`.xlsx`/`.pptx` from Markdown through `fflate`, and a generated file that can be opened, edited and saved back), voice mode (speech-to-text, text-to-speech, a full-screen no-keyboard conversation), an in-app camera (a viewfinder, several shots per message, a review strip that drops one by tapping it), and the history drawer (date-grouped headings with counts, virtualised through FlashList, a search that flattens to one relevance-ordered run). Section 10 — connected tools — was taken next because Sections 8 and 9 are product decisions rather than engineering ones (§6.4), and it delivered a bundled connector directory (`src/mcp/catalog.ts`: eleven vendor endpoints, ordered so the first one anybody tries needs no account, tapping one *prefills* the existing add form rather than saving anything) and one place that answers "what tools does this turn have" — `summariseTools` in [builtins.ts](../src/chat/builtins.ts), rendered in the conversation's ⋯ menu and on the new [settings/tools.tsx](../app/settings/tools.tsx) screen the three global switches moved to. **Sections 11 and 12 — platform specifics and accessibility — closed the block**, and they are the two whose deliverable was as much a *survey* as a build: nearly everything both sections ask for was already in the app (inbound intents, share-out, notifications, hardware back on all eight modals, keyboard resize, safe-area insets, permission dead-ends routed to `Linking.openSettings()`; 87 accessibility labels, 78 roles, 52 hints, 25 states, eight live regions, `accessibilityViewIsModal` on every modal, Reduce Motion subscribed to and honoured per-animation). Three real gaps were found and all three were JavaScript: nothing was ever announced to a screen reader (`announceForAccessibility` appeared zero times, so a TalkBack user got silence when a reply completed — the transcript deliberately carries no live region, because one on streaming text makes TalkBack restart from the top on every token), `expo-updates` was configured and never called from JavaScript (so a downloaded security fix waited for an unprompted cold start), and one control could scale out of its own fixed-height box. Four items were **flagged rather than stubbed** because each needs a rebuild: `ACTION_SEND` (Android puts the payload in intent extras that `Linking` and `+native-intent.tsx` cannot read — the one genuine feature gap left), launcher shortcuts, predictive back, and landscape. Two items in either workstream **need a rebuild**: the inbound "open with" intent, an `intentFilters` change in `app.json`, and `expo-camera` — the only new native *module* in the whole of `V` and `C`, and the reason Section 6 could not be an update. Sections 7, 10, 11 and 12 are the counter-examples worth noting: no new dependency, no native change, so all four are parity sections an installed build can receive over the update channel.
+
+**What this costs the plan, stated plainly.** §6.2's velocity projection counts planned points only, so it now describes a fraction of the work done (§6.4). And §11's debt register was never re-seeded from these two workstreams the way it was seeded from [05_Data_Model.md](05_Data_Model.md) §12 — D-16 and D-17 below are the start of that, not the end of it.
 
 ---
 
@@ -480,19 +555,33 @@ Anything estimated 13 gets decomposed in planning. The two 34-point sprints (S2,
 | Phase | Sprints | Points | Cumulative | Calendar |
 |---|---|---|---|---|
 | 1 (done) | S1–S4 | 108 | 108 | Weeks 1–8 |
-| 2 | S5–S6 | 47 | 155 | Weeks 9–12 |
-| 3 | S7–S8 | 53 | 208 | Weeks 13–16 |
-| 4 | S9–S10 | 57 | 265 | Weeks 17–20 |
-| 5 | S11–S12 | 60 | 325 | Weeks 21–24 |
-| 6 | S13 | 24 | 349 | Weeks 25–26 |
+| 2 (done) | S5–S6 | 47 | 155 | Weeks 9–12 |
+| 3 (done) | S7–S8 | 53 | 208 | Weeks 13–16 |
+| 4 (done) | S9–S10 | 57 | 265 | Weeks 17–20 |
+| 5 (done) | S11–S12 | 60 | 325 | Weeks 21–24 |
+| 6 (partly done) | S13 | 24 | 349 | Weeks 25–26 |
 
-At the observed 27 pts/sprint, the remaining 241 points need ~9 sprints; nine are planned. **There is no slack in this plan.** That is a deliberate statement rather than an oversight: with a solo maintainer, the realistic buffer is not padded estimates but a scope-cut list agreed in advance (§Appendix B).
+All 349 planned points are delivered except roughly 10 of Sprint 13's 24 (the performance panel, the scratch row and the closing checklist). **There is no slack left in the plan because there is almost no plan left** — which is a different problem from the one this section was written to manage.
 
 ### 6.3 What gets cut first, if it must
 
-In order, most-cuttable first: (1) the streaming-partial scratch row (S13 — the loss is recoverable by regenerating), (2) bulk operations beyond delete (S6), (3) nested content in tool results (S12 — text-only results cover the common case), (4) re-summarise-the-summary (S10 — cap conversation length instead), (5) the performance panel (S13 — keep the timings in `meta`, drop the UI).
+Written before Phases 3–5 shipped, and four of the five items have since been settled by events rather than by a cut: nested content in tool results **shipped** (images, with a ceiling — §4.3), bulk operations beyond delete **shipped**, re-summarise-the-summary **shipped** as `boundSummary` (§4.2), and the scratch row is still unbuilt (D-10). Only the performance panel remains genuinely cuttable, and it is the one thing still open in Sprint 13 besides the checklist.
+
+The original order, kept for provenance, most-cuttable first: (1) the streaming-partial scratch row (S13 — the loss is recoverable by regenerating), (2) bulk operations beyond delete (S6), (3) nested content in tool results (S12 — text-only results cover the common case), (4) re-summarise-the-summary (S10 — cap conversation length instead), (5) the performance panel (S13 — keep the timings in `meta`, drop the UI).
 
 Never cut: the export/log redaction tests, the `LIKE` search fallback, the retry policy, tool approval defaults, or physical-device verification.
+
+### 6.4 The estimate model has run out of plan, and that is now the finding
+
+The original statement in §6.2 was "at the observed 27 pts/sprint, the remaining 241 points need ~9 sprints; nine are planned." Nine were planned and the work is done, so the projection was sound. What it cannot do is describe the present, for one reason: **the two largest workstreams in the repository were never pointed** (§4.5). The velocity number and the totals table both count planned stories only, so any reader using them to answer "how much has been built" will be out by more than a factor of two.
+
+Three ways forward, and the middle one is the recommendation:
+
+1. **Back-fill points for `V` and `C`.** Honest-looking and worthless — points measure uncertainty *at the time of estimating*, and an estimate made after the code exists has none.
+2. **Stop projecting from points and project from the checklist.** Sections 8–12 of the Claude-parity list were the actual remaining scope. Each section was one to two of these sprints' worth of work, and each had a known dependency question (Section 6 needed `expo-camera` and therefore a rebuild, which is now the standing cost of the next release rather than a projection; Sections 7, 10, 11 and 12 needed nothing at all and shipped as JavaScript; Section 8 needs a server this project does not have, and Sections 8 and 9 are both on the PRD's non-goals list, so they need a product decision before an estimate). **Sections 10, 11 and 12 have now all shipped** — every section this entry named as workable. What is left is Sections 8 and 9 behind their product decision, and neither is an estimating problem: one is a premise change and the other is a battery-and-cost decision. The useful residue is a different list, and it is not sized in points either: **four flagged items that each need a rebuild rather than a decision** — `ACTION_SEND`, launcher shortcuts, predictive back, landscape (§4.5 `C`). Sizing work as *items with a named blocker* is what this entry was arguing for, and the checklist finishing without a single re-estimate is the argument's result.
+3. **Re-baseline the whole plan at 1.0.** Correct eventually, premature now: the release checklist is the thing in flight, and re-planning around it is how it slips.
+
+Until that happens, treat §6.2 as a record of Phases 1–6 and **not** as a burn-down. The staleness signal in *Ownership* is updated to say so.
 
 ---
 
@@ -514,7 +603,9 @@ Never cut: the export/log redaction tests, the `LIKE` search fallback, the retry
 
 The shape is not aspirational — it falls out of an architectural rule. `jest.config.js` matches `.ts` only, in a `node` environment. Components are `.tsx`, so **logic in a component is logic with no test**. The response has been to push every decision into a pure module: `src/chat/list.ts` holds the list's filtering and grouping, `src/chat/request.ts` holds request validation, `src/lib/tokens.ts` holds estimation, `src/db/conversations.ts` holds every SQL statement. Screens keep the hooks and nothing else.
 
-**The tradeoff, stated honestly.** This buys a fast, deterministic suite (996 tests in ~5 s) and near-total coverage of decision logic. It buys *zero* coverage of rendering, gesture handling, navigation and layout. A component that fails to render is caught by a human on a device or not at all. Adding `jest-expo` + React Native Testing Library would close that gap and cost a much slower suite, a jsdom-shaped environment that is not the real runtime, and a category of test that historically breaks on every RN upgrade. For a solo maintainer shipping to Android with a scripted device protocol ([07_Deployment.md](07_Deployment.md)), the current split is the better trade. **Revisit it if a second engineer joins**, because the calculus changes when a regression can be introduced by someone who did not write the original code.
+**The tradeoff, stated honestly.** This buys a fast, deterministic suite (1,603 tests in ~5 s) and near-total coverage of decision logic. It buys *zero* coverage of rendering, gesture handling, navigation and layout. A component that fails to render is caught by a human on a device or not at all. Adding `jest-expo` + React Native Testing Library would close that gap and cost a much slower suite, a jsdom-shaped environment that is not the real runtime, and a category of test that historically breaks on every RN upgrade. For a solo maintainer shipping to Android with a scripted device protocol ([07_Deployment.md](07_Deployment.md)), the current split is the better trade. **Revisit it if a second engineer joins**, because the calculus changes when a regression can be introduced by someone who did not write the original code.
+
+**One constraint the rule turns out to carry, worth knowing before you write a test.** `testEnvironment: 'node'` with no setup file means a tested module's *entire import graph* has to be free of `react-native` and of `expo-file-system/legacy` — not just the module itself. That is why several pure modules exist as siblings of the code that uses them rather than inside it: `src/db/ddl.ts`, `list-query.ts`, `variants.ts`, `cipher.ts` and `content.ts` are the `expo-sqlite`-free halves of the database layer, and the same split runs through `attachments.ts`↔`attach.ts`, `office.ts`↔`ooxml.ts`, `voice.ts`↔`speech.ts`, `chart.ts`↔`ChartView.tsx`, `preview.ts`↔`FilePreview.tsx`, `toolLabel.ts`↔`ContentBlocks.tsx` and `incoming.ts`↔`+native-intent.tsx`. Adding an import to the wrong side of one of those pairs breaks a suite in a way the error message does not explain.
 
 ### 7.2 What each tier covers
 
@@ -526,8 +617,10 @@ The shape is not aspirational — it falls out of an architectural rule. `jest.c
 
 ### 7.3 Test cases that must exist (and their current status)
 
+**The two mandated security tests are written and passing.** They were the one item in this section that blocked the 1.0 gate, and they no longer do: the debug-log case is [src/lib/redact.test.ts](../src/lib/redact.test.ts), whose own header calls it "the mandated redaction test", and the export case is [src/chat/export.test.ts](../src/chat/export.test.ts). Both go further than the sketches below — the log suite covers a key arriving inside a gateway error message, a second registered key, an unregistered key caught by the pattern backstop, and `unregisterSecret`; the export suite asserts on the *filename* as well as the body. The sketches are kept because they state the intent in four lines, which the real suites take two hundred to do.
+
 ```ts
-// SECURITY — mandated, currently unwritten. Blocks the 1.0 gate.
+// SECURITY — implemented: src/lib/redact.test.ts, src/chat/export.test.ts.
 it('never emits the API key in the debug log', () => {
   registerSecret('sk-ant-api03-REALKEYSHAPED-VALUE-0123456789');
   debugLog.request({ transport: 'anthropic', method: 'POST',
@@ -623,26 +716,115 @@ it('places no history breakpoint when a trim ran', () => {
 });
 ```
 
+One more joined with parity Section 10, and it is a different species: a **tripwire over knowledge
+this codebase cannot share.** `src/chat/plan.ts` imports `src/chat/builtins.ts`, so `builtins.ts`
+must never import `plan.ts` — which means `summariseTools`, which has to say *writing blocked* when
+plan mode is on, cannot ask `blockedInPlanMode` which tools those are. The wording is therefore
+duplicated, deliberately, and the test both modules *can* import asserts the duplicate still
+matches:
+
+```ts
+// TOOLS — the summary's plan-mode wording is a copy; this fails when the split moves.
+it('matches what plan mode actually blocks', () => {
+  expect([WRITE_FILE, CREATE_PDF, CREATE_DOCUMENT].every(blockedInPlanMode)).toBe(true);
+  expect([FETCH_URL, RUN_CODE, READ_RESOURCE].some(blockedInPlanMode)).toBe(false);
+  const planning = summariseTools({ ...NONE, web: true, code: true, serverTools: 4, servers: 1, plan: true });
+  expect(planning).toContain('writing blocked');
+  expect(planning).toContain('4 server tools blocked');
+  expect(planning).toContain('web pages');   // plan mode blocks by effect: these two read
+  expect(planning).toContain('code');
+});
+```
+
+The pattern generalises: **where a cycle forces two modules to know the same thing, the test that
+can see both is the only place the agreement can live.** Prefer removing the duplication; where the
+import graph forbids it, a failing test is a much cheaper way to find out than a user reading a
+tool summary that contradicts the gate.
+
+`src/mcp/catalog.test.ts` is a second unusual case from the same section, and worth naming for the
+opposite reason — **what it deliberately does not test.** It checks eleven bundled connector
+endpoints against the app's own `parseServerUrl` and `qualifyToolName`, so no entry can ship that
+the add form would reject or whose slug would be mangled into a different tool name. It does *not*
+check that any endpoint still answers. That needs the network, and a suite that goes red when a
+vendor has an outage is a suite people learn to ignore. Liveness is §7 device step 72 instead, and
+that step says what a failure means: the entry is stale, fix `src/mcp/catalog.ts`, not the handset.
+
+A third, from Section 12, is the only test in the suite whose subject is an **invariant between two
+functions** rather than either function's output. `replyNotice` and `replyAnnouncement` in
+[`src/lib/notify.ts`](../src/lib/notify.ts) are the notification and the screen-reader utterance for a
+finished turn; they take the same input, refuse the same three turns (aborted, empty, and the wrong
+side of `foreground`), and are meant to be mutually exclusive. Neither function can state that on its
+own:
+
+```ts
+// NOTIFY — foreground decides which speaks; neither silence nor both is legal.
+test('exactly one of the two speaks for any turn', () => {
+  for (const foreground of [true, false]) {
+    const said = [replyNotice({ ...base, foreground }), replyAnnouncement({ ...base, foreground })];
+    expect(said.filter(Boolean)).toHaveLength(1);
+  }
+});
+```
+
+It is cheap and it guards the failure that would actually reach a user: a change to one branch that
+leaves a completed reply announced twice, or announced not at all. The same reasoning is why
+`notifyReplyReady` reads `AppState` **once** and dispatches, rather than each function reading it —
+two readers of one condition is the state this test would no longer be able to see.
+
 ### 7.4 Coverage policy
 
-Coverage is reported but the gate is a **floor at the current measured rate**, not a target. A number chosen aspirationally gets met by testing easy code; the floor exists only to catch a PR that deletes tests. Per-directory expectations, enforced by review rather than tooling: `src/transports/`, `src/db/`, `src/lib/`, `src/chat/` near-total on branches; `app/` and `src/components/` untested by design and excluded from the denominator so they cannot dilute the signal.
+Coverage is reported and the gate is a **ratchet at a few points under the current measured rate**, not a target. A number chosen aspirationally gets met by testing easy code; the floor exists only to catch a PR that deletes tests or lands a whole file untested. The live figures, from `jest.config.js`:
+
+| Metric | Measured | Floor | Slack |
+|---|---|---|---|
+| Lines | 71.62% | 68 | 3.6 |
+| Statements | 70.05% | 66 | 4.1 |
+| Branches | 66.24% | 63 | 3.2 |
+| Functions | 64.49% | 58 | 6.5 |
+
+**Raise them when a run comes in comfortably higher; never lower them to make a red run green.** That single edit is the one that makes the gate meaningless, and it is easy to justify in the moment, which is why the rule is written down in two places.
+
+**How the denominator is actually drawn, since the old wording here was wrong.** `collectCoverageFrom` is `['src/**/*.ts', '!src/**/*.test.ts', '!src/**/__tests__/**']` — the exclusion is by **file extension**, not by directory. So every `.tsx` component is outside the denominator, and `app/` is outside it entirely because it is not under `src`; but a `.ts` file that happens to live in a component directory is *inside* it. That is not academic: `src/components/` currently reports **0%** for its own `.ts` files while `src/components/markdown/` reports 94.88%, and the difference is only which of them a pure module was extracted from.
+
+Per-directory expectations, enforced by review rather than tooling, with where they currently stand:
+
+| Directory | Expectation | Measured |
+|---|---|---|
+| `src/transports/` | near-total on branches | 89.46 / 79.34 |
+| `src/chat/` | near-total on branches | 86.98 / 80.82 |
+| `src/components/markdown/` | pure halves near-total | 94.88 / 87.89 |
+| `src/mcp/` | near-total, less `oauth.ts` (browser round trip) | 70.28 / 61.23 |
+| `src/lib/` | near-total, less the `expo-*` wrappers | 55.46 / 56.79 |
+| `src/db/` | the `expo-sqlite`-free modules near-total; the rest device-only | 25.75 / 21.58 |
+| `src/stores/` | actions that decide something, not actions that forward | 39.94 / 33.02 |
+
+The last three read badly and are honest rather than embarrassing: `src/db/schema.ts`, `src/lib/secureKey.ts`, `src/mcp/oauth.ts` and every `providers`/`projects`/`memory` store action sit at 0% because their first import is a native module, and the response was to extract the decisions into siblings that *are* covered (§7.1) rather than to mock a Keystore. **Judge a change by whether it moves the four global numbers down, not by the distance to 100.**
 
 ---
 
 ## 8. Quality gates
 
-Four gates. All four must pass before a merge to `main`; all four plus the device protocol before a release.
+**Five gates, not four.** The document shipped with four; CI has since grown a fifth, and it is the one that catches the class the other three structurally cannot. All four automated gates must pass before a merge to `main`; all four plus the device protocol before a release.
 
 | # | Gate | Command | Blocks | Rationale |
 |---|---|---|---|---|
 | 1 | Types | `pnpm typecheck` (`tsc --noEmit`) | merge | Strict TS is this project's substitute for a schema validator at every boundary |
 | 2 | Lint | `pnpm lint` (`eslint .`) | merge | Catches unused code and import-boundary violations |
-| 3 | Tests | `pnpm test` (`jest`) | merge | 996 tests, ~5 s — cheap enough that there is no excuse |
-| 4 | Device | scripted protocol on Pixel 6 + Samsung S22 | release | The only coverage of rendering, gestures and real network behaviour |
+| 3 | Tests + coverage | `pnpm test --ci --coverage` (`jest`) | merge | 1,603 tests, ~6–8 s with coverage. `jest.config.js` carries a `coverageThreshold`, so coverage is a gate here and not a report (§7.4) |
+| 4 | Bundle | `pnpm expo export --platform android` | merge | **The gate the other three cannot be.** `testMatch` is `.ts` only, so no screen is ever imported by the suite, and `tsc` resolves *types* without resolving what Metro will actually resolve. A bad `@/` alias, a missing asset, a module that only exists on web: all three pass gates 1–3 and fail on the device. The output is thrown away; only the exit code matters |
+| 5 | Device | scripted protocol on Pixel 6 + Samsung S22 | release | The only coverage of rendering, gestures and real network behaviour |
 
 ```bash
-pnpm typecheck && pnpm lint && pnpm test
+pnpm gates
 ```
+
+That script is `typecheck && lint && test:coverage` — gates 1–3. Gate 4 has no script; run it directly and delete the output:
+
+```bash
+pnpm expo export --platform android --output-dir .expo-export
+```
+
+Two CI details that are easy to get wrong and were both got wrong once. The runner pins **Node 24**, not 22, because `src/db/__tests__` imports `node:sqlite` to build the real schema and assert query plans with `EXPLAIN QUERY PLAN`; on Node 22 that module needs `--experimental-sqlite` and the whole directory fails to load. And the flags go to `pnpm test` with **no `--` separator**, because pnpm 10 forwards `--` verbatim, so jest read `--ci` as a positional test-path pattern, matched nothing, and exited 1 on a suite that passes locally.
 
 **Why device verification is a gate and not a task.** The unit tiers cannot see the three failure classes that actually reach users: a component that throws on render, a gesture that fights the streaming scroll anchor, and a network transition (Wi-Fi → cellular → dead zone) mid-stream. Every one of those has to be observed. The protocol is in [07_Deployment.md](07_Deployment.md); the point here is that "tests pass" is not a release criterion on its own.
 
@@ -652,8 +834,10 @@ pnpm typecheck && pnpm lint && pnpm test
 
 **Shipped in Sprint 5.** Both workflows exist: [`ci.yml`](../.github/workflows/ci.yml) and
 [`build-apk.yml`](../.github/workflows/build-apk.yml). The YAML below is the *plan* as
-written before the runner was tried; the two corrections it needed are recorded in §9.4,
+written before the runner was tried; the corrections it needed are recorded in §9.4,
 and the files themselves are authoritative. Read them, not this.
+
+**Four differences between the plan below and the shipped `ci.yml`**, since they are all things a reader would otherwise take from here and get wrong: the runner pins **Node 24**, not 22 (`node:sqlite` needs `--experimental-sqlite` on 22, so `src/db/__tests__` will not load); the test flags carry **no `--` separator**; there is a fifth step, `pnpm expo export --platform android`, which is gate 4 (§8); and the coverage summary step **reads the `json-summary` artefact Jest already wrote** with a small `node -e` script rather than re-running the suite to produce the same numbers twice.
 
 ### 9.1 `.github/workflows/ci.yml`
 
@@ -774,7 +958,7 @@ records its successes teaches nothing about how much to trust the next one.
 
 ## 10. Risk register
 
-Probability (P) and Impact (I) on 1–5. Exposure = P × I. Ordered by exposure.
+Probability (P) and Impact (I) on 1–5. Exposure = P × I. R-01 through R-14 are ordered by exposure as first issued; **R-15 and R-16 are appended rather than sorted in**, so the identifiers already quoted elsewhere in the doc set stay stable. Read the Exp column, not the row order.
 
 | ID | Risk | P | I | Exp | Mitigation | Owner | Status |
 |---|---|---|---|---|---|---|---|
@@ -785,13 +969,15 @@ Probability (P) and Impact (I) on 1–5. Exposure = P × I. Ordered by exposure.
 | R-05 | Solo-maintainer bus factor | 3 | 4 | 12 | Every non-obvious decision documented in the doc set; "decisions not to undo" list; comments explain *why*; this document's §6.3 cut list | maintainer | ongoing |
 | R-06 | FTS5 absent from a device's SQLite build | 2 | 4 | 8 | Runtime probe, `IF NOT EXISTS` creation outside the migration chain, `LIKE` fallback, suite run with FTS5 forced off | maintainer | mitigated |
 | R-07 | Android Keystore unavailable or SecureStore throws | 2 | 4 | 8 | Fall back to the module-scoped in-memory cache for the session; **tell the user the key will not persist**; never fall back to AsyncStorage | maintainer | see §10.1 |
-| R-08 | Expo SDK 57 upgrade breaks the native ABI (already happened once) | 3 | 3 | 9 | `reanimated@4.5.1` / `worklets@0.10.4` pinned for C++ ABI compatibility; `expo-updates@57.0.18` pinned for the EAS `minimumReleaseAge` policy; upgrade in its own PR with a device pass | maintainer | mitigated |
-| R-09 | Base64 attachment blows up memory on a mid-range device | 3 | 3 | 9 | Downscale before encode; hard per-request byte budget refused up front; memory ceiling as an S7 acceptance criterion | maintainer | S7 |
+| R-08 | Expo SDK 57 upgrade breaks the native ABI (already happened once) | 3 | 3 | 9 | `react-native-reanimated@4.5.1` / `react-native-worklets@0.10.1` pinned for C++ ABI compatibility; `expo-updates@57.0.19` pinned for the EAS `minimumReleaseAge` policy; upgrade in its own PR with a device pass | maintainer | mitigated |
+| R-09 | Base64 attachment blows up memory on a mid-range device | 3 | 3 | 9 | Downscale before encode; hard per-request byte budget refused up front; memory ceiling as an S7 acceptance criterion. **The ceiling itself is still unmeasured** (D-14) | maintainer | S7 → D-14 |
 | R-10 | `VACUUM` (or a table rebuild) silently desynchronises the FTS index | 2 | 4 | 8 | Documented prohibition ([05_Data_Model.md](05_Data_Model.md) §12.1); rebuild required in the same transaction; move the drift check to FTS5 `integrity-check` | maintainer | open (debt D-03) |
-| R-11 | MCP tool loop spends unbounded money | 2 | 4 | 8 | Max-iteration guard; retry policy applies to tool calls; approval defaults to ask; one-tap kill switch | maintainer | S11 |
-| R-12 | A persisted-state migration loses provider profiles | 2 | 3 | 6 | Independent version counters per tier; `migrate` merges over defaults rather than replacing; tested with pre-migration fixtures | maintainer | mitigated |
-| R-13 | Hydration race renders defaults over stored values | 2 | 3 | 6 | 3 s timeout plus the convention that stores persist only on explicit change; any auto-write at startup must check hydration | maintainer | partially mitigated |
+| R-11 | MCP tool loop spends unbounded money | 2 | 4 | 8 | `maxToolIterations` guard, plus a 30 s connect and 60 s per-call timeout and a 20-page cap on `tools/list`; retry policy applies to tool calls; approval defaults to ask. **The one-tap kill switch was not built** as written — see §4.3 | maintainer | mostly mitigated |
+| R-12 | A persisted-state migration loses provider profiles | 2 | 3 | 6 | Independent version counters per tier; a `migrate` would merge over defaults rather than replacing. **Untested, because no store has needed a `migrate` yet** — all four are still on `version: 1` ([05_Data_Model.md](05_Data_Model.md) §10.3), so the mitigation is a convention rather than code | maintainer | untested |
+| R-13 | Hydration race renders defaults over stored values | 2 | 3 | 6 | 3 s timeout plus the convention that stores persist only on explicit change; any auto-write at startup must check hydration. On timeout the app now logs which stores did not arrive, so "my provider profile is gone" is diagnosable from Settings → Debug rather than looking like data loss | maintainer | partially mitigated |
 | R-14 | APK grows past a comfortable direct-download size | 2 | 2 | 4 | Tree-shaking, image compression, no unused native modules — tracked in [07_Deployment.md](07_Deployment.md) | maintainer | monitored |
+| R-15 | An unrecoverable database: the SQLCipher key is lost and nothing is backed up | 2 | 5 | 10 | Accepted, not mitigated, and the mitigation *is* that nothing leaves the device: `android:allowBackup` false plus `plugins/with-no-backup.js`, so there is no encrypted copy anywhere to be stranded by a key that no longer opens it. The hazard is the **next** feature that copies the DB off-device — cloud sync, export-and-restore, "move to my new phone" — because `sqlcipher_export` is a one-way conversion and not a general-purpose rekey ([05_Data_Model.md](05_Data_Model.md) §12.7) | maintainer | accepted; re-opens with sync |
+| R-16 | A fork or a regenerate is interrupted and leaves a conversation that looks complete and is not | 2 | 3 | 6 | None yet. `forkConversation()` calls `createConversation()` then loops `appendMessage()` outside any transaction, so a process death partway through leaves a fork holding a prefix of its messages with nothing on screen to say so | maintainer | **open (debt D-16)** |
 
 ### 10.1 R-07 in detail: Keystore unavailability
 
@@ -819,7 +1005,7 @@ The invariant that survives every branch: **the key never touches AsyncStorage o
 
 | ID | Debt | Origin | Cost of carrying | Fix | When |
 |---|---|---|---|---|---|
-| D-01 | Four stale web-export directories in the tree (`.tmp-web-export`, `dist-web-check`, `dist-web-final`, `dist-web-test`) | ad-hoc web export checks | confuses `git status`, risks committing build output | delete; add to `.gitignore` | S5, 30 min |
+| D-01 | ~~Four stale web-export directories in the tree~~ | ad-hoc web export checks | — | — | **closed in S5**; the directories are gone and gitignored, and CI's gate 4 now writes `.expo-export` deliberately instead |
 | D-02 | `conversations_order` index does not cover the `archived` filter | v1 schema | full-ish scan on every list load | `(archived, pinned DESC, updated_at DESC)` | S5, in a migration |
 | D-03 | FTS drift check compares counts, not identity | v1 schema | cannot detect rowid renumbering (R-10) | switch to FTS5 `integrity-check` | S5 |
 | D-04 | In-memory preview ≠ stored preview | store/db split | visible flicker of preview text after relaunch | call `previewOf()` in the store action | S5, 1 pt |
@@ -831,15 +1017,20 @@ The invariant that survives every branch: **the key never touches AsyncStorage o
 | D-10 | Mid-stream process death loses the partial reply | deliberate (write amplification) | user loses a long reply on a background kill | scratch row | S13, cuttable |
 | D-11 | No live-gateway smoke test in any automated form | needs a real key | R-01 stays open | manual smoke script run at each release, key from a gitignored file | each release |
 | D-12 | Prompt caching is unverified against the gateway | §4.1, needs a real key | if `cache_control` is accepted but not honoured, the marked prefix costs 1.25× and saves nothing — a silent surcharge, not an error | one two-turn conversation: expect `cacheWrite > 0` then `cacheRead > 0`. If not, set `promptCache: false` for the model | first live session (with D-11) |
-| D-13 | `selectTools` / `describeWithheldTools` have no call site | §4.1 landed the tool budget before tools reach `buildRequest` | tested code that no request exercises; the wiring assumptions could be wrong in a way the tests cannot see | wire into the request builder alongside the MCP manifest | S11 |
+| D-13 | `selectTools` / `describeWithheldTools` have no call site | §4.1 landed the tool budget before tools reach `buildRequest` | tested code that no request exercises; the wiring assumptions could be wrong in a way the tests cannot see | wire into the request builder alongside the MCP manifest | **closed in S11** — [src/stores/chat.ts:1381](../src/stores/chat.ts:1381) |
 | D-14 | `src/chat/attach.ts` has no automated coverage at all | it is four `expo-*` packages and a file system; the testable half was extracted into `attachments.ts` instead | the memory ceiling the whole module is arranged around (P-10) is unmeasured, as is whether every `saveAsync` temporary is really deleted | one device session: attach eight photos with the Android Studio profiler attached, then check the cache directory | first device session (with D-11) |
 | D-15 | The 2,500-token image estimate is a provider figure applied flat, never measured | no live turn has reported a prompt count for a request containing an image | the gauge is wrong by an unknown amount on any conversation with attachments, and the calibration factor deliberately does not correct it | compare one reported prompt count against the estimate for the same request; if it is consistently off, the constant is the fix, not the factor | first live session (with D-11) |
+| D-16 | `forkConversation()` is not wrapped in a transaction | the fork feature; `createConversation()` then a loop of `appendMessage()` | a process death partway through leaves a fork holding a **prefix** of the messages it should have, and it looks complete — the failure is silent and permanent (R-16) | one `withTransactionAsync` around the create-and-copy; [05_Data_Model.md](05_Data_Model.md) §14.5 points here | next DB touch, ~1 pt |
+| D-17 | The two unplanned workstreams were never debt-reviewed | §4.5 — `V` and `C` were built directly, not through a sprint close | §11 is seeded from [05_Data_Model.md](05_Data_Model.md) §12 and from sprint retrospectives; two-thirds of the code has been through neither, so this register is now a *sample* of the debt rather than the register of it | one pass over `src/chat/` and `src/components/` against §18's Docs and Tests blocks, filing what it finds | before the 1.0 checklist closes |
+| D-18 | No in-app "clear all data", and the four-tier wipe is only a checklist | never built | uninstalling is the only complete erase; §13's line item describes a feature that does not exist, which is worse than an absent one because it reads as done | build it, or strike the line and say so in Settings. The checklist in §13 is the specification | before 1.0 |
+| ~~D-19~~ | ~~The test suite is ~11 s against a <10 s target (P-12)~~ | **Closed 2026-09-02 by re-measuring.** 1,573 tests / 79 suites run in ~4–6 s warm; `calibration.test.ts`, blamed for ten of the eleven seconds, is **0.64 s**. The original figure was a cold filesystem cache read as a slow suite — the debt was in the measurement, not the code | — | — | done |
+| D-20 | Everything parity Section 12 claims is unverified by construction | §4.5 `C`; no gate in this repository can run a screen reader | 87 labels, 78 roles, 52 hints, 25 state props and `accessibilityViewIsModal` on all eight modals are **assertions about what TalkBack would say**, and a wrong label reads as a confident wrong answer rather than as a missing one. The most likely failure is not an absent prop but a plausible one in the wrong place — focus order that jumps, or two things claiming to be the same control | device steps **76–79** ([07_Deployment.md](07_Deployment.md) §7, group T): TalkBack through a full turn, Reduce Motion on, largest font size, and the modal traps | first device session (with D-11) |
 
-**Spec corrections made in Phase 3, recorded rather than silently substituted:** Sprint 8's "Attach affordance hidden for models that cannot accept documents" ships as *shown and disabled with the reason*, because `vision`/`documents` are hand-edited flags and a hidden affordance is indistinguishable from a missing feature. Sprint 7's two device criteria (12 MP → 1.5 MB, 20 images under 250 MB) are asserted as the decisions they protect — `planResize`'s output and `admitImage`'s refusal — with the memory ceiling itself left open as D-14.
+**Spec corrections made in Phase 3, recorded rather than silently substituted:** Sprint 8's "Attach affordance hidden for models that cannot accept documents" ships as *shown and disabled with the reason*, because `vision`/`documents` are hand-edited flags and a hidden affordance is indistinguishable from a missing feature. Sprint 7's two device criteria (12 MP → 1.5 MB, 20 images under 250 MB) are asserted as the decisions they protect — `planResize`'s output and `admitImage`'s refusal — with the memory ceiling itself left open as D-14. **Two more in Phase 5**, both in §4.3: per-server *rate* limits and general result truncation did not ship (only an image payload ceiling did), and the one-tap MCP kill switch did not ship.
 
-**Policy:** debt gets an ID here or it does not exist. Items D-01 through D-08 are all scheduled into Sprint 5 precisely because they are cheap and they distort everything measured after them — a stale doc and an absent CI both cause work that looks like development and is not.
+**Policy:** debt gets an ID here or it does not exist. Items D-01 through D-08 were all scheduled into Sprint 5 precisely because they were cheap and they distort everything measured after them — a stale doc and an absent CI both cause work that looks like development and is not.
 
-**Status after Phase 2: D-01 … D-08 are closed.** The four web-export directories are deleted and gitignored; `conversations_order` became `conversations_list (archived, pinned DESC, updated_at DESC, id DESC)` in migration 1 → 2 with a planner assertion holding it there; the FTS drift check is now `INSERT INTO messages_fts(messages_fts, rank) VALUES ('integrity-check', 1)` (`src/db/schema.ts`), where the `rank = 1` argument is the part that catches rowid renumbering; the store action calls `previewOf()`; the `Number.EPSILON` addition is gone from `regenerate()` and the comment now explains why it never worked (a ULP above `seq = 4` is larger than `EPSILON`, so the addition rounded away); both `progress.md` drift items are corrected; CI is green. **D-09 … D-11 remain open as designed** — D-09 is deferred with a trigger, D-10 is scheduled into S13 and cuttable, D-11 is blocked on a real key and recurs at every release. **D-12 and D-13 were opened by the harness sprint** (§4.1) and are both consequences of building a layer before the thing it serves exists: D-12 rides along with D-11's first live session, D-13 closes in S11. **D-14 and D-15 were opened by Phase 3**, and both are the same shape as D-12: an unmeasurable claim about hardware or a live gateway, made testable only by attaching one. Neither blocked Phase 4. **Phase 4 opened no new debt**, but it added to D-11: Sprint 9's ±15% estimator-accuracy corpus needs the gateway's own reported prompt counts, so it is now part of what the first live session closes, alongside D-12 and D-15.
+**Status as of 2026-09-02.** **Closed: D-01 … D-08, and D-13.** The four web-export directories are deleted and gitignored (and CI now writes `.expo-export` on purpose, as gate 4); `conversations_order` became `conversations_list (archived, pinned DESC, updated_at DESC, id DESC)` in migration 1 → 2 with a planner assertion holding it there; the FTS drift check is now `INSERT INTO messages_fts(messages_fts, rank) VALUES ('integrity-check', 1)` (`src/db/schema.ts`), where the `rank = 1` argument is the part that catches rowid renumbering; the store action calls `previewOf()`; the `Number.EPSILON` addition is gone from `regenerate()` and the comment now explains why it never worked (a ULP above `seq = 4` is larger than `EPSILON`, so the addition rounded away); both `progress.md` drift items are corrected; CI is green; and `selectTools` finally has a caller. **Open by design: D-09** (no component tests — deferred with a trigger) and **D-10** (the scratch row — still cuttable). **Open and blocked on hardware or a key: D-11, D-12, D-14, D-15**, which all discharge together in one live session with a profiler attached; that session is now the single largest piece of unretired risk in the project, and it has been the same four items for three revisions. **Opened in revision 1.5: D-16 … D-19.** D-16 is a real correctness gap with a one-point fix and the only reason it is not closed is that nothing has touched the fork path since; D-17 is the honest admission that this register no longer covers the codebase; D-18 and D-19 were both "a document claims something the code does not do", which is the failure mode this whole doc set is arranged against. **D-19 closed in 1.6 by re-measuring rather than by optimising** — the suite was never slow, the reading was cold — and that is worth keeping as an example: a metric quoted from one run is an anecdote, and this register is exactly where an anecdote hardens into a debt item nobody re-checks. **D-17 remains open and just got larger again**, since parity Section 10 is a *fifth* out-of-order workstream close with no debt pass. Two of the five are camera and drawer work in `src/components/`, which is precisely the directory D-17's remedy names and the one the coverage denominator reports at 0%. Section 10 is the one close that arguably *reduced* the register instead: it moved the three global built-in switches out of the settings hub onto a screen of their own, and replaced four screens' worth of "what tools are live" guesswork with one covered pure function — but it also introduced knowledge that has to be duplicated (§7.3's tripwire note), and that belongs in the pass D-17 describes. **Revision 1.9 changes the shape of this slightly.** Sections 11 and 12 land inside `C`, so they add no *new* workstream to the count, and Section 11 is the nearest thing to a debt pass any of the five has had: it was a survey rather than a build, it swept `app/` and `src/components/` along one dimension (what the platform expects an Android app to do), and it found the code largely already correct — three gaps, all JavaScript-only, all closed. That is one dimension, not D-17's remedy, which names §18's Docs and Tests blocks; but it is the first evidence in this register that the unreviewed two-thirds is not accumulating defects at the rate an unreviewed codebase usually does. **Opened in 1.9: D-20**, which is the mirror image of that reassurance — Section 12 shipped 87 labels and 78 roles that no gate here can hear, so it is the one part of the parity checklist whose completion is a claim rather than a measurement.
 
 ---
 
@@ -861,6 +1052,10 @@ Measured on a **Pixel 6 (Android 14)** as the reference device and a **Samsung G
 | P-10 | Peak memory, 20 images in a transcript | <250 MB | Below the point where Android starts killing the app in the background | Android Studio profiler |
 | P-11 | APK size | <60 MB | Direct download over cellular | `eas build` output |
 | P-12 | Test suite wall time | <10 s | Fast enough that nobody skips it | CI |
+
+**P-12 is met, at ~4–6 s warm** (1,603 tests / 80 suites, re-measured 2026-09-02 across three runs). This closes **D-19**, and the way it closed is the useful part: nothing was optimised. The previous entry blamed `src/stores/calibration.test.ts` for "about ten of those seconds" — it runs in **0.64 s** on its own, so the ~11 s reading was a cold filesystem cache being attributed to a suite. A cold run still exceeds the target and a coverage run lands at ~6–8 s, so the honest form of this row is *warm, without coverage*, and that is what CI measures. Every other row in this table is either measured on hardware this environment does not have, or measured and holding.
+
+**One casualty is worth recording, because it is the same mistake one layer down.** Re-running the gates with a second Jest process alive put the machine under enough contention to fail `src/chat/list-cost.test.ts`, whose three cost guards asserted absolute times — 2,000 ms for 1,000 markdown bodies and 150 ms each for the two conversation-list guards. The parser had not changed; the machine was busy. They were rewritten as **ratios** — a quarter of the input measured against all of it, asserting under 12× (linear is 4, quadratic is 16), with the minimum of three runs taken and each unit repeated 20× for timer resolution — and verified against three concurrent suites. The pattern to carry forward is the same one that closed D-19: **a duration measures the machine, a ratio measures the code.** The <10 s target in this table is the last absolute timing figure the repository still asserts anything on, and it is a CI observation rather than a test.
 
 ### 12.1 How P-02 is achieved: the FlashList strategy
 
@@ -920,6 +1115,8 @@ Reviewed every sprint, in full, before the sprint is closed. This is the shortes
 - [ ] `MissingKeyError` thrown rather than sending an empty Bearer
 - [ ] Keystore failure degrades to session-only RAM, never to AsyncStorage (§10.1)
 - [ ] `keyFingerprint()` used wherever a key must be *identified* in the UI
+- [ ] The SQLCipher raw key is in SecureStore and nowhere else; no code path writes it, logs it or puts it in a backup
+- [ ] An MCP OAuth access token goes to SecureStore through the same path as the API key, so it is registered with the redactor the moment it exists
 
 **Redaction**
 - [ ] Redaction applied at the log **write** boundary, so the buffer never holds a secret
@@ -935,12 +1132,14 @@ Reviewed every sprint, in full, before the sprint is closed. This is the shortes
 - [ ] Failover origin is a configured parity domain, never a discovered one
 - [ ] No request body logged without redaction; base64 attachment payloads truncated in logs
 - [ ] Certificate pinning — **evaluated and deliberately not implemented**; see below
+- [ ] The update channel is reviewed as a code-delivery path, not a convenience: `updates.enabled` is on, so an EAS channel can replace this app's entire JavaScript bundle on the next cold start, and **`expo-updates` code signing is still not configured** ([flaws.md](flaws.md) §2.7). Until it is, the channel's integrity is the account's. Settings' *Restart to finish updating* row makes the moment a pending bundle takes effect a user choice rather than an unprompted one — visible, not safer
 
 **Data**
-- [ ] `clear all data` clears SQLite, AsyncStorage, SecureStore **and** `clearRegisteredSecrets()`
+- [ ] A `clear all data` action, **when one is built**, clears all four tiers: SQLite, AsyncStorage, SecureStore (API keys *and* MCP OAuth tokens) **and** `clearRegisteredSecrets()` — plus the document directory, which nothing cascades to ([05_Data_Model.md](05_Data_Model.md) §12.5). **There is no such action today** (D-18): Settings offers backup, restore and per-item deletion, and uninstalling is the only complete wipe. This line is the specification for the feature, not a claim that it exists
 - [ ] Export contains no secret and no `meta.baseUrl` the user did not enter
 - [ ] No telemetry, no analytics, no third-party crash reporting — verified by dependency review
-- [ ] MCP server headers treated as secret-bearing by default
+- [ ] MCP server headers treated as secret-bearing by default — which is why `useMcp` is deliberately **not** `persist()`-wrapped ([05_Data_Model.md](05_Data_Model.md) §13.1)
+- [ ] A restored backup carries settings, providers, skills, prompts and servers, and **never** keys or conversations
 
 **On certificate pinning.** The product brief lists it, and it is the right thing to consider. It is *not* implemented, deliberately: users point this app at their own gateway origins, including self-hosted ones and the parity domain. Pinning a certificate we do not control breaks the app whenever that operator rotates, and the failure looks like a network outage. The threat it defends against — a MITM with a trusted CA — is also the threat where a user has already lost the device. The mitigations that are in place instead: HTTPS enforced, no plaintext origin accepted, the key never leaving Keystore, and the request log showing exactly which origin answered. **Revisit if the app ever ships with a default gateway we operate**, where pinning becomes both possible and correct.
 
@@ -993,14 +1192,14 @@ Design decisions worth defending:
    │            │           │            │            │ Expo SDK   │
    ├────────────┤           ├────────────┤            ├────────────┤
    │ exit gate  │           │ exit gate  │            │            │
-   │ all 4 gates│           │ 2 sprints  │            │ crash-free │
-   │ green +    │           │ with no    │            │ >99%       │
-   │ live smoke │           │ P1 bug +   │            │            │
-   │ test passes│           │ device pass│            │            │
+   │ 4 automated│           │ 2 sprints  │            │ crash-free │
+   │ gates green│           │ with no    │            │ >99%       │
+   │ + live     │           │ P1 bug +   │            │            │
+   │ smoke test │           │ device pass│            │            │
    └────────────┘           └────────────┘            └────────────┘
 ```
 
-**Alpha exits when the live smoke test passes**, not when the features are done. R-01 is the largest open risk and no amount of feature work retires it; one real request against a real gateway does.
+**Alpha exits when the live smoke test passes**, not when the features are done. R-01 is the largest open risk and no amount of feature work retires it; one real request against a real gateway does. **That gate has not been passed.** The four automated gates are green and the smoke test is still blocked on a key (D-11) — which is why the rollout has not moved off alpha even though Phases 0–5 are complete and two unplanned workstreams have shipped on top of them. It is the clearest single statement of where this project actually is.
 
 **Beta is small and known.** Five to ten testers who can be asked a follow-up question are worth more than five hundred anonymous installs when there is no telemetry. The feedback loop is a human one, so it must be a short list of humans.
 
@@ -1018,7 +1217,7 @@ Each metric is something that can actually be observed on a device with no telem
 | 0 | One transport interface, zero adapter imports above the transport layer | 0 violations | lint rule + review |
 | 1 | Send → first token, Wi-Fi | <1.0 s | `meta.firstTokenMs` median over 20 turns |
 | 1 | Search finds a known message | 100% of 20 seeded probes | manual script |
-| 1 | Errors rendering as "unknown" | 0 across the 15 kinds | fixture test |
+| 1 | Errors rendering as "unknown" | 0 across the 14 kinds | fixture test |
 | 1 | Survives background/foreground mid-stream | no crash, no duplicate message | device protocol |
 | 2 | Open a 500-conversation list | <400 ms | instrumented |
 | 2 | 1,000-message transcript first paint | <2.0 s | instrumented |
@@ -1033,7 +1232,11 @@ Each metric is something that can actually be observed on a device with no telem
 | 6 | Average message latency overhead | <500 ms | `meta.latencyMs` aggregate |
 | 6 | TalkBack reads the transcript in order | pass | manual audit |
 
+**Which of these are actually measured.** The ones whose measurement is a fixture or a test are green: both adapter suites, the interface-violation count, the 15-kind error coverage, the export-secret count, the tool loop, and unapproved executions. Every row whose "Measured by" column says *instrumented*, *device*, *profiler*, *manual* or *beta tester* is **unmeasured**, because this project has never had a device or a live key attached (D-11, D-14). That is nine of the seventeen rows, and it is the same gap R-01 names — not nine separate problems.
+
 Two metrics are deliberately absent. **DAU/retention**: unmeasurable without telemetry, and the project's privacy stance means it stays that way. **Crash-free rate before Phase 6**: with fewer than ten testers the denominator is too small for the number to mean anything; before then, the honest metric is "count of distinct crashes reported", which is a list, not a rate.
+
+**The unplanned workstreams have no metrics here**, and that is a real gap rather than an oversight worth hiding: nothing in this table says whether voice mode is usable, whether a generated `.docx` opens in Word, or whether a chart is legible. The first two are device questions and belong in [07_Deployment.md](07_Deployment.md)'s protocol. The third is closer than it looks and still not covered: the ≥3:1 series contrast is recorded as a *measurement in a source comment* ([src/theme/index.tsx](../src/theme/index.tsx)), which no gate re-checks — so a palette edit can quietly drop below it, and nothing fails. A contrast assertion over the palette is a pure-`.ts` test this project can actually run, and it is the cheapest of the three to close. **Parity Sections 11 and 12 are the first of these to arrive with their metric attached** rather than owed: the four things they claim which nothing here can check — a screen reader hearing a reply land, the largest font size not clipping, Reduce Motion honoured, a modal trapping focus — are steps 76–79 of that protocol and D-20 in §11. Naming them did not measure them; it stopped them being uncounted.
 
 ---
 
@@ -1050,8 +1253,13 @@ Two metrics are deliberately absent. **DAU/retention**: unmeasurable without tel
 | **Use a tool** — approve, execute, continue | MCP HTTP/SSE client, `tool_use`/`tool_result` loop, approval UI | 5 | unbounded loop (R-11); no stdio on Android |
 | **Recover from an error** — read it, retry, fail over | 15 error kinds with hints, retry policy, `withExhaustedNote`, failover guard | 1 | misclassification (R-02); failover on the wrong kind |
 | **Diagnose** — open the log, copy it | ring buffer, redaction at write, `gatewayRequestId`, stream sample | 1 / 6 | a leak here is a security bug, not a UX one |
+| **Talk to it** — hold to speak, hear the reply | `expo-speech-recognition` → `voice.ts` → `runTurn` → `expo-speech`, paragraph highlighting | `C` | no permission, no recogniser on the device, TTS that stops mid-paragraph on an interruption |
+| **Ask it for a document** — get a `.docx` back, edit it, save it | `create_document` → `ooxml.ts` → `fflate` → the file card → the in-app editor → the system folder picker | `C` | an Office file re-read for editing recovers words, not layout, so saving one would silently delete formatting — which is why they are read-only and say so |
+| **Open a file from another app** — *Open with → SuperAgent* | `intentFilters` → `+native-intent.tsx` → `incoming.ts` → a staged new conversation | `C` | a `file://` path can name this app's own private storage, including the database. Only `content://` is accepted, and the refusal says why. **This is the *open-with* half only.** The share sheet (`ACTION_SEND`) does not reach here: Android puts that payload in `EXTRA_TEXT`/`EXTRA_STREAM`, and both `+native-intent.tsx` and `Linking.getInitialURL()` see only `getIntent().getData()` — a native dependency and a manifest entry, flagged in §4.5 rather than stubbed |
+| **Reuse something** — a skill, a saved prompt, a project's knowledge | `skills.ts`, `prompts.ts`, `projects.ts`, `memory.ts`, all four UNIQUE-indexed by name | `V` | a duplicate name is not a slow query but an ambiguous `invoke_skill` ([05_Data_Model.md](05_Data_Model.md) §11.2) |
+| **Move to a new phone** — back up, reinstall, restore | `backup.ts`, and the deliberate exclusions | `V` | a backup carries settings, providers, skills, prompts and servers and **never** keys or conversations, so "restore" does not mean what a user assumes (R-15) |
 
-Every flow has at least one row in the risk register. That is the check this table exists to perform: a flow with no identified failure mode has not been thought about hard enough.
+Every flow has at least one row in the risk register. That is the check this table exists to perform: a flow with no identified failure mode has not been thought about hard enough. The five rows added for `V` and `C` are the ones to be most suspicious of, because they were written after the code rather than before it, and a failure mode you notice while documenting is a failure mode you already avoided by luck.
 
 ---
 
@@ -1070,7 +1278,8 @@ A feature is done when **every** line below is true. Not "mostly", and not "the 
 - [ ] Integration test if it crosses store ↔ db ↔ transport
 - [ ] The failure path is tested, not just the happy one
 - [ ] Fixtures for any new wire shape, both adapters where applicable
-- [ ] `pnpm typecheck && pnpm lint && pnpm test` green, locally and in CI
+- [ ] `pnpm gates` green locally and in CI, **and** `pnpm expo export --platform android` (gate 4 — the one the other three cannot be)
+- [ ] The new module's import graph is free of `react-native` and `expo-file-system/legacy`, or its testable half was extracted into a sibling that is (§7.1)
 
 **Device**
 - [ ] Verified on a Pixel 6 **and** a Samsung S22 (or noted as not device-relevant, with a reason)
@@ -1086,8 +1295,10 @@ A feature is done when **every** line below is true. Not "mostly", and not "the 
 **Docs**
 - [ ] [05_Data_Model.md](05_Data_Model.md) updated if the schema, a JSON field or a tier boundary changed
 - [ ] [07_Deployment.md](07_Deployment.md) updated if the build, profile or release process changed
+- [ ] [CHANGELOG.md](../CHANGELOG.md) `[Unreleased]` gains an entry, marked **needs a rebuild** if it touches a native module or `app.json`
 - [ ] `progress.md` updated: status, gate counts, and any decision that should not be undone
 - [ ] Debt discovered along the way filed in §11 with an ID
+- [ ] A doc claim that has become *false* is retracted in writing, not quietly edited — see [GUIDELINES.md](GUIDELINES.md) §12. D-18 is what the alternative looks like
 
 **Review**
 - [ ] Self-review of the full diff as a diff, not as a set of files
@@ -1134,16 +1345,28 @@ The device block is the one most likely to be skipped under time pressure and th
 
 ### A.3 Commands
 
-```bash
-pnpm typecheck && pnpm lint && pnpm test
-```
+Gates 1–3, which is what `gates` is:
 
 ```bash
-pnpm test -- --coverage --coverageReporters=text-summary
+pnpm gates
 ```
 
+Gate 4 — the Android bundle. No script; the output is thrown away, only the exit code matters:
+
 ```bash
-pnpm build:apk
+pnpm expo export --platform android --output-dir .expo-export
+```
+
+Coverage totals only, without the per-file table:
+
+```bash
+pnpm test --coverage --coverageReporters=text-summary
+```
+
+A build. There is no `build:apk` script — the profile is part of the command:
+
+```bash
+pnpm build:preview
 ```
 
 ## Appendix B — Checklists
@@ -1165,6 +1388,7 @@ pnpm build:apk
 - [ ] `progress.md` updated with real gate output, not remembered numbers
 - [ ] New debt filed with an ID in §11
 - [ ] Velocity recorded; if it moved, §6.2 re-projected rather than the plan re-asserted
+- [ ] **If the work was not a planned sprint at all** (as `V` and `C` were not — §4.5), it still gets a close: a §4-style retrospective block, a debt pass, and a line in this document. Skipping that is how §11 became a sample instead of a register (D-17)
 
 ### B.3 Scope-cut decision (when a sprint will not fit)
 
@@ -1181,14 +1405,16 @@ pnpm build:apk
 | **Critical path** | The dependency chain where each stage's correctness is defined by the previous stage's behaviour (§5) |
 | **Exposure** | Probability × Impact in the risk register |
 | **Failover** | Retrying against the parity origin; `network` kind only, pre-first-event only |
-| **Gate** | A check that blocks a merge or a release; four of them (§8) |
-| **Kind** | One of the 15 `GatewayErrorKind` values |
+| **Gate** | A check that blocks a merge or a release; **five** of them, four automated (§8) |
+| **Kind** | One of the 14 `GatewayErrorKind` values |
+| **Out-of-order block** | Work delivered outside the phase structure and recorded on §2's chart as a lettered row rather than a sprint: `H` (harness), `V` (v1.1), `C` (Claude parity 1–7 + 10–12) |
 | **Phase** | A unit of user-visible value; one to two sprints |
 | **Point** | A unit of uncertainty and coordination cost, not time (§6.1) |
 | **Pressure** | Context fill measured against *usable* space, not the raw window |
+| **Ratchet** | A threshold set just under the current measurement, so it fails on regression and never on progress — how coverage is gated (§7.4) |
 | **Sprint** | Two weeks; the unit of commitment |
 | **Usable space** | context window − reserved output − reserved thinking |
-| **Velocity** | Points completed per sprint; observed at 27 |
+| **Velocity** | Points completed per sprint; observed at 27 across the planned work, and **not** a measure of throughput any more (§6.4) |
 
 ---
 
@@ -1197,18 +1423,23 @@ pnpm build:apk
 | | |
 |---|---|
 | **Owner** | The maintainer (`Suke2004`) |
-| **Update at** | Every sprint close (§B.2) — velocity, status, new debt, new risks |
-| **Update immediately when** | A risk materialises · a phase's scope changes · a gate is added or changed · the critical path is re-ordered · CI changes |
+| **Update at** | Every sprint close (§B.2) — velocity, status, new debt, new risks. **And at every out-of-order close too**, which is the lesson of D-17 |
+| **Update immediately when** | A risk materialises · a phase's scope changes · a gate is added or changed · the critical path is re-ordered · CI changes · **work lands that this plan never scheduled** |
 | **Do not update for** | Individual task completion within a sprint (that is `progress.md`'s job) |
-| **Source of truth for status** | [progress.md](../progress.md). This document is the *plan*; `progress.md` is the *state*. When they disagree about what is done, `progress.md` wins — and this document's projections should then be recomputed |
-| **Staleness signal** | If the current date is past a sprint's window and its row here still reads as planned, this document is stale |
+| **Source of truth for status** | [progress.md](../progress.md) for the planned phases, [progress-v1.1.md](../progress-v1.1.md) for the v1.1 list and the Claude-parity sections. This document is the *plan*; those two are the *state*. When they disagree about what is done, they win — and this document's projections should then be recomputed |
+| **Staleness signal** | §6.2 is now a **record of Phases 1–6, not a burn-down** (§6.4), so a past-due row there no longer signals staleness on its own. The signals that do: §1's measured baseline disagrees with a fresh `pnpm gates` run · §8 lists a different number of gates than `ci.yml` enforces · a workstream has shipped with no §4 retrospective block and no §11 debt pass |
 
-Cross-references: schema, indexes and the hazards that seed §11 are in [05_Data_Model.md](05_Data_Model.md); build profiles, the device protocol and rollback are in [07_Deployment.md](07_Deployment.md); product requirements in [PRD.md](../PRD.md); transport contracts in [TRD.md](../TRD.md); layering rules in [ARCHITECTURE.md](../ARCHITECTURE.md); user-facing flows in [USAGE.md](../USAGE.md).
+Cross-references: schema, indexes and the hazards that seed §11 are in [05_Data_Model.md](05_Data_Model.md); build profiles, the device protocol and rollback are in [07_Deployment.md](07_Deployment.md); product requirements in [PRD.md](../PRD.md); transport contracts in [TRD.md](../TRD.md); layering rules in [ARCHITECTURE.md](../ARCHITECTURE.md); user-facing flows in [USAGE.md](../USAGE.md); the conventions this plan's reviews apply — including §12's retract-in-writing rule — in [GUIDELINES.md](GUIDELINES.md); the known-defect list that is not scheduled debt in [flaws.md](flaws.md); the release-by-release record in [CHANGELOG.md](../CHANGELOG.md).
 
 ## Document history
 
 | Version | Date | Author | Change summary |
 |---|---|---|---|
+| 1.9 | 2026-09-02 | Parity Sections 11 + 12 close-out (platform specifics, accessibility) | **Sections 11 and 12 of the Claude-parity checklist shipped, and the checklist is now closed at ten of twelve.** §4.5 `C` reads *Sections 1–7 and 10–12*; §6.4's projection item — which had named 11 and 12 as workable today — records them done, leaving **8 and 9 behind their product decision and nothing else in the queue**. The fact worth carrying is that **Section 11 was a survey, not a build**: portrait lock, edge-to-edge, the Android back handler, the notification channel, the keyboard inset, the `+native-intent` deep-link route and safe-area insets were all already there, and the survey found **three gaps, all of them JavaScript-only** — nothing was announced to a screen reader when a reply landed in the foreground ([src/lib/notify.ts](../src/lib/notify.ts) gains a pure `replyAnnouncement`); `expo-updates` was configured but never called, so a downloaded bundle waited for an unprompted cold start (Settings gains a conditional *Update → Restart to finish updating* row on `useUpdates().isUpdatePending`); and one fixed-height glyph box in [src/components/ui.tsx](../src/components/ui.tsx) could overflow at the largest system font size (`allowFontScaling={false}` on the glyph, not the label). **Four items are flagged rather than stubbed, because each needs a rebuild and therefore cannot reach an installed build over the update channel**: `ACTION_SEND` share-to (Android delivers the payload in `EXTRA_TEXT`/`EXTRA_STREAM`, which neither `Linking.getInitialURL()` nor `+native-intent.tsx` can see — a native dependency and a manifest entry), launcher shortcuts, predictive back, and landscape. Two more are deliberate non-builds with reasons recorded: **no in-app haptics switch** (Android's *Touch feedback* owns it — the same reasoning `notify.ts` already carried for notifications) and **no draft surviving process death** (it would pull AsyncStorage into `src/stores/chat.ts`'s import graph and add a rehydrate-versus-keystroke race). §6 gains two invariants, both earned here: **never put an `accessibilityLiveRegion` on streaming text** — TalkBack restarts from the top of the region on every delta, so a live region over a stream reads the reply from the beginning several times a second — and **never duplicate a control the platform already owns**, with Reduce Motion as the standing exception that is *interpreted, not obeyed* (a progress spinner still turns). §7.3 gains a third unusual-test case: `replyNotice`/`replyAnnouncement` is the only test in the suite whose subject is an **invariant between two functions** rather than either function's output, which is also why `notifyReplyReady` reads `AppState` **once** and dispatches. §1 baseline re-measured: **1,603 tests / 80 suites**; coverage 70.05 / 66.24 / 64.49 / 71.62 against unchanged floors. The device protocol gains section **T**, steps 76–79 ([07_Deployment.md](07_Deployment.md) §7), and **D-20 opens**: everything Section 12 claims — 87 labels, 78 roles, 52 hints, eight modal traps — is unverified by construction, because no gate in this repository can run a screen reader. |
+| 1.8 | 2026-09-02 | Parity Section 10 close-out (connected tools) | **Section 10 of the Claude-parity checklist shipped, out of order and on purpose: Sections 8 and 9 are product decisions, so the checklist was worked past them.** §4.5 `C` now reads *Sections 1–7 and 10*, and §6.4's projection item — which had named "10, connected tools" as the next workable section — is updated to record it as done, leaving **8 and 9 behind their product decision** and **11 and 12 workable today**. What shipped is two gaps closed, not a new subsystem: MCP already had per-tool enabling, per-tool approval modes, OAuth 2.1 with PKCE and dynamic registration, per-conversation server selection and a bounded loop behind an approval gate. The first gap was that adding a server required knowing its URL — now [src/mcp/catalog.ts](../src/mcp/catalog.ts) bundles eleven vendor endpoints, ordered no-auth first so the first one anybody taps works without an account, and tapping one **prefills the existing add form** rather than saving anything. The second was that "what tools does this turn have" was spread across four screens — now `summariseTools` answers it once, in the conversation's ⋯ menu and on the new [app/settings/tools.tsx](../app/settings/tools.tsx) screen that the three global built-in switches **moved** to (moved, not copied: a second copy of a global switch is two controls over one piece of state). §7.3 gains two entries of a kind this document had not recorded before: a **tripwire over knowledge the import graph forbids sharing** (`plan.ts` imports `builtins.ts`, so `summariseTools` cannot ask `blockedInPlanMode` what plan mode blocks; the wording is duplicated and the test both modules can import asserts the duplicate still matches), and an explicit note on **what `catalog.test.ts` refuses to test** — that any endpoint still answers, because a suite that goes red during a vendor outage is a suite people learn to ignore. Liveness is device step 72 instead, which says a failure means *the entry is stale, fix the catalog, not the handset*. §1 baseline re-measured: **1,600 tests / 80 suites**; coverage 70.06 / 66.23 / 64.46 / 71.63 against unchanged floors, `src/chat/` at 86.98 / 80.82 and `src/mcp/` at 70.28 / 61.23 in §7.4's table; ~47,800 shipped lines across **163** files, ~64,100 including tests. §8's gate 3 and §12's P-12 re-stated, and the with-coverage figure corrected from ~9 s to ~6–8 s. The device protocol gains section **S**, steps 72–75 ([07_Deployment.md](07_Deployment.md) §7): four steps for the one thing no gate in this repository can reach, *somebody else's server*. **D-17 is open and larger again** at a fifth out-of-order close — though this is the one close that arguably reduced the register, by collapsing four screens of guesswork into one covered function. |
+| 1.7 | 2026-09-02 | Parity Section 7 close-out (history drawer) | **Section 7 of the Claude-parity checklist shipped: the history drawer is date-grouped and virtualised.** §4.5 `C` now reads *Sections 1–7*, and the fact recorded there is the mirror image of 1.6's: Section 7 needed **no new dependency and no native change**, so it is the first parity section since the camera that an installed build can receive over the update channel. The drawer now goes through the list screen's own row builder — `src/chat/list.ts` gained `drawerRows`, and §6's invariants gain *never build history rows twice*, because a heading that reads "Older · 34" in one view and "Older · 35" in the other is a bug no test would catch. Two more invariants earned by this section: FlashList recycles by row type, so a new `ListRow` kind that skips `getItemType` gets a cell shaped for the previous row (§5); and **the clock may not be read in a render body** — `react-hooks/purity` rejects `Date.now()` there, *including* inside the render-phase adjustment block that `react-hooks/set-state-in-effect` otherwise pushes you towards, which leaves a permanently-mounted component no legal way to re-read it. The resolution is structural and worth knowing before it is rediscovered: anything needing a fresh *now* becomes a component that **mounts** when the clock should be read (`DrawerHistory`, with `useState(() => Date.now())`). §6.4's projection item re-pointed from Sections 7–12 to **Sections 8–12**, and now says out loud that if the product decision on 8 and 9 is "not yet", the next workable section is **10, connected tools**. §1 baseline re-measured: **1,577 tests / 79 suites**; coverage 69.97 / 66.13 / 64.27 / 71.55 against unchanged floors, with `src/chat/` up to 86.90 / 80.64 in §7.4's per-directory table; ~47,200 shipped lines across 161 files, ~63,600 including tests — **no new file in either count**, which is the shape of a section that reused what was there. §8's gate 3 and §12's P-12 re-stated at 1,577. The device protocol gains section **R**, steps 69–71 ([07_Deployment.md](07_Deployment.md) §7), because the two things this section actually claims — a steady frame rate through hundreds of rows and a horizontal pan that loses its argument with a vertical scroller — are invisible to all four automated gates. **D-17 stays open and is larger again**, this being a fourth out-of-order close with no debt pass; two of the four are now `src/components/` work, the directory its remedy names. One deliberate omission, recorded so it is not read as an oversight: the drawer has **no per-row menu**, because those actions are component-body closures in `app/index.tsx` over that screen's selection, prompt and toast state, and a copy would be a second delete confirmation free to drift from the first. |
+| 1.6 | 2026-09-02 | Parity Section 6 close-out (camera) + baseline re-measure | **Section 6 of the Claude-parity checklist shipped: an in-app camera on `expo-camera`.** §4.5 `C` now reads *Sections 1–6*, and the significant fact recorded there is that `expo-camera` is the **first and only new native module across both unplanned workstreams** — which moves the next release from "publish a bundle" to "build an APK", and means no installed build has a camera at all. The Sprint 7 story table gains a note that `expo-image-picker`'s camera path was **deleted** rather than kept beside the viewfinder (the gallery half, the permission copy and the settings deep link are untouched). §6.4's projection item re-pointed from Sections 6–12 to **Sections 7–12**, with the observation that Sections 8 and 9 are on the PRD's non-goals list and need a product decision before an estimate rather than a sizing. §1 baseline re-measured across three runs: **1,573 tests / 79 suites, ~4–6 s warm** and ~9 s with coverage; coverage 69.95 / 66.12 / 64.22 / 71.54 against unchanged floors 66 / 63 / 58 / 68; ~47,100 shipped lines across 161 files, ~63,400 including the 79 test files and two test helpers. **§12 flips P-12 from missed to met and §11 closes D-19**, and the manner of closing is the entry worth reading: nothing was optimised. D-19 blamed `calibration.test.ts` for "about ten of those seconds"; it runs in **0.64 s**, so the original ~11 s was a cold filesystem cache attributed to a suite. A metric quoted from a single run is an anecdote, and §11 is precisely where an anecdote hardens into a debt item nobody re-checks. **D-17 stays open and is now larger**, because this is a third out-of-order close with no debt pass behind it. |
+| 1.5 | 2026-09-02 | Phase 5 close-out + reconciliation with two unplanned workstreams | Phase 5 recorded as shipped (MCP: two HTTP transports, an approval gate, a bounded tool loop) and Phase 6 as **partly delivered out of order**. The larger change is that this document now admits **two workstreams landed outside its phase structure entirely** — the v1.1 list and Sections 1–5 of the Claude-parity checklist — and that this is the dominant fact about it. §1 baseline re-measured (**1,551 tests / 78 suites, ~11 s** plain and ~12 s with coverage; coverage 69.84 / 65.94 / 64.05 / 71.42 against floors 66 / 63 / 58 / 68; ~46,600 shipped lines, ~62,400 with tests; `PRAGMA user_version = 8`) with a new *Delivered outside this plan* row; the executive summary's 996-test / five-second figures corrected. §1.1 gains two settled decisions: SQLCipher plus `android:allowBackup=false` with the accepted unrecoverability, and that **there is no in-app "clear all data"**. §2's chart marks Phase 5 complete, Phase 6 `◐`, and adds lettered out-of-order rows `V` and `C` — together larger than Phases 3, 4 and 5 combined. Three new sections: **§4.3** Phase 5 retrospective (planned-vs-shipped, including OAuth 2.1 + PKCE + dynamic registration and MCP prompts/resources arriving unscheduled, "per-server rate and payload limits" shipping as an image-only ceiling with no rate limit, and the one-tap kill switch **not** built as written; then the approval-gate design, the three timeouts, and D-13 closed at [chat.ts:1381](../src/stores/chat.ts:1381)); **§4.4** Phase 6 partly delivered (debug screen and timings shipped, a11y substantially shipped across 31 files with a TalkBack order audit still owed, performance panel and scratch row not built); **§4.5** the two unplanned workstreams in full. §6.2/§6.3 rows closed and a new **§6.4** retires the estimate model — *there is no slack left in the plan because there is almost no plan left* — recommending future projection from the checklist rather than from sprints. §7.1 gains the `testEnvironment: 'node'` import-graph constraint that produces every `.ts`↔`.tsx` sibling pair. §7.3 corrected: **both mandated security tests exist and pass** ([redact.test.ts](../src/lib/redact.test.ts), [export.test.ts](../src/chat/export.test.ts)) — the prior "currently unwritten, blocks the 1.0 gate" line was false. §7.4 rewritten around the ratchet rule and the **real** coverage denominator: `collectCoverageFrom` excludes by *extension*, not directory, so `src/components/` is counted and reports 0% while `src/components/markdown` reports 94.88%. §8 is now **five gates**, adding the `expo export` bundle gate that the other three cannot substitute for, with the Node 24 and no-`--`-separator CI details in §9. §10 corrects R-08 (`react-native-reanimated@4.5.1`, `react-native-worklets@0.10.1`, `expo-updates@57.0.19`), rewrites R-11 with the real bounds and the missing kill switch, downgrades **R-12 to untested** (no store defines `migrate`), and opens **R-15** (an unrecoverable database, accepted, re-opening with sync) and **R-16** (fork/regenerate interruption). §11 closes D-01 and D-13 and opens **D-16** (`forkConversation()` is not transactioned), **D-17** (neither unplanned workstream got a debt pass, so §11 is a *sample*, not a register), **D-18** (no clear-all-data; §13 described a feature that does not exist) and **D-19** (~11 s against P-12's <10 s). §12 records **P-12 as currently missed**, naming `calibration.test.ts` at 10 s of the 11. §13's Secrets block gains the SQLCipher raw key and the MCP OAuth token; its Data block is reframed as a specification per GUIDELINES §12. §15's exit gate re-lettered to four automated gates plus a live smoke test, which **has not been passed**. §16 states plainly that nine of seventeen metrics are unmeasured and that the ≥3:1 chart contrast is a figure in a source comment, not an assertion any gate re-checks. §17 gains five flows (talk to it · ask it for a document · open a file from another app · reuse something · move to a new phone). Appendix A.3 rewritten around `pnpm gates` and notes there is **no `build:apk` script**; B.2 gains a close for work that was never a planned sprint. |
 | 1.4 | 2026-08-30 | Phase 4 close-out | Phase 4 recorded as shipped: Sprint 9 (context pressure and exclusions) and Sprint 10 (rolling summary) both delivered, with one story deferred. §1 baseline re-measured (996 tests / 34 suites, ~5 s; coverage 64.05 / 63.10 / 62.40 / 51.34 against the same 64 / 63 / 62 / 51 floor) and the executive summary, §7.1 and §8 gate 3 corrected to match. §2 timeline marks S9 and S10 complete and makes Phase 5 the next block. New **§4.2 Phase 4 retrospective**: every item in the sprint was a defect rather than a missing feature, because §4.1 had already built the denominator, the orphan drop and exclusion persistence — an unbounded rolling summary charged as input on every remaining turn, invisible summarisation spend, a `summary` write that clobbered concurrent config edits, an estimate that could reach `messages.usage`, three silent failure paths, and a `pause_turn` presented as a finished answer. Two deviations from the sprint wording are recorded rather than substituted silently: the over-window confirmation fires at `over` and only for `warn`, and "what was dropped or summarised" ships as a dismissable sentence rather than an expandable range, since the elided turns are still in the transcript. R-04 downgraded to *partly* mitigated: the ±15% estimator corpus needs the gateway's own reported counts, so it moves with **D-11** to the first live session. |
 | 1.3 | 2026-08-30 | Phase 3 close-out | Phase 3 recorded as shipped: Sprint 7 (images) and Sprint 8 (documents) both delivered. §1 baseline re-measured (976 tests / 32 suites, ~4 s; coverage 64.14 / 63.10 / 62.34 / 51.30 against a ratcheted 64 / 63 / 62 / 51 floor; ~34,100 lines) and the executive summary's 904-test figure corrected; §7.1 and §8 gate 3 likewise. §2 timeline marks S7 and S8 complete and makes Phase 4 the next block; the "phases remaining" row now says plainly that the PRD's other Phase 3 items (speech-to-text, TTS, image generation, share target) were never scheduled here and are unbuilt. New **Phase 3 retrospective** after Sprint 8: the plan under-estimated how much of the pipeline already existed and over-estimated the picker — the real work was the memory ceiling (resize before base64, sequential ingest, temp-file deletion) and the refusal wording. Two device acceptance criteria are recorded as unverified rather than ticked, with the decisions they protect asserted in tests instead. One deliberate deviation from the sprint wording: capability gating **shows and disables with a reason** rather than hiding the affordance, because `vision`/`documents` are hand-edited flags and a hidden button is indistinguishable from a broken one. §11 opens **D-14** (`attach.ts`, the impure half, has no automated coverage, so the P-10 memory ceiling is unmeasured) and **D-15** (the flat 2,500-token image estimate has never been checked against a reported `usage`). Neither blocks Phase 4. |
 | 1.2 | 2026-08-30 | Harness sprint close-out | Version and status bumped: the harness budgeting layer landed **out of order**, ahead of Phase 3. §1 baseline re-measured (904 tests / 30 suites, ~5 s plain and ~12 s with coverage; coverage 64.54 / 63.32 / 62.21 / 50.81 against a ratcheted 62 / 61 / 60 / 48 floor; ~32,100 lines) and the executive summary's 817-test figure corrected, with a new paragraph on why the layer was pulled forward. §2 timeline gains an `H` row marked out of order. New **§4.1** records the sprint in full: a defect/cost/fix table for the four modules (`budget.ts` double-counted the thinking budget into `max_tokens`; `trim.ts` replaced a hard drop with a four-rung ladder; `tools.ts` sent every definition every turn; `cache.ts` never marked a cacheable prefix), the ladder note, six consequences for later sprints — Sprint 9's first story is largely done, `drop_oldest` shrinks to the last rung, Sprints 11/12 inherit `selectTools`, the fourth `cache_control` breakpoint is reserved for the tool loop, `promptCache` needs surfacing in S13, and the gateway-caching risk — and a delivered list. §7.3 gains four example cases (BUDGET / TRIM / TOOLS / CACHE); §7.1 and §8 gate 3 corrected to 904 tests / ~5 s. §11 opens **D-12** (prompt caching unverified against the gateway — a silent 1.25× surcharge if `cache_control` is accepted but not honoured; settled by one two-turn conversation) and **D-13** (`selectTools` has no call site until S11). |
