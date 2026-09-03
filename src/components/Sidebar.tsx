@@ -32,11 +32,12 @@
  * {@link drawerProgress}.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
 import Reanimated, {
+  cancelAnimation,
   Easing,
   runOnJS,
   useAnimatedStyle,
@@ -198,17 +199,11 @@ export function Sidebar({
    * The modal has to outlive the close so the panel can be seen sliding out; without
    * this it vanishes on the first frame and the animation plays to nobody.
    *
-   * Opening is adjusted during render rather than in the effect below, because the
-   * modal must already be mounted on the frame the slide starts — an effect that
-   * mounted it would cost a second render before anything moved, which is exactly the
-   * frame the eye notices.
+   * Driven by a `useEffect` rather than a render-phase setState: React 18's concurrent
+   * renderer can interleave renders in ways that make the `wasVisible` pattern flaky on
+   * Android — the component may commit with `mounted=false` and the Modal never shows.
    */
   const [mounted, setMounted] = useState(visible);
-  const [wasVisible, setWasVisible] = useState(visible);
-  if (wasVisible !== visible) {
-    setWasVisible(visible);
-    if (visible) setMounted(true);
-  }
 
   /**
    * Where the drag started, as a fraction. Held so a second drag continues the first
@@ -219,13 +214,14 @@ export function Sidebar({
 
   useEffect(() => {
     if (visible) {
-      // Reduce Motion shortens the slide and keeps its direction: this move is what says
-      // the drawer came from the left edge and belongs back there, which an instant
-      // appearance throws away. See `scaleDuration`'s note on positional motion.
-      drawerProgress.value = withTiming(1, {
-        duration: reduced ? duration.quick : OPEN_MS,
-        easing: Easing.bezier(...curve.enter),
-      });
+      // Reset to 0 first so that even if a previous navigation left drawerProgress at
+      // a non-zero value, the panel always starts off-screen. The actual 0→1 tween is
+      // kicked off in the Modal's `onShow` callback, which fires only after the native
+      // window is on screen — so the animation is always visible rather than completing
+      // while the Modal is still being presented by the OS.
+      cancelAnimation(drawerProgress);
+      drawerProgress.value = 0;
+      setMounted(true);
       return;
     }
     drawerProgress.value = withTiming(
@@ -240,11 +236,25 @@ export function Sidebar({
     );
   }, [visible, reduced]);
 
+  /** Always-current copy so `onModalShow` does not close over a stale value. */
+  const reducedRef = useRef(reduced);
+  useEffect(() => { reducedRef.current = reduced; }, [reduced]);
+
+  /** Slide the panel in now that the native Modal window is actually on screen. */
+  const onModalShow = () => {
+    drawerProgress.value = withTiming(1, {
+      duration: reducedRef.current ? duration.quick : OPEN_MS,
+      easing: Easing.bezier(...curve.enter),
+    });
+  };
+
   const backdrop = useAnimatedStyle(() => ({ opacity: drawerProgress.value }));
   const slide = useAnimatedStyle(() => ({ transform: [{ translateX: -width * (1 - drawerProgress.value) }] }));
 
+  if (!mounted) return null;
+
   return (
-    <Modal visible={mounted} transparent animationType="none" onRequestClose={onClose} statusBarTranslucent>
+    <Modal visible transparent animationType="none" onRequestClose={onClose} onShow={onModalShow} statusBarTranslucent>
       <View style={{ flex: 1 }}>
         <Reanimated.View style={[StyleSheet.absoluteFill, { backgroundColor: t.colors.scrim }, backdrop]}>
           <Pressable onPress={onClose} accessibilityLabel="Close the chat list" style={{ flex: 1 }} />
