@@ -258,6 +258,7 @@ export default function RootLayout() {
   useEffect(() => {
     if (!hydrated) return;
     void useMemory.getState().load();
+    void useMemory.getState().maintainDaily();
     void useSkills.getState().load();
     void useMcp.getState().load();
     void usePrompts.getState().load();

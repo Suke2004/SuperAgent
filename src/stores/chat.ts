@@ -1388,7 +1388,9 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     // prompt it estimated, and `promptBlock` returns nothing at all when the
     // memory switch is off. Read *before* the context strategy, because the memory
     // block is part of the prefix the history budget is computed against.
-    const memoryBlock = useMemory.getState().promptBlock(conversation.config.memory);
+    const latestUserText = [...stored].reverse().find((message) => message.role === 'user');
+    const memoryQuery = latestUserText ? flattenContent(latestUserText.content) : undefined;
+    const memoryBlock = useMemory.getState().promptBlock(conversation.config.memory, memoryQuery);
     const calibrationKey = `${profile.id}::${model}`;
     const calibrationFactor = useCalibration.getState().factorFor(calibrationKey);
     const toolCalibrationFactor = useCalibration.getState().toolFactorFor(calibrationKey);

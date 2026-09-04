@@ -22,11 +22,20 @@ import {
   renderMemoryBlock,
   sameMemory,
   shouldDistil,
+  rankRelevantNodes,
+  shouldRunMemoryMaintenance,
 } from '@/chat/memory';
-import type { Memory, MemoryKind } from '@/chat/memory';
+import type { Memory, MemoryKind, MemoryNode } from '@/chat/memory';
 import { clearRegisteredSecrets, registerSecret } from '@/lib/redact';
 
 const NOW = 1_700_000_000_000;
+
+function node(overrides: Partial<MemoryNode> & Pick<MemoryNode, 'id' | 'label'>): MemoryNode {
+  return {
+    nodeType: 'fact', normalized: overrides.label.toLowerCase(), confidence: 0.8, importance: 1,
+    sensitivity: 'normal', approved: true, createdAt: NOW, updatedAt: NOW, ...overrides,
+  };
+}
 
 function memory(overrides: Partial<Memory> & { text: string }): Memory {
   return {
@@ -58,6 +67,23 @@ describe('the distillation throttle', () => {
       if (shouldDistil({ enabled: true, assistantTurns: turns })) fired.push(turns);
     }
     expect(fired).toEqual([DISTIL_EVERY_TURNS, DISTIL_EVERY_TURNS * 2, DISTIL_EVERY_TURNS * 3, DISTIL_EVERY_TURNS * 4, DISTIL_EVERY_TURNS * 5]);
+  });
+});
+
+describe('bounded graph retrieval', () => {
+  it('returns only approved, relevant, non-expired nodes', () => {
+    const nodes = [
+      node({ id: 'project', label: 'Works on SuperAgent project' }),
+      node({ id: 'other', label: 'Likes tea', approved: false }),
+      node({ id: 'expired', label: 'Old project', expiresAt: NOW - 1 }),
+    ];
+    expect(rankRelevantNodes(nodes, 'SuperAgent project').map((item) => item.id)).toEqual(['project']);
+  });
+
+  it('runs daily and is idempotent within the day', () => {
+    expect(shouldRunMemoryMaintenance(undefined, NOW)).toBe(true);
+    expect(shouldRunMemoryMaintenance(NOW, NOW + 60_000)).toBe(false);
+    expect(shouldRunMemoryMaintenance(NOW, NOW + 24 * 60 * 60 * 1000)).toBe(true);
   });
 });
 

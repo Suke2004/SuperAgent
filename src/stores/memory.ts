@@ -23,9 +23,10 @@ import {
   mergeMemories,
   parseMemory,
   renderMemoryBlock,
+  rankRelevantNodes,
   shouldDistil,
 } from '@/chat/memory';
-import type { Memory, MemoryBlock } from '@/chat/memory';
+import type { Memory, MemoryBlock, MemoryNode } from '@/chat/memory';
 import {
   addMemory,
   approveMemory,
@@ -34,7 +35,9 @@ import {
   deleteMemory as dbDeleteMemory,
   editMemory,
   listMemories,
+  listMemoryNodes,
   markMemoriesUsed,
+  maintainMemoryGraph,
   setMemoryPinned,
 } from '@/db/memories';
 import { flattenContent } from '@/db/conversations';
@@ -42,6 +45,7 @@ import type { StoredMessage } from '@/db/conversations';
 import { resolveTransport } from '@/lib/gateway';
 import { log } from '@/lib/log';
 import { getSetting } from '@/stores/settings';
+import { readJson, writeJson } from '@/lib/storage';
 import type { ContentBlock } from '@/transports/types';
 
 /** How much of the exchange the distillation pass reads, in characters. */
@@ -52,9 +56,11 @@ const DISTIL_MAX_TOKENS = 512;
 
 export interface MemoryState {
   memories: Memory[];
+  nodes: MemoryNode[];
   loaded: boolean;
   /** True while a distillation pass is in flight, for the settings screen. */
   distilling: boolean;
+  maintaining: boolean;
 
   load(): Promise<void>;
   /**
@@ -63,7 +69,7 @@ export interface MemoryState {
    * `memory` is the conversation's own override, which can only silence memory —
    * see {@link memoryAppliesTo}. Omitted means "whatever the global setting says".
    */
-  promptBlock(memory?: boolean): MemoryBlock;
+  promptBlock(memory?: boolean, query?: string): MemoryBlock;
   add(text: string, kind?: Memory['kind']): Promise<void>;
   edit(id: string, text: string): Promise<void>;
   /** The user agreeing a distilled memory may be sent. Until then it is stored and unused. */
@@ -81,17 +87,37 @@ export interface MemoryState {
    * a missed opportunity, and the turn it follows has already succeeded.
    */
   distil(input: { conversationId: string; profileId: string; model: string; messages: readonly StoredMessage[]; memory?: boolean }): Promise<number>;
+  maintainDaily(): Promise<void>;
 }
 
 export const useMemory = create<MemoryState>()((set, get) => ({
   memories: [],
+  nodes: [],
   loaded: false,
   distilling: false,
+  maintaining: false,
+
+  async maintainDaily() {
+    if (get().maintaining) return;
+    const key = 'memory.graph.lastMaintenance';
+    const last = await readJson<number | null>(key, null);
+    if (last && Date.now() - last < 24 * 60 * 60 * 1000) return;
+    set({ maintaining: true });
+    try {
+      await maintainMemoryGraph();
+      await writeJson(key, Date.now());
+      await get().load();
+    } catch (error) {
+      log.warn('memory', 'Daily graph maintenance failed', { error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      set({ maintaining: false });
+    }
+  },
 
   async load() {
     try {
-      const memories = await listMemories();
-      set({ memories, loaded: true });
+      const [memories, nodes] = await Promise.all([listMemories(), listMemoryNodes()]);
+      set({ memories, nodes, loaded: true });
     } catch (error) {
       log.error('memory', 'Could not load memories', {
         error: error instanceof Error ? error.message : String(error),
@@ -100,12 +126,16 @@ export const useMemory = create<MemoryState>()((set, get) => ({
     }
   },
 
-  promptBlock(memory) {
+  promptBlock(memory, query) {
     if (!memoryAppliesTo(getSetting('memoryEnabled'), memory)) return { included: [], dropped: 0, chars: 0 };
     // The review gate: a memory the user has not agreed to is never sent, however
     // highly it ranks. Filtered here rather than in `listMemories`, because the
     // settings screen has to be able to see the pending ones to act on them.
-    return renderMemoryBlock(approvedOnly(get().memories));
+    const approved = approvedOnly(get().memories);
+    if (!query?.trim() || !get().nodes.length) return renderMemoryBlock(approved);
+    const relevant = new Set(rankRelevantNodes(get().nodes, query).map((node) => node.memoryId).filter(Boolean));
+    const selected = approved.filter((item) => relevant.has(item.id));
+    return renderMemoryBlock(selected.length ? selected : approved);
   },
 
   async add(text, kind = 'fact') {

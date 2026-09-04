@@ -11,7 +11,15 @@ import { database } from '@/db/schema';
 import { newId } from '@/lib/id';
 import { log } from '@/lib/log';
 
-import type { Memory, MemoryCandidate, MemoryKind } from '@/chat/memory';
+import type {
+  Memory,
+  MemoryCandidate,
+  MemoryKind,
+  MemoryNode,
+  MemoryNodeType,
+  MemoryEdge,
+  MemoryRelation,
+} from '@/chat/memory';
 
 interface MemoryRow {
   id: string;
@@ -98,7 +106,91 @@ export async function addMemory(
     candidate.text,
   ]);
   if (!row) throw new Error('Memory disappeared immediately after being written');
+  // Every approved memory also has a graph node. The node is deliberately
+  // lightweight; relationships can be added later without changing prompts.
+  await upsertMemoryNode({
+    memoryId: row.id,
+    nodeType: candidate.kind,
+    label: candidate.text,
+    normalized: candidate.text.toLowerCase().replace(/\s+/g, ' ').trim(),
+    approved: row.approved === 1,
+  });
   return toMemory(row);
+}
+
+interface MemoryNodeRow {
+  id: string; memory_id: string | null; node_type: string; label: string; normalized: string;
+  confidence: number; importance: number; sensitivity: string; approved: number;
+  expires_at: number | null; created_at: number; updated_at: number;
+}
+
+function toNode(row: MemoryNodeRow): MemoryNode {
+  return {
+    id: row.id,
+    ...(row.memory_id ? { memoryId: row.memory_id } : {}),
+    nodeType: row.node_type as MemoryNodeType,
+    label: row.label,
+    normalized: row.normalized,
+    confidence: row.confidence,
+    importance: row.importance,
+    sensitivity: row.sensitivity === 'sensitive' ? 'sensitive' : 'normal',
+    approved: row.approved === 1,
+    ...(row.expires_at !== null ? { expiresAt: row.expires_at } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export async function listMemoryNodes(): Promise<MemoryNode[]> {
+  const { db } = await database();
+  const rows = await db.getAllAsync<MemoryNodeRow>('SELECT * FROM memory_nodes ORDER BY importance DESC, confidence DESC, updated_at DESC');
+  return rows.map(toNode);
+}
+
+export async function upsertMemoryNode(input: {
+  id?: string; memoryId?: string; nodeType: MemoryNodeType; label: string; normalized?: string;
+  confidence?: number; importance?: number; sensitivity?: 'normal' | 'sensitive'; approved?: boolean; expiresAt?: number;
+}): Promise<MemoryNode> {
+  const { db } = await database();
+  const at = Date.now();
+  const normalized = input.normalized ?? input.label.toLowerCase().replace(/\s+/g, ' ').trim();
+  await db.runAsync(
+    `INSERT INTO memory_nodes (id, memory_id, node_type, label, normalized, confidence, importance, sensitivity, approved, expires_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (node_type, normalized) DO UPDATE SET label = excluded.label, confidence = MAX(memory_nodes.confidence, excluded.confidence),
+       importance = MAX(memory_nodes.importance, excluded.importance), approved = MAX(memory_nodes.approved, excluded.approved), updated_at = excluded.updated_at`,
+    [input.id ?? newId('mnode_'), input.memoryId ?? null, input.nodeType, input.label, normalized, input.confidence ?? 0.5,
+      input.importance ?? 0, input.sensitivity ?? 'normal', input.approved === false ? 0 : 1, input.expiresAt ?? null, at, at],
+  );
+  const row = await db.getFirstAsync<MemoryNodeRow>('SELECT * FROM memory_nodes WHERE node_type = ? AND normalized = ?', [input.nodeType, normalized]);
+  if (!row) throw new Error('Memory graph node disappeared immediately after being written');
+  return toNode(row);
+}
+
+export async function addMemoryEdge(input: { fromNodeId: string; toNodeId: string; relation: MemoryRelation; confidence?: number }): Promise<void> {
+  const { db } = await database();
+  const at = Date.now();
+  await db.runAsync(
+    `INSERT INTO memory_edges (id, from_node_id, to_node_id, relation, confidence, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (from_node_id, to_node_id, relation) DO UPDATE SET confidence = MAX(memory_edges.confidence, excluded.confidence), updated_at = excluded.updated_at`,
+    [newId('medge_'), input.fromNodeId, input.toNodeId, input.relation, input.confidence ?? 0.5, at, at],
+  );
+}
+
+/** Daily maintenance is intentionally bounded and idempotent. */
+export async function maintainMemoryGraph(now = Date.now()): Promise<{ expired: number; pruned: number }> {
+  const { db } = await database();
+  const expired = await db.runAsync('UPDATE memory_nodes SET approved = 0 WHERE expires_at IS NOT NULL AND expires_at <= ? AND approved = 1', [now]);
+  const count = await db.getFirstAsync<{ n: number }>('SELECT count(*) AS n FROM memory_nodes');
+  const excess = Math.max(0, (count?.n ?? 0) - 500);
+  if (excess) {
+    await db.runAsync(
+      `DELETE FROM memory_nodes WHERE id IN (SELECT id FROM memory_nodes WHERE approved = 0 ORDER BY importance ASC, confidence ASC, updated_at ASC LIMIT ?)`,
+      [excess],
+    );
+  }
+  return { expired: expired.changes, pruned: excess };
 }
 
 /** Records that a memory was restated, which is what keeps it near the top of the budget. */
@@ -111,12 +203,14 @@ export async function confirmMemory(id: string): Promise<void> {
 export async function approveMemory(id: string): Promise<void> {
   const { db } = await database();
   await db.runAsync('UPDATE memories SET approved = 1, updated_at = ? WHERE id = ?', [Date.now(), id]);
+  await db.runAsync('UPDATE memory_nodes SET approved = 1, updated_at = ? WHERE memory_id = ?', [Date.now(), id]);
 }
 
 /** Corrects a memory in place. Resets nothing: a corrected memory is still the same memory. */
 export async function editMemory(id: string, text: string): Promise<void> {
   const { db } = await database();
   await db.runAsync('UPDATE memories SET text = ?, updated_at = ? WHERE id = ?', [text, Date.now(), id]);
+  await db.runAsync('UPDATE memory_nodes SET label = ?, normalized = ?, updated_at = ? WHERE memory_id = ?', [text, text.toLowerCase().replace(/\s+/g, ' ').trim(), Date.now(), id]);
 }
 
 export async function setMemoryPinned(id: string, pinned: boolean): Promise<void> {
@@ -154,4 +248,9 @@ export async function clearMemories(): Promise<number> {
   });
   log.info('memory', `Deleted every memory (${before})`);
   return before;
+}
+
+export async function deleteMemoryNode(id: string): Promise<void> {
+  const { db } = await database();
+  await db.runAsync('DELETE FROM memory_nodes WHERE id = ?', [id]);
 }
