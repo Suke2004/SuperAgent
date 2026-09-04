@@ -341,10 +341,15 @@ export function Sheet({
               accessibilityState={{ disabled: Boolean(action.disabled) }}
               accessibilityHint={action.disabled ? action.disabledReason : action.subtitle}
               onPress={() => {
-                // Close first: several of these navigate, and a sheet still
-                // mounted over a push is a sheet over the wrong screen.
-                onClose();
+                // The action before the close. `onClose` is also the *dismissal* path, so
+                // a screen whose dismissal decides something — the MCP approval sheet
+                // denies on it, because a turn blocked on a question nothing answers is
+                // worse than a refusal — would otherwise answer for the row the user just
+                // tapped, and every "Allow" would arrive as a denial. Both are state
+                // updates in one event and still commit together, so a row that navigates
+                // does not leave the sheet mounted over the new screen either way.
                 action.onPress();
+                onClose();
               }}
               style={({ pressed }) => ({
                 paddingHorizontal: t.spacing.md,

@@ -169,6 +169,25 @@ describe('invoking a bridged tool', () => {
     expect(useMcp.getState().servers[0]?.approvals).toEqual({ [WIRE]: 'always' });
   });
 
+  /**
+   * The sheet answers, and then closes — and closing the approval sheet is itself a
+   * denial, because a dismissed question would otherwise block the turn forever. So
+   * the decision the user tapped has to be the one that counts, whatever arrives
+   * after it. This is the store half of that; `Sheet` presses the action first.
+   */
+  it('lets the first decision stand when the dismissal follows it', async () => {
+    mockCallTool.mockResolvedValue({ content: 'two hits' });
+    const pending = useMcp.getState().invoke(WIRE, { q: 'x' }, ['github']);
+    await Promise.resolve();
+    const id = useMcp.getState().pending[0]?.id ?? '';
+
+    useMcp.getState().resolve(id, 'once');
+    useMcp.getState().resolve(id, 'deny');
+
+    expect(await pending).toEqual({ content: 'two hits' });
+    expect(mockCallTool).toHaveBeenCalledWith('search', { q: 'x' });
+  });
+
   it('skips the question when the tool is already always-allowed', async () => {
     mockCallTool.mockResolvedValue({ content: 'ok' });
     seed({ approvals: { [WIRE]: 'always' } });

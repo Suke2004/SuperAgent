@@ -197,10 +197,11 @@ export function ContextMenu({
               accessibilityState={{ disabled: Boolean(action.disabled) }}
               accessibilityHint={action.disabled ? action.disabledReason : action.subtitle}
               onPress={() => {
-                // Close first: several of these navigate, and a menu still mounted over
-                // a push is a menu over the wrong screen.
-                onClose();
+                // The action before the close, for the reason spelled out in `Sheet`:
+                // `onClose` doubles as the dismissal path, and a dismissal that decides
+                // something must not answer for the row the user tapped.
                 action.onPress();
+                onClose();
               }}
               style={({ pressed }) => ({
                 paddingHorizontal: t.spacing.md,

@@ -66,7 +66,13 @@ function markdown(i: number): string {
   ].join('\n');
 }
 
-/** The cost of the fastest of `runs` attempts. See the module comment. */
+/**
+ * The cost of the fastest of `runs` attempts.
+ *
+ * Load only ever *adds* time, so the fastest of a few runs is the cleanest
+ * estimate of what the code costs. A single reading measures the machine as
+ * much as the algorithm — this suite has failed on a loaded machine before.
+ */
 function fastest(work: () => void, runs = 3): number {
   let best = Infinity;
   for (let run = 0; run < runs; run++) {
@@ -74,17 +80,6 @@ function fastest(work: () => void, runs = 3): number {
     work();
     best = Math.min(best, performance.now() - started);
   }
-  return best;
-}
-
-/**
- * Load only ever *adds* time, so the fastest of a few runs is the cleanest
- * estimate of what the code costs. A single reading measures the machine as
- * much as the algorithm — this suite has failed on a loaded machine before.
- */
-function fastest(work: () => void, runs = 3): number {
-  let best = Infinity;
-  for (let i = 0; i < runs; i++) best = Math.min(best, elapsed(work));
   return best;
 }
 

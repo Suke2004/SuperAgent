@@ -32,7 +32,7 @@
  * {@link drawerProgress}.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
 import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
@@ -212,16 +212,61 @@ export function Sidebar({
   const grabbed = useSharedValue(0);
   const pan = drawerPan(width, grabbed, onClose);
 
+  /** Always-current copy so `slideIn` does not close over a stale value. */
+  const reducedRef = useRef(reduced);
+  useEffect(() => {
+    reducedRef.current = reduced;
+  }, [reduced]);
+
+  /**
+   * Whether the native modal window is on screen *right now*.
+   *
+   * `onShow` fires when the OS presents the window and then never again while it stays
+   * presented — and this window deliberately outlives a close by `CLOSE_MS` so the panel
+   * can be seen leaving. So the window is still up during that exit, and a re-open inside
+   * it gets no `onShow` at all.
+   */
+  const shown = useRef(false);
+
+  /** The 0→1 slide. From `onShow` on a fresh presentation, from the effect otherwise. */
+  const slideIn = useCallback(() => {
+    drawerProgress.value = withTiming(1, {
+      duration: reducedRef.current ? duration.quick : OPEN_MS,
+      easing: Easing.bezier(...curve.enter),
+    });
+  }, []);
+
+  /** Slide the panel in now that the native Modal window is actually on screen. */
+  const onModalShow = () => {
+    shown.current = true;
+    slideIn();
+  };
+
+  const unmount = useCallback(() => {
+    shown.current = false;
+    setMounted(false);
+  }, []);
+
   useEffect(() => {
     if (visible) {
-      // Reset to 0 first so that even if a previous navigation left drawerProgress at
-      // a non-zero value, the panel always starts off-screen. The actual 0→1 tween is
-      // kicked off in the Modal's `onShow` callback, which fires only after the native
-      // window is on screen — so the animation is always visible rather than completing
-      // while the Modal is still being presented by the OS.
       cancelAnimation(drawerProgress);
-      drawerProgress.value = 0;
-      setMounted(true);
+      if (shown.current) {
+        // A re-open during the exit — tapping the ⋯ again while the drawer is still
+        // sliding away, which is exactly what switching conversations quickly does. The
+        // window never went away, so `onShow` will not fire and the slide has to start
+        // from here; without this the panel stays parked off-screen with a full-screen
+        // transparent modal over the app, swallowing every touch until the next tap
+        // hits its backdrop. Resumed from wherever the exit got to rather than reset,
+        // so the panel reverses instead of restarting.
+        slideIn();
+      } else {
+        // Off-screen first, so a value left behind by a previous navigation cannot show
+        // the panel already open on the frame the window appears. The tween itself waits
+        // for `onShow`, so the animation is always visible rather than completing while
+        // the OS is still presenting.
+        drawerProgress.value = 0;
+        setMounted(true);
+      }
       return;
     }
     drawerProgress.value = withTiming(
@@ -231,22 +276,34 @@ export function Sidebar({
         // Timing rather than a spring on the way out for the same reason as `SheetShell`:
         // this callback unmounts the modal, and a spring's tail would hold an invisible
         // panel mounted for a hundred milliseconds after it had gone.
-        if (finished) runOnJS(setMounted)(false);
+        if (finished) runOnJS(unmount)();
       },
     );
-  }, [visible, reduced]);
+  }, [visible, reduced, slideIn, unmount]);
 
-  /** Always-current copy so `onModalShow` does not close over a stale value. */
-  const reducedRef = useRef(reduced);
-  useEffect(() => { reducedRef.current = reduced; }, [reduced]);
-
-  /** Slide the panel in now that the native Modal window is actually on screen. */
-  const onModalShow = () => {
-    drawerProgress.value = withTiming(1, {
-      duration: reducedRef.current ? duration.quick : OPEN_MS,
-      easing: Easing.bezier(...curve.enter),
-    });
-  };
+  /**
+   * Put the scene back when this drawer is unmounted rather than told to close.
+   *
+   * `onAllConversations` clears `visible` and navigates in the same handler, and the
+   * navigation can take the chat screen — and this drawer with it — out of the tree in the
+   * same commit, so the exit effect above never runs. {@link drawerProgress} is a module
+   * value, so it would then stay at 1 for the rest of the session: every chat screen after
+   * this one renders 6% small, 14dp across and rounded, with no drawer in sight to explain
+   * why. A module value has to be returned by whoever moved it — the same guard, and the
+   * same reason, as `ArtifactPreview`'s.
+   *
+   * Its own effect, not the one above: that one's cleanup would also run whenever `visible`
+   * or `reduced` changed, and undo the animation it had just started.
+   */
+  useEffect(
+    () => () => {
+      drawerProgress.value = withTiming(0, {
+        duration: duration.exit,
+        easing: Easing.bezier(...curve.exit),
+      });
+    },
+    [],
+  );
 
   const backdrop = useAnimatedStyle(() => ({ opacity: drawerProgress.value }));
   const slide = useAnimatedStyle(() => ({ transform: [{ translateX: -width * (1 - drawerProgress.value) }] }));
