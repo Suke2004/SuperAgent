@@ -1939,7 +1939,7 @@ ${result.content}` : result.content);
                 // Absent for a file nothing here can display — a PDF, a zip. Offering
                 // Open on one would be a tap whose only outcome is a sentence saying it
                 // cannot be opened, and Share, directly below, is that sentence's answer.
-                ...(previewFor(fileFor.name).mode === 'handoff'
+                ...(previewFor(fileFor.name).mode === 'handoff' && !fileFor.name.toLowerCase().endsWith('.pdf')
                   ? []
                   : [
                       {

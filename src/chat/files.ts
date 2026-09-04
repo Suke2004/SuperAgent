@@ -80,14 +80,26 @@ export async function writeGeneratedFile(name: string, content: string | Uint8Ar
  * whose job is "make this readable on paper".
  */
 export async function writePdf(name: string, title: string, markdown: string): Promise<GeneratedFile> {
-  const { uri } = await Print.printToFileAsync({ html: printableHtml(title, markdown), base64: false });
-  const directory = filesDirectory();
-  const target = new File(directory, freeName(directory, name));
-  // `printToFileAsync` writes into the cache under a generated name; moving it gives
-  // the file the name the model asked for and puts it where the files list looks.
-  new File(uri).move(target);
-  log.info('files', 'wrote a pdf', { bytes: target.size ?? 0 });
-  return describe(target);
+  let source: File | null = null;
+  try {
+    const result = await Print.printToFileAsync({ html: printableHtml(title, markdown), base64: false });
+    if (!result?.uri) throw new Error('The print service returned no file.');
+    source = new File(result.uri);
+    if (!source.exists) throw new Error('The print service did not create a file.');
+    const bytes = source.size ?? 0;
+    if (bytes < 5) throw new Error('The print service created an empty PDF.');
+    if (bytes > 250 * 1024 * 1024) throw new Error('The generated PDF is too large to store safely.');
+    const directory = filesDirectory();
+    const target = new File(directory, freeName(directory, name));
+    source.move(target);
+    log.info('files', 'wrote a pdf', { bytes });
+    return describe(target);
+  } catch (error) {
+    log.error('files', 'could not render a pdf', error);
+    throw new Error(error instanceof Error ? error.message : 'The PDF could not be generated.');
+  } finally {
+    try { if (source?.exists) source.delete(); } catch { /* best effort cache cleanup */ }
+  }
 }
 
 /** Every generated file, newest first. */

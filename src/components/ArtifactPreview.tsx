@@ -35,7 +35,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Reanimated, {
   Easing,
@@ -123,6 +123,7 @@ export function ArtifactPreview({
   const [loading, setLoading] = useState(true);
   /** Set when the artifact tried to navigate. Shown, not hidden: it is worth knowing. */
   const [blocked, setBlocked] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
   /**
    * Whether the document itself has been handed over yet.
    *
@@ -203,6 +204,7 @@ export function ArtifactPreview({
         started.current = false;
         setLoading(true);
         setBlocked(null);
+        setFailed(null);
       }}
     >
       <View style={{ flex: 1, flexDirection: 'row' }}>
@@ -272,9 +274,19 @@ export function ArtifactPreview({
                 </Note>
               </View>
             ) : null}
+            {failed ? (
+              <View style={{ padding: t.spacing.md }}>
+                <Note tone="warning" live>{failed}</Note>
+              </View>
+            ) : null}
 
             <View style={{ flex: 1 }}>
-              <WebView
+              {Platform.OS === 'web' ? (
+                <ScrollView contentContainerStyle={{ padding: t.spacing.md }}>
+                  <Note tone="info">Interactive previews are unavailable in the web build. The source is shown below.</Note>
+                  <Text selectable style={{ color: '#222', fontFamily: 'monospace', fontSize: 12, marginTop: t.spacing.md }}>{code}</Text>
+                </ScrollView>
+              ) : <WebView
                 // Sandbox first. Every one of these is a refusal, not a preference.
                 originWhitelist={[]}
                 source={{ html: artifactDocument(code, kind) }}
@@ -299,8 +311,12 @@ export function ArtifactPreview({
                   return false;
                 }}
                 onLoadEnd={() => setLoading(false)}
+                onError={() => {
+                  setLoading(false);
+                  setFailed('This preview could not be rendered on this device. The source is still available in the message.');
+                }}
                 style={{ flex: 1, backgroundColor: '#ffffff' }}
-              />
+              />}
               {loading ? (
                 <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' }}>
                   <Spinner label="Rendering" />

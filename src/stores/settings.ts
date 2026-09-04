@@ -156,7 +156,7 @@ const DEFAULTS = {
   themeMode: 'system' as ThemeMode,
   showThinkingByDefault: false,
   liveTokenCount: true,
-  contextStrategy: 'warn' as ContextStrategy,
+  contextStrategy: 'summarise' as ContextStrategy,
   contextWarnAt: 0.8,
   debugLogEnabled: true,
   debugMirrorToConsole: false,

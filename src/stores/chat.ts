@@ -1442,6 +1442,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       conversation,
       stored,
       capabilities,
+      transport: profile.kind,
       live,
       publish,
       signal: controller.signal,
@@ -1925,6 +1926,7 @@ interface StrategyInput {
   conversation: Conversation;
   stored: StoredMessage[];
   capabilities: ModelCapabilities;
+  transport: 'anthropic' | 'openai';
   live: LiveStream;
   publish(force?: boolean): void;
   signal: AbortSignal;
@@ -2007,7 +2009,7 @@ async function applyContextStrategy(input: StrategyInput): Promise<StrategyResul
   if (strategy === 'warn') return sendEverything();
 
   const params = buildRequest({
-    transport: 'anthropic',
+    transport: input.transport,
     model: conversation.model,
     capabilities,
     config: conversation.config,
@@ -2019,7 +2021,7 @@ async function applyContextStrategy(input: StrategyInput): Promise<StrategyResul
   // budget declared roomy produces a request over the window.
   const system = composeSystem(input.systemPrompt ?? conversation.systemPrompt, previousSummary, input.memory, input.skills);
   const budget = planTurn({
-    transport: 'anthropic',
+    transport: input.transport,
     contextWindow: capabilities.contextWindow,
     params,
     ...(conversation.config.reasoning ? { reasoning: conversation.config.reasoning } : {}),
