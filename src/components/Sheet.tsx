@@ -12,7 +12,7 @@
  * needs an API key" tells them what to go and do.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Reanimated, {
@@ -102,30 +102,13 @@ export function SheetShell({
    *
    * Starts equal to `visible` so a sheet that mounts already open — a sheet whose
    * `visible` was true on the first render — does not need a frame to catch up.
+   *
+   * Driven by a `useEffect` rather than a render-phase setState: React 18's concurrent
+   * renderer can interleave renders in ways that make the `wasVisible` pattern flaky on
+   * Android — the component may commit with `mounted=false` and the Modal never shows.
+   * Matches `Sidebar`.
    */
   const [mounted, setMounted] = useState(visible);
-  /**
-   * Opening is adjusted during render rather than from the effect below, matching
-   * `Sidebar`: the modal has to be mounted on the same frame the slide starts, and an
-   * effect that mounted it would spend a render doing nothing visible first — which is
-   * exactly the frame the eye catches.
-   */
-  const [wasVisible, setWasVisible] = useState(visible);
-  if (wasVisible !== visible) {
-    setWasVisible(visible);
-    if (visible) setMounted(true);
-  }
-  /**
-   * Whether the panel has ever reported a height.
-   *
-   * The entrance is a slide over the panel's own height, so it cannot start before the
-   * panel has one — an effect that fired on `visible` alone would animate over the
-   * placeholder below. This flag is what lets the effect wait for the first layout, and
-   * it deliberately stays true afterwards: a reopened sheet is very nearly the height it
-   * was last time, and starting immediately from a stale measurement looks right where
-   * waiting another frame looks like a stutter.
-   */
-  const [measured, setMeasured] = useState(false);
 
   /** 0 → fully off the bottom edge, 1 → resting. */
   const progress = useSharedValue(visible ? 1 : 0);
@@ -135,26 +118,48 @@ export function SheetShell({
    * The panel's own height, measured.
    *
    * A shared value rather than state: it is read on the UI thread every frame, and as
-   * React state it would re-render the whole sheet on every layout pass. The 400 is a
-   * placeholder that only matters for a first frame no animation reads — see `measured`.
+   * React state it would re-render the whole sheet on every layout pass.
    */
   const height = useSharedValue(400);
 
-  const finishClose = useCallback(() => setMounted(false), []);
+  /** Always-current copy so `slideIn` does not close over a stale value. */
+  const reducedRef = useRef(reduced);
+  useEffect(() => {
+    reducedRef.current = reduced;
+  }, [reduced]);
 
   /**
-   * Measurement only.
+   * Whether the native modal window is on screen right now.
    *
-   * Every mutation in this component is either in this function or in the gesture below,
-   * and both are written *above* the hooks that consume the values they touch. That order
-   * is not cosmetic: the React Compiler's immutability rule rejects a mutation written
-   * after the hook a value was passed to, and it is right to — from the compiler's side
-   * there is no way to tell an intentional off-thread write from a component quietly
-   * rewriting state a hook has already captured.
+   * `onShow` fires when the OS presents the window and then never again while it stays
+   * presented — and this window deliberately outlives a close by `duration.exit` so the
+   * panel can be seen leaving. Matches `Sidebar`.
    */
+  const shown = useRef(false);
+
+  /** The 0→1 slide. From `onShow` on a fresh presentation, from the effect otherwise. */
+  const slideIn = useCallback(() => {
+    drag.value = 0;
+    progress.value = reducedRef.current
+      ? withTiming(1, { duration: duration.quick, easing: Easing.bezier(...curve.enter) })
+      : withSpring(1, spring.panel);
+  }, [drag, progress]);
+
+  /** Slide the panel in now that the native Modal window is actually on screen. */
+  const onModalShow = () => {
+    shown.current = true;
+    slideIn();
+  };
+
+  const unmount = useCallback(() => {
+    shown.current = false;
+    setMounted(false);
+  }, []);
+
   const onLayout = (h: number) => {
-    height.value = h;
-    if (!measured) setMeasured(true);
+    if (h > 0) {
+      height.value = h;
+    }
   };
 
   const pan = Gesture.Pan()
@@ -179,36 +184,35 @@ export function SheetShell({
 
   useEffect(() => {
     if (visible) {
-      if (!measured) return;
-      // Cancel any in-progress exit tween before opening. Without this, a re-open
-      // while the sheet is still sliding out lets the exit's completion callback run
-      // after the fact and call `finishClose()`, unmounting a sheet that should be
-      // open — which is how the chat menu appeared to do nothing on a second tap.
-      // Same fix as `Sidebar`, same root cause.
       cancelAnimation(progress);
-      // A drag left over from a previous dismissal, cleared on the way in rather than on
-      // the way out: resetting it during the exit would snap the panel back up under the
-      // finger that just threw it away.
-      drag.value = 0;
-      // Reduce Motion keeps the direction — the slide is what says "this came from the
-      // bottom edge, and pushing it back down closes it" — and only loses the spring's
-      // settle. See `scaleDuration`'s note on meaningful motion.
-      progress.value = reduced
-        ? withTiming(1, { duration: duration.quick, easing: Easing.bezier(...curve.enter) })
-        : withSpring(1, spring.panel);
+      if (shown.current) {
+        // A re-open during the exit — tapping the menu button again while the sheet is
+        // still sliding away. The window never went away, so `onShow` will not fire and
+        // the slide has to start from here; without this the panel stays parked off-screen.
+        slideIn();
+      } else {
+        // Off-screen first, so a value left behind by a previous navigation cannot show
+        // the panel already open on the frame the window appears. The tween itself waits
+        // for `onShow`, so the animation is always visible rather than completing while
+        // the OS is still presenting the Modal window.
+        progress.value = 0;
+        setMounted(true);
+      }
       return;
     }
-    // Timing out, not a spring: an exit has a deadline — the callback unmounts the modal —
-    // and a spring's arrival time is a consequence of its physics rather than something it
-    // can promise.
+
+    if (!shown.current && !mounted) {
+      return;
+    }
+
     progress.value = withTiming(
       0,
       { duration: duration.exit, easing: Easing.bezier(...curve.exit) },
       (done) => {
-        if (done) runOnJS(finishClose)();
+        if (done) runOnJS(unmount)();
       },
     );
-  }, [visible, measured, reduced, progress, drag, finishClose]);
+  }, [visible, slideIn, unmount, progress, mounted]);
 
   const backdrop = useAnimatedStyle(() => ({ opacity: progress.value }));
   const panel = useAnimatedStyle(() => ({
@@ -227,6 +231,7 @@ export function SheetShell({
       animationType="none"
       // The Android back button. Without this the sheet is a trap.
       onRequestClose={onClose}
+      onShow={onModalShow}
       statusBarTranslucent
     >
       <View style={{ flex: 1, justifyContent: 'flex-end' }}>
