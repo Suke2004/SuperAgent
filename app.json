@@ -2,7 +2,7 @@
   "expo": {
     "name": "SuperAgent",
     "slug": "agentrouter-mobile",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "jarvis",
@@ -11,7 +11,7 @@
     ],
     "android": {
       "package": "org.lyric.agentrouter",
-      "versionCode": 10102,
+      "versionCode": 10105,
       "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#262624",
