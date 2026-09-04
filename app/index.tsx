@@ -1200,6 +1200,7 @@ export default function Home() {
               onPress={() => void startConversation()}
             />
             <Inline gap="md">
+              <Button label="Jarvis" size="sm" onPress={() => router.push('/jarvis')} />
               <Button label="Settings" size="sm" onPress={() => router.push('/settings')} />
               <Button label="Debug log" size="sm" onPress={() => router.push('/settings/debug')} />
               <View style={{ flex: 1 }} />
