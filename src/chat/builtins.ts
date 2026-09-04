@@ -29,6 +29,9 @@ export const CREATE_DOCUMENT = 'create_document';
 export const FETCH_URL = 'fetch_url';
 export const READ_RESOURCE = 'read_mcp_resource';
 export const RUN_CODE = 'run_code';
+export const CREATE_TASK = 'create_task';
+export const LIST_TASKS = 'list_tasks';
+export const COMPLETE_TASK = 'complete_task';
 
 /** Every name this module can answer to, for the loop's "is this mine?" check. */
 export const BUILTIN_TOOL_NAMES: readonly string[] = [
@@ -38,6 +41,9 @@ export const BUILTIN_TOOL_NAMES: readonly string[] = [
   FETCH_URL,
   READ_RESOURCE,
   RUN_CODE,
+  CREATE_TASK,
+  LIST_TASKS,
+  COMPLETE_TASK,
 ];
 
 /* -------------------------------------------------------------------------- */
@@ -267,6 +273,21 @@ export interface BuiltinOptions {
  */
 export function builtinTools(options: BuiltinOptions): ToolDefinition[] {
   const tools: ToolDefinition[] = [
+    {
+      name: CREATE_TASK,
+      description: 'Create a local personal task or reminder. Use an ISO timestamp for dueAt when a deadline is known.',
+      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Short task title.' }, notes: { type: 'string', description: 'Optional details.' }, dueAt: { type: 'string', description: 'Optional ISO date/time.' }, priority: { type: 'integer', description: '0 normal, 1 important.' } }, required: ['title'], additionalProperties: false },
+    },
+    {
+      name: LIST_TASKS,
+      description: 'List the user\'s open local tasks and reminders, ordered by due date.',
+      inputSchema: { type: 'object', properties: { includeDone: { type: 'boolean', description: 'Include completed tasks.' }, limit: { type: 'integer', description: 'Maximum rows, up to 100.' } }, additionalProperties: false },
+    },
+    {
+      name: COMPLETE_TASK,
+      description: 'Mark a local task complete by its id.',
+      inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'Task id from list_tasks.' } }, required: ['id'], additionalProperties: false },
+    },
     {
       name: WRITE_FILE,
       description:

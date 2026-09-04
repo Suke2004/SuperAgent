@@ -438,3 +438,63 @@ export function renderMemoryBlock(
   const text = lines.join('\n');
   return { text, included, dropped, chars: text.length };
 }
+
+/** A small, provider-neutral graph vocabulary. Labels are user-visible; types
+ * and relations are deliberately finite so retrieval stays cheap and auditable. */
+export const MEMORY_NODE_TYPES = [
+  'person', 'preference', 'fact', 'project', 'style', 'goal', 'task', 'habit', 'skill', 'tool', 'constraint', 'decision', 'event',
+] as const;
+export type MemoryNodeType = (typeof MEMORY_NODE_TYPES)[number];
+
+export const MEMORY_RELATIONS = [
+  'prefers', 'works_on', 'wants', 'needs', 'uses', 'knows', 'avoids', 'depends_on', 'related_to', 'completed', 'scheduled_for',
+] as const;
+export type MemoryRelation = (typeof MEMORY_RELATIONS)[number];
+
+export interface MemoryNode {
+  id: string;
+  memoryId?: string;
+  nodeType: MemoryNodeType;
+  label: string;
+  normalized: string;
+  confidence: number;
+  importance: number;
+  sensitivity: 'normal' | 'sensitive';
+  approved: boolean;
+  expiresAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MemoryEdge {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  relation: MemoryRelation;
+  confidence: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Cheap lexical retrieval. It intentionally avoids embeddings and allocates no
+ * large intermediate transcript; the graph is expected to remain small. */
+export function rankRelevantNodes(nodes: readonly MemoryNode[], query: string, limit = 12): MemoryNode[] {
+  const terms = new Set(query.toLowerCase().split(/[^a-z0-9+#.]+/).filter((term) => term.length > 1));
+  const now = Date.now();
+  return nodes
+    .filter((node) => node.approved && node.sensitivity !== 'sensitive' && (!node.expiresAt || node.expiresAt > now))
+    .map((node) => {
+      const haystack = `${node.label} ${node.normalized}`.toLowerCase();
+      let overlap = 0;
+      for (const term of terms) if (haystack.includes(term)) overlap += 1;
+      const recency = Math.max(0, 1 - (now - node.updatedAt) / (1000 * 60 * 60 * 24 * 90));
+      return { node, score: overlap * 4 + node.confidence + node.importance * 0.1 + recency };
+    })
+    .sort((a, b) => b.score - a.score || b.node.updatedAt - a.node.updatedAt)
+    .slice(0, limit)
+    .map(({ node }) => node);
+}
+
+export function shouldRunMemoryMaintenance(lastRunAt: number | undefined, now = Date.now()): boolean {
+  return !lastRunAt || now - lastRunAt >= 24 * 60 * 60 * 1000;
+}

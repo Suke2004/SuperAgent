@@ -106,6 +106,7 @@ function Navigator() {
         <Stack.Screen name="index" options={{ title: APP_NAME, headerShown: false }} />
         {/* `jarvis://new?q=…`: a redirect with a spinner, so it has nothing to title. */}
         <Stack.Screen name="new" options={{ headerShown: false }} />
+        <Stack.Screen name="jarvis" options={{ title: 'Jarvis' }} />
         {/* The title comes from the conversation, set by the screen itself. */}
         <Stack.Screen name="chat/[id]" options={{ title: '' }} />
         <Stack.Screen name="chat/inspect" options={{ title: 'Developer details' }} />
@@ -258,6 +259,7 @@ export default function RootLayout() {
   useEffect(() => {
     if (!hydrated) return;
     void useMemory.getState().load();
+    void useMemory.getState().maintainDaily();
     void useSkills.getState().load();
     void useMcp.getState().load();
     void usePrompts.getState().load();

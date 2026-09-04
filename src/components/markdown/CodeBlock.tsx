@@ -187,6 +187,12 @@ export function CodeBlock({ code, lang }: { code: string; lang?: string }) {
         </View>
       </ScrollView>
 
+      {kind ? (
+        <View style={{ paddingHorizontal: t.spacing.md, paddingBottom: t.spacing.sm }}>
+          <Text style={{ color: t.colors.textFaint, fontSize: t.fontSize.xs }}>Rendered artifact available</Text>
+        </View>
+      ) : null}
+
       {/* Mounted only while open: a transcript with twenty fences in it should not be
           holding twenty WebViews, each of which is a browser. */}
       {kind && previewing ? (

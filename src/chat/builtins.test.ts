@@ -204,7 +204,7 @@ describe('capFetched', () => {
 describe('builtinTools', () => {
   it('always offers the file tools', () => {
     const names = builtinTools({ web: false, resources: [] }).map((tool) => tool.name);
-    expect(names).toEqual([WRITE_FILE, CREATE_PDF, CREATE_DOCUMENT]);
+    expect(names).toEqual(['create_task', 'list_tasks', 'complete_task', WRITE_FILE, CREATE_PDF, CREATE_DOCUMENT]);
   });
 
   it('offers web access only when it is switched on', () => {

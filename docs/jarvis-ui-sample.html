@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SuperAgent Jarvis Sample</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #262624;
+      --surface: #30302e;
+      --surface-alt: #1f1e1d;
+      --active: #3d3d39;
+      --border: #4d4c47;
+      --text: #f5f4ef;
+      --dim: #d8d5cc;
+      --faint: #a3a099;
+      --accent: #d97757;
+      --accent-text: #1f1e1d;
+      --accent-soft: #3a2b24;
+      --success: #7fc494;
+      --success-soft: #22301f;
+      --warning: #e0a86b;
+      --warning-soft: #352c1d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+    }
+    .shell { max-width: 720px; margin: 0 auto; padding: 28px 18px 42px; }
+    header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+    h1, h2, p { margin: 0; }
+    h1 { font: 26px/1.1 Georgia, serif; letter-spacing: 0; }
+    h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .9px; color: var(--faint); margin-bottom: 9px; }
+    .status { display: flex; align-items: center; gap: 7px; color: var(--success); font-size: 12px; margin-top: 7px; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+    button { border: 0; font: inherit; cursor: pointer; }
+    .icon { width: 40px; height: 40px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--dim); font-size: 22px; }
+    .composer { display: flex; align-items: center; gap: 10px; padding: 8px 9px 8px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); margin-bottom: 24px; }
+    .composer input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; }
+    .composer input::placeholder { color: var(--faint); }
+    .send { width: 38px; height: 38px; border-radius: 11px; background: var(--accent); color: var(--accent-text); font-size: 20px; }
+    section { margin-bottom: 24px; }
+    .panel { overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+    .row { display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+    .row:last-child { border-bottom: 0; }
+    .row:hover { background: var(--active); }
+    .mark { flex: 0 0 auto; width: 19px; height: 19px; border: 1.5px solid var(--faint); border-radius: 50%; }
+    .mark.done { display: grid; place-items: center; border-color: var(--success); background: var(--success); color: var(--bg); font-size: 12px; }
+    .copy { min-width: 0; flex: 1; }
+    .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .meta { color: var(--faint); font-size: 12px; margin-top: 3px; }
+    .time { color: var(--dim); font-size: 12px; white-space: nowrap; }
+    .time.overdue { color: var(--warning); }
+    .chevron { color: var(--faint); font-size: 20px; }
+    .stats { display: grid; grid-template-columns: repeat(2, 1fr); }
+    .stat { padding: 17px 15px; border-right: 1px solid var(--border); }
+    .stat:nth-child(2n) { border-right: 0; }
+    .stat:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+    .value { font-size: 21px; font-weight: 650; }
+    .label { color: var(--faint); font-size: 12px; margin-top: 3px; }
+    .decision .meta { color: var(--dim); }
+    .decision .chevron { margin-left: auto; }
+    .notice { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid #6b5235; border-radius: 12px; background: var(--warning-soft); color: var(--warning); font-size: 13px; }
+    @media (max-width: 500px) { .shell { padding: 20px 14px 32px; } .time { display: none; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <h1>Jarvis</h1>
+        <div class="status"><span class="dot"></span> Ready · memory updated today</div>
+      </div>
+      <button class="icon" aria-label="Open Jarvis options">⋯</button>
+    </header>
+
+    <form class="composer" onsubmit="event.preventDefault(); alert('This would open the normal chat composer with Jarvis context.');">
+      <input aria-label="Ask Jarvis" placeholder="What should I focus on today?" />
+      <button class="send" aria-label="Ask Jarvis">↑</button>
+    </form>
+
+    <section>
+      <h2>Today</h2>
+      <div class="panel">
+        <div class="row" data-task="Review SuperAgent PR">
+          <button class="mark" aria-label="Complete Review SuperAgent PR"></button>
+          <div class="copy"><div class="title">Review SuperAgent PR</div><div class="meta">Project · SuperAgent</div></div>
+          <div class="time">10:00</div><div class="chevron">›</div>
+        </div>
+        <div class="row" data-task="Prepare Android test build">
+          <button class="mark" aria-label="Complete Prepare Android test build"></button>
+          <div class="copy"><div class="title">Prepare Android test build</div><div class="meta">Due today</div></div>
+          <div class="chevron">›</div>
+        </div>
+        <div class="row" data-task="Test long-context continuation">
+          <button class="mark" aria-label="Complete Test long-context continuation"></button>
+          <div class="copy"><div class="title">Test long-context continuation</div><div class="meta">Reliability milestone</div></div>
+          <div class="chevron">›</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Context</h2>
+      <div class="panel stats">
+        <div class="stat"><div class="value">24</div><div class="label">approved memories</div></div>
+        <div class="stat"><div class="value">1,240</div><div class="label">prompt characters</div></div>
+        <div class="stat"><div class="value">4</div><div class="label">active projects</div></div>
+        <div class="stat"><div class="value">3</div><div class="label">tasks due today</div></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Recent decisions</h2>
+      <div class="panel">
+        <div class="row decision"><div class="copy"><div class="title">Keep Android as the primary platform</div><div class="meta">Decision · confirmed yesterday</div></div><div class="chevron">›</div></div>
+        <div class="row decision"><div class="copy"><div class="title">Avoid cloud conversation sync</div><div class="meta">Constraint · confirmed Aug 28</div></div><div class="chevron">›</div></div>
+      </div>
+    </section>
+
+    <div class="notice"><span>◷</span><span>Daily memory maintenance completed. 2 stale notes were archived.</span></div>
+  </main>
+  <script>
+    document.querySelectorAll('[data-task] .mark').forEach((button) => {
+      button.addEventListener('click', () => {
+        button.classList.toggle('done');
+        button.textContent = button.classList.contains('done') ? '✓' : '';
+        button.setAttribute('aria-label', button.classList.contains('done') ? 'Completed' : 'Complete task');
+      });
+    });
+  </script>
+</body>
+</html>

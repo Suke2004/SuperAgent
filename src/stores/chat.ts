@@ -58,6 +58,9 @@ import { formatBytes } from '@/chat/attachments';
 import {
   builtinTools,
   CREATE_DOCUMENT,
+  CREATE_TASK,
+  LIST_TASKS,
+  COMPLETE_TASK,
   CREATE_PDF,
   FETCH_URL,
   parseDocument,
@@ -1143,6 +1146,9 @@ async function resolveCall(
   if (call.name === WRITE_FILE) return resolveWriteFile(call.input);
   if (call.name === CREATE_PDF) return resolvePdf(call.input);
   if (call.name === CREATE_DOCUMENT) return resolveDocument(call.input);
+  if (call.name === CREATE_TASK) return resolveCreateTask(call.input);
+  if (call.name === LIST_TASKS) return resolveListTasks(call.input);
+  if (call.name === COMPLETE_TASK) return resolveCompleteTask(call.input);
   if (call.name === FETCH_URL) return resolveFetch(call.input);
   if (call.name === RUN_CODE) return resolveRunCode(call.input);
   if (call.name === READ_RESOURCE) return resolveResource(call.input, servers);
@@ -1169,6 +1175,37 @@ async function resolveWriteFile(input: unknown): Promise<ResolvedCall> {
   } catch (error) {
     return { content: `Could not write that file: ${message(error)}`, isError: true };
   }
+}
+
+async function resolveCreateTask(input: unknown): Promise<ResolvedCall> {
+  const record = input !== null && typeof input === 'object' ? input as Record<string, unknown> : {};
+  const title = typeof record.title === 'string' ? record.title.trim() : '';
+  if (!title) return { content: 'create_task needs a non-empty title.', isError: true };
+  const dueAt = typeof record.dueAt === 'string' ? Date.parse(record.dueAt) : NaN;
+  if (typeof record.dueAt === 'string' && !Number.isFinite(dueAt)) return { content: 'dueAt must be a valid ISO date/time.', isError: true };
+  try {
+    const { createTask } = await import('@/db/tasks');
+    const task = await createTask({ title, notes: typeof record.notes === 'string' ? record.notes : undefined, ...(Number.isFinite(dueAt) ? { dueAt } : {}), priority: record.priority === 1 ? 1 : 0 });
+    return { content: `Created task "${task.title}"${task.dueAt ? ` due ${new Date(task.dueAt).toLocaleString()}` : ''}. Task id: ${task.id}` };
+  } catch (error) { return { content: `Could not create task: ${message(error)}`, isError: true }; }
+}
+
+async function resolveListTasks(input: unknown): Promise<ResolvedCall> {
+  const record = input !== null && typeof input === 'object' ? input as Record<string, unknown> : {};
+  const { listTasks } = await import('@/db/tasks');
+  const tasks = await listTasks({ includeDone: record.includeDone === true, limit: typeof record.limit === 'number' ? record.limit : 50 });
+  if (!tasks.length) return { content: 'There are no matching local tasks.' };
+  return { content: tasks.map((task) => `${task.id} | ${task.status} | ${task.title}${task.dueAt ? ` | due ${new Date(task.dueAt).toISOString()}` : ''}`).join('\n') };
+}
+
+async function resolveCompleteTask(input: unknown): Promise<ResolvedCall> {
+  const record = input !== null && typeof input === 'object' ? input as Record<string, unknown> : {};
+  const id = typeof record.id === 'string' ? record.id.trim() : '';
+  if (!id) return { content: 'complete_task needs an id from list_tasks.', isError: true };
+  const { completeTask } = await import('@/db/tasks');
+  const completed = await completeTask(id);
+  if (completed) return { content: `Completed task ${id}.` };
+  return { content: `No open task found with id ${id}.`, isError: true };
 }
 
 /** Renders the PDF. Same shape as {@link resolveWriteFile}, different renderer. */
@@ -1388,7 +1425,9 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
     // prompt it estimated, and `promptBlock` returns nothing at all when the
     // memory switch is off. Read *before* the context strategy, because the memory
     // block is part of the prefix the history budget is computed against.
-    const memoryBlock = useMemory.getState().promptBlock(conversation.config.memory);
+    const latestUserText = [...stored].reverse().find((message) => message.role === 'user');
+    const memoryQuery = latestUserText ? flattenContent(latestUserText.content) : undefined;
+    const memoryBlock = useMemory.getState().promptBlock(conversation.config.memory, memoryQuery);
     const calibrationKey = `${profile.id}::${model}`;
     const calibrationFactor = useCalibration.getState().factorFor(calibrationKey);
     const toolCalibrationFactor = useCalibration.getState().toolFactorFor(calibrationKey);
@@ -1442,6 +1481,7 @@ async function runTurn(set: Setter, get: Getter, conversationId: string, options
       conversation,
       stored,
       capabilities,
+      transport: profile.kind,
       live,
       publish,
       signal: controller.signal,
@@ -1925,6 +1965,7 @@ interface StrategyInput {
   conversation: Conversation;
   stored: StoredMessage[];
   capabilities: ModelCapabilities;
+  transport: 'anthropic' | 'openai';
   live: LiveStream;
   publish(force?: boolean): void;
   signal: AbortSignal;
@@ -2007,7 +2048,7 @@ async function applyContextStrategy(input: StrategyInput): Promise<StrategyResul
   if (strategy === 'warn') return sendEverything();
 
   const params = buildRequest({
-    transport: 'anthropic',
+    transport: input.transport,
     model: conversation.model,
     capabilities,
     config: conversation.config,
@@ -2019,7 +2060,7 @@ async function applyContextStrategy(input: StrategyInput): Promise<StrategyResul
   // budget declared roomy produces a request over the window.
   const system = composeSystem(input.systemPrompt ?? conversation.systemPrompt, previousSummary, input.memory, input.skills);
   const budget = planTurn({
-    transport: 'anthropic',
+    transport: input.transport,
     contextWindow: capabilities.contextWindow,
     params,
     ...(conversation.config.reasoning ? { reasoning: conversation.config.reasoning } : {}),

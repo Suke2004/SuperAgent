@@ -10,7 +10,7 @@
  */
 
 /** Bumped whenever {@link MIGRATIONS} grows. Stored in SQLite's `user_version`. */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 10;
 
 /**
  * The FTS index and the three triggers that keep it in step with `messages`.
@@ -340,5 +340,69 @@ export const MIGRATIONS: readonly string[] = [
 
     CREATE INDEX IF NOT EXISTS messages_variants
       ON messages (conversation_id, answers_id, turn_id);
+  `,
+  /* 8 → 9 */ `
+    -- Bounded local knowledge graph for Jarvis-style personalization. The
+    -- existing memories table remains the review-gated prompt source; these
+    -- tables add relationships and provenance without changing that contract.
+    CREATE TABLE IF NOT EXISTS memory_nodes (
+      id TEXT PRIMARY KEY NOT NULL,
+      memory_id TEXT REFERENCES memories (id) ON DELETE CASCADE,
+      node_type TEXT NOT NULL,
+      label TEXT NOT NULL,
+      normalized TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0.5,
+      importance INTEGER NOT NULL DEFAULT 0,
+      sensitivity TEXT NOT NULL DEFAULT 'normal',
+      approved INTEGER NOT NULL DEFAULT 0,
+      expires_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS memory_nodes_unique ON memory_nodes (node_type, normalized);
+    CREATE INDEX IF NOT EXISTS memory_nodes_rank ON memory_nodes (approved, importance DESC, confidence DESC, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS memory_edges (
+      id TEXT PRIMARY KEY NOT NULL,
+      from_node_id TEXT NOT NULL REFERENCES memory_nodes (id) ON DELETE CASCADE,
+      to_node_id TEXT NOT NULL REFERENCES memory_nodes (id) ON DELETE CASCADE,
+      relation TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0.5,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS memory_edges_unique ON memory_edges (from_node_id, to_node_id, relation);
+    CREATE INDEX IF NOT EXISTS memory_edges_from ON memory_edges (from_node_id);
+    CREATE INDEX IF NOT EXISTS memory_edges_to ON memory_edges (to_node_id);
+
+    CREATE TABLE IF NOT EXISTS memory_evidence (
+      id TEXT PRIMARY KEY NOT NULL,
+      node_id TEXT NOT NULL REFERENCES memory_nodes (id) ON DELETE CASCADE,
+      conversation_id TEXT,
+      excerpt TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS memory_evidence_node ON memory_evidence (node_id, created_at DESC);
+
+    INSERT OR IGNORE INTO memory_nodes
+      (id, memory_id, node_type, label, normalized, confidence, importance, sensitivity, approved, created_at, updated_at)
+      SELECT 'mnode_' || id, id, kind, text, lower(trim(text)), 0.7, 0, 'normal', approved, created_at, updated_at
+      FROM memories;
+  `,
+  /* 9 → 10 */ `
+    CREATE TABLE IF NOT EXISTS personal_tasks (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      notes TEXT NOT NULL DEFAULT '',
+      due_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'open',
+      priority INTEGER NOT NULL DEFAULT 0,
+      source_conversation_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS personal_tasks_due ON personal_tasks (status, due_at, priority DESC);
+    CREATE INDEX IF NOT EXISTS personal_tasks_updated ON personal_tasks (updated_at DESC);
   `,
 ];

@@ -34,6 +34,7 @@ import { readGeneratedBytes, readGeneratedText, writeGeneratedText } from '@/cha
 import type { GeneratedFile } from '@/chat/files';
 import { previewFor } from '@/chat/preview';
 import { ArtifactPreview } from '@/components/ArtifactPreview';
+import { PdfPreview } from '@/components/chat/PdfPreview';
 import { useDialogKeys } from '@/components/dialog';
 import { SheetShell } from '@/components/Sheet';
 import { Body, Button, Divider, Field, Inline, Note, Spinner, useKeyboardHeight } from '@/components/ui';
@@ -141,6 +142,7 @@ function PreviewBody({
   const editable = preview.editable && !truncated;
   const dirty = editable && draft !== saved;
   const artifact = artifactKindForFile(file.name);
+  const isPdf = file.name.toLowerCase().endsWith('.pdf');
   const status = !readable
     ? 'Cannot be shown here'
     : truncated
@@ -194,7 +196,7 @@ function PreviewBody({
             </Note>
           ) : null}
 
-          {!readable ? null : loaded === null ? (
+          {isPdf ? <PdfPreview uri={file.uri} /> : !readable ? null : loaded === null ? (
             <View style={{ paddingVertical: t.spacing.lg }}>
               <Spinner label="Reading the file" />
             </View>
