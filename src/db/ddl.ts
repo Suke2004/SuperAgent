@@ -10,7 +10,7 @@
  */
 
 /** Bumped whenever {@link MIGRATIONS} grows. Stored in SQLite's `user_version`. */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 /**
  * The FTS index and the three triggers that keep it in step with `messages`.
@@ -388,5 +388,21 @@ export const MIGRATIONS: readonly string[] = [
       (id, memory_id, node_type, label, normalized, confidence, importance, sensitivity, approved, created_at, updated_at)
       SELECT 'mnode_' || id, id, kind, text, lower(trim(text)), 0.7, 0, 'normal', approved, created_at, updated_at
       FROM memories;
+  `,
+  /* 9 → 10 */ `
+    CREATE TABLE IF NOT EXISTS personal_tasks (
+      id TEXT PRIMARY KEY NOT NULL,
+      title TEXT NOT NULL,
+      notes TEXT NOT NULL DEFAULT '',
+      due_at INTEGER,
+      status TEXT NOT NULL DEFAULT 'open',
+      priority INTEGER NOT NULL DEFAULT 0,
+      source_conversation_id TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS personal_tasks_due ON personal_tasks (status, due_at, priority DESC);
+    CREATE INDEX IF NOT EXISTS personal_tasks_updated ON personal_tasks (updated_at DESC);
   `,
 ];

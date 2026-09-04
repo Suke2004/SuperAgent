@@ -58,6 +58,9 @@ import { formatBytes } from '@/chat/attachments';
 import {
   builtinTools,
   CREATE_DOCUMENT,
+  CREATE_TASK,
+  LIST_TASKS,
+  COMPLETE_TASK,
   CREATE_PDF,
   FETCH_URL,
   parseDocument,
@@ -69,6 +72,7 @@ import {
 } from '@/chat/builtins';
 import { parseRunCode, runInSandbox } from '@/chat/sandbox';
 import { writeGeneratedFile, writePdf } from '@/chat/files';
+import { createTask, listTasks, completeTask } from '@/db/tasks';
 import { officeDocument } from '@/chat/ooxml';
 import { fetchAsText } from '@/chat/web';
 import { describeWithheldTools, selectTools } from '@/chat/tools';
@@ -1143,6 +1147,9 @@ async function resolveCall(
   if (call.name === WRITE_FILE) return resolveWriteFile(call.input);
   if (call.name === CREATE_PDF) return resolvePdf(call.input);
   if (call.name === CREATE_DOCUMENT) return resolveDocument(call.input);
+  if (call.name === CREATE_TASK) return resolveCreateTask(call.input);
+  if (call.name === LIST_TASKS) return resolveListTasks(call.input);
+  if (call.name === COMPLETE_TASK) return resolveCompleteTask(call.input);
   if (call.name === FETCH_URL) return resolveFetch(call.input);
   if (call.name === RUN_CODE) return resolveRunCode(call.input);
   if (call.name === READ_RESOURCE) return resolveResource(call.input, servers);
@@ -1169,6 +1176,34 @@ async function resolveWriteFile(input: unknown): Promise<ResolvedCall> {
   } catch (error) {
     return { content: `Could not write that file: ${message(error)}`, isError: true };
   }
+}
+
+async function resolveCreateTask(input: unknown): Promise<ResolvedCall> {
+  const record = input !== null && typeof input === 'object' ? input as Record<string, unknown> : {};
+  const title = typeof record.title === 'string' ? record.title.trim() : '';
+  if (!title) return { content: 'create_task needs a non-empty title.', isError: true };
+  const dueAt = typeof record.dueAt === 'string' ? Date.parse(record.dueAt) : NaN;
+  if (typeof record.dueAt === 'string' && !Number.isFinite(dueAt)) return { content: 'dueAt must be a valid ISO date/time.', isError: true };
+  try {
+    const task = await createTask({ title, notes: typeof record.notes === 'string' ? record.notes : undefined, ...(Number.isFinite(dueAt) ? { dueAt } : {}), priority: record.priority === 1 ? 1 : 0 });
+    return { content: `Created task "${task.title}"${task.dueAt ? ` due ${new Date(task.dueAt).toLocaleString()}` : ''}. Task id: ${task.id}` };
+  } catch (error) { return { content: `Could not create task: ${message(error)}`, isError: true }; }
+}
+
+async function resolveListTasks(input: unknown): Promise<ResolvedCall> {
+  const record = input !== null && typeof input === 'object' ? input as Record<string, unknown> : {};
+  const tasks = await listTasks({ includeDone: record.includeDone === true, limit: typeof record.limit === 'number' ? record.limit : 50 });
+  if (!tasks.length) return { content: 'There are no matching local tasks.' };
+  return { content: tasks.map((task) => `${task.id} | ${task.status} | ${task.title}${task.dueAt ? ` | due ${new Date(task.dueAt).toISOString()}` : ''}`).join('\n') };
+}
+
+async function resolveCompleteTask(input: unknown): Promise<ResolvedCall> {
+  const record = input !== null && typeof input === 'object' ? input as Record<string, unknown> : {};
+  const id = typeof record.id === 'string' ? record.id.trim() : '';
+  if (!id) return { content: 'complete_task needs an id from list_tasks.', isError: true };
+  const completed = await completeTask(id);
+  if (completed) return { content: `Completed task ${id}.` };
+  return { content: `No open task found with id ${id}.`, isError: true };
 }
 
 /** Renders the PDF. Same shape as {@link resolveWriteFile}, different renderer. */
