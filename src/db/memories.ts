@@ -17,7 +17,6 @@ import type {
   MemoryKind,
   MemoryNode,
   MemoryNodeType,
-  MemoryEdge,
   MemoryRelation,
 } from '@/chat/memory';
 
