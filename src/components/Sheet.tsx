@@ -16,6 +16,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Reanimated, {
+  cancelAnimation,
   Easing,
   FadeInDown,
   ReduceMotion,
@@ -179,6 +180,12 @@ export function SheetShell({
   useEffect(() => {
     if (visible) {
       if (!measured) return;
+      // Cancel any in-progress exit tween before opening. Without this, a re-open
+      // while the sheet is still sliding out lets the exit's completion callback run
+      // after the fact and call `finishClose()`, unmounting a sheet that should be
+      // open — which is how the chat menu appeared to do nothing on a second tap.
+      // Same fix as `Sidebar`, same root cause.
+      cancelAnimation(progress);
       // A drag left over from a previous dismissal, cleared on the way in rather than on
       // the way out: resetting it during the exit would snap the panel back up under the
       // finger that just threw it away.
