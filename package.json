@@ -60,7 +60,7 @@
     "expo-updates": "57.0.19",
     "fflate": "^0.8.3",
     "js-yaml": "^5.4.1",
-    "marked": "^18.0.10",
+    "marked": "^18.0.14",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
