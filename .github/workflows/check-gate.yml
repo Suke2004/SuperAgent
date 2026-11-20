@@ -1,0 +1,243 @@
+# The check gate — lint, typecheck, test, build — on every push to main and every
+# pull request.
+#
+# One file, six repositories, byte for byte identical in each: SuperAgent,
+# SuperAssist, SuperTunnel, SuperBook, Taskpress and PomoBuddies. The moment this
+# file differs per repo it stops being one gate and becomes six opinions, and the
+# point of it is that "gate is green" means the same thing everywhere.
+#
+# SuperAgent also keeps its own ci.yml, which goes further than this one (a
+# coverage ratchet and an Android bundle). This file is still the one branch
+# protection requires, because a required check has to carry the same name in
+# every repo: `gate`.
+#
+# The workflow reads the checkout before it runs anything and only runs the gates
+# the repository actually has. A repo with no test suite gets "skipped: no test
+# script" in the run summary, not a green tick that means nothing. That is the
+# difference between this and a workflow copied around until it goes green.
+name: Check gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A force-push makes the in-flight run irrelevant, so cancel it. Keyed on the ref
+# rather than the SHA for exactly that reason.
+concurrency:
+  group: check-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # What does this repository actually have? Answered once, in the cheapest job
+  # in the file, so the expensive jobs can be skipped honestly instead of
+  # failing on a script that was never written.
+  detect:
+    name: detect
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      node: ${{ steps.scan.outputs.node }}
+      python: ${{ steps.scan.outputs.python }}
+      pm: ${{ steps.scan.outputs.pm }}
+      install: ${{ steps.scan.outputs.install }}
+      typecheck: ${{ steps.scan.outputs.typecheck }}
+      typecheck_cmd: ${{ steps.scan.outputs.typecheck_cmd }}
+      lint: ${{ steps.scan.outputs.lint }}
+      lint_cmd: ${{ steps.scan.outputs.lint_cmd }}
+      test: ${{ steps.scan.outputs.test }}
+      test_cmd: ${{ steps.scan.outputs.test_cmd }}
+      build: ${{ steps.scan.outputs.build }}
+      build_cmd: ${{ steps.scan.outputs.build_cmd }}
+      python_install: ${{ steps.scan.outputs.python_install }}
+      python_test: ${{ steps.scan.outputs.python_test }}
+      python_test_cmd: ${{ steps.scan.outputs.python_test_cmd }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: scan
+        run: |
+          cat > "$RUNNER_TEMP/scan.mjs" <<'SCAN'
+          import fs from 'node:fs';
+
+          const has = (p) => fs.existsSync(p);
+          const set = (k, v) => fs.appendFileSync(process.env.GITHUB_OUTPUT, `${k}=${v}\n`);
+
+          let node = 'false', python = 'false';
+          let pm = 'npm', install = 'npm ci';
+          let typecheck = 'false', typecheckCmd = '';
+          let lint = 'false', lintCmd = '';
+          let test = 'false', testCmd = '';
+          let build = 'false', buildCmd = '';
+          let pyInstall = '', pyTest = 'false', pyTestCmd = '';
+
+          if (has('package.json')) {
+            node = 'true';
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const s = pkg.scripts || {};
+
+            if (has('pnpm-lock.yaml')) { pm = 'pnpm'; install = 'pnpm install --frozen-lockfile'; }
+            else if (has('yarn.lock')) { pm = 'yarn'; install = 'yarn install --frozen-lockfile'; }
+            else if (has('package-lock.json')) { pm = 'npm'; install = 'npm ci'; }
+            else { pm = 'npm'; install = 'npm install'; }
+
+            const tsDep = Boolean(
+              (pkg.devDependencies && pkg.devDependencies.typescript) ||
+              (pkg.dependencies && pkg.dependencies.typescript),
+            );
+            if (s.typecheck) { typecheck = 'true'; typecheckCmd = `${pm} run typecheck`; }
+            else if (has('tsconfig.json') && tsDep) { typecheck = 'true'; typecheckCmd = 'npx --no-install tsc --noEmit'; }
+
+            // A lint script with no config file is worse than no lint script: eslint
+            // and `next lint` both stop to ask how you would like to configure it,
+            // which on a runner is a hang or a hard failure, never a lint result.
+            const eslintCfg =
+              ['eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs', 'eslint.config.ts',
+               '.eslintrc', '.eslintrc.js', '.eslintrc.json', '.eslintrc.yml'].some(has) ||
+              Boolean(pkg.eslintConfig);
+            if (s.lint && eslintCfg) { lint = 'true'; lintCmd = `${pm} run lint`; }
+
+            if (s.test) { test = 'true'; testCmd = `${pm} run test`; }
+            else {
+              // PomoBuddies names its suite test:pomodoro. Prefer a plain unit suite
+              // and never an e2e one: those drive a real Electron window and need a
+              // display this runner does not have.
+              const alt = Object.keys(s).find(
+                (k) => /^test:[a-z0-9-]+$/i.test(k) && !/e2e|packaged|watch|animation/i.test(k),
+              );
+              if (alt) { test = 'true'; testCmd = `${pm} run ${alt}`; }
+            }
+
+            if (s.build) { build = 'true'; buildCmd = `${pm} run build`; }
+          }
+
+          if (has('pyproject.toml') || has('requirements.txt')) {
+            python = 'true';
+            if (has('uv.lock')) { pyInstall = 'uv sync --frozen'; pyTestCmd = 'uv run pytest -q'; }
+            else if (has('requirements-dev.txt')) { pyInstall = 'pip install -r requirements.txt -r requirements-dev.txt'; pyTestCmd = 'pytest -q'; }
+            else { pyInstall = 'pip install -r requirements.txt'; pyTestCmd = 'pytest -q'; }
+            pyTest = (has('pytest.ini') || has('conftest.py') || has('tests')) ? 'true' : 'false';
+          }
+
+          for (const [k, v] of Object.entries({
+            node, python, pm, install,
+            typecheck, typecheck_cmd: typecheckCmd,
+            lint, lint_cmd: lintCmd,
+            test, test_cmd: testCmd,
+            build, build_cmd: buildCmd,
+            python_install: pyInstall,
+            python_test: pyTest,
+            python_test_cmd: pyTestCmd,
+          })) set(k, v);
+
+          const row = (name, on, detail) => `| ${name} | ${on ? '**runs**' : 'skipped'} | ${detail} |`;
+          const table = [
+            '## Check gate — what ran in this repo',
+            '',
+            '| Gate | Status | Command / reason |',
+            '|---|---|---|',
+            row('typecheck', typecheck === 'true', typecheck === 'true' ? typecheckCmd : 'no typecheck script and no tsconfig.json'),
+            row('lint', lint === 'true', lint === 'true' ? lintCmd : 'no lint script, or no eslint config file for it to read'),
+            row('test', test === 'true', test === 'true' ? testCmd : 'no test script — this repo has no test suite yet, so tests are not a gate here'),
+            row('build', build === 'true', build === 'true' ? buildCmd : 'no build script'),
+          ];
+          if (python === 'true') table.push(row('pytest', pyTest === 'true', pyTest === 'true' ? pyTestCmd : 'no tests found'));
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, table.join('\n') + '\n');
+          SCAN
+          node "$RUNNER_TEMP/scan.mjs"
+
+  node:
+    name: node
+    needs: detect
+    if: needs.detect.outputs.node == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm has to exist before setup-node can resolve `cache: pnpm`.
+      - uses: pnpm/action-setup@v4
+        if: needs.detect.outputs.pm == 'pnpm'
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: ${{ needs.detect.outputs.pm }}
+
+      - name: Install
+        run: ${{ needs.detect.outputs.install }}
+
+      - name: Typecheck
+        if: needs.detect.outputs.typecheck == 'true'
+        run: ${{ needs.detect.outputs.typecheck_cmd }}
+
+      - name: Lint
+        if: needs.detect.outputs.lint == 'true'
+        run: ${{ needs.detect.outputs.lint_cmd }}
+
+      - name: Test
+        if: needs.detect.outputs.test == 'true'
+        run: ${{ needs.detect.outputs.test_cmd }}
+
+      - name: Build
+        if: needs.detect.outputs.build == 'true'
+        run: ${{ needs.detect.outputs.build_cmd }}
+
+  python:
+    name: python
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install
+        run: ${{ needs.detect.outputs.python_install }}
+
+      - name: Test
+        if: needs.detect.outputs.python_test == 'true'
+        run: ${{ needs.detect.outputs.python_test_cmd }}
+
+  # One required check to name in branch protection, instead of one per language.
+  # `always()` so a red gate still produces a verdict line rather than a silent
+  # skip: a required check that never reports blocks merges forever.
+  gate:
+    name: gate
+    needs: [detect, node, python]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verdict
+        env:
+          DETECT: ${{ needs.detect.result }}
+          NODE: ${{ needs.node.result }}
+          PYTHON: ${{ needs.python.result }}
+        run: |
+          echo "detect=$DETECT node=$NODE python=$PYTHON"
+          if [ "$DETECT" != "success" ]; then
+            echo "::error::The repo scan failed, so no gate could be decided."
+            exit 1
+          fi
+          for r in "$NODE" "$PYTHON"; do
+            case "$r" in
+              failure|cancelled)
+                echo "::error::A gate job did not pass ($r) — see the failed job above."
+                exit 1
+                ;;
+            esac
+          done
+          echo "All detected gates passed."
