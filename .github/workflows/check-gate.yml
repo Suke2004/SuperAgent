@@ -1,5 +1,5 @@
-# The check gate — lint, typecheck, test, build — on every push to main and every
-# pull request.
+# The check gate — lint, typecheck, test, build, and a secret scan — on every push
+# to main and every pull request.
 #
 # One file, six repositories, byte for byte identical in each: SuperAgent,
 # SuperAssist, SuperTunnel, SuperBook, Taskpress and PomoBuddies. The moment this
@@ -15,6 +15,13 @@
 # the repository actually has. A repo with no test suite gets "skipped: no test
 # script" in the run summary, not a green tick that means nothing. That is the
 # difference between this and a workflow copied around until it goes green.
+#
+# The `secrets` job is gitleaks, pinned to one release and verified against its
+# published SHA-256 before it runs. It is deliberately the raw binary and not
+# gitleaks-action, which needs a paid GITLEAKS_LICENSE for organisation accounts.
+# It scans the commits a push or a pull request actually adds — the point is to
+# stop a new secret entering, not to re-litigate history on every run. A
+# .gitleaks.toml, where a repo has one, is picked up automatically.
 name: Check gate
 
 on:
@@ -211,12 +218,67 @@ jobs:
         if: needs.detect.outputs.python_test == 'true'
         run: ${{ needs.detect.outputs.python_test_cmd }}
 
+  # Secret scan. Fails the gate on a pattern match, so a credential is stopped at
+  # the pull request that would introduce it rather than at the rotation that
+  # follows a leak. Scoped to the new commits: on a pull request it is the merge
+  # base..head range, on a push the pushed range.
+  secrets:
+    name: secrets
+    needs: detect
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Pinned release, checked against the checksum published beside it. An
+      # unpinned `latest` would be a supply-chain hole in the one job whose whole
+      # purpose is supply-chain hygiene. Installed into the user path, no root.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -sSfL -o /tmp/gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c -
+          mkdir -p "${HOME}/.local/bin"
+          tar -xzf /tmp/gitleaks.tgz -C "${HOME}/.local/bin" gitleaks
+          chmod 0755 "${HOME}/.local/bin/gitleaks"
+          "${HOME}/.local/bin/gitleaks" version
+
+      - name: Scan the new commits
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          G="${HOME}/.local/bin/gitleaks"
+          if [ -n "${BASE:-}" ] && [ -n "${HEAD_SHA:-}" ]; then
+            RANGE="${BASE}..${HEAD_SHA}"
+          elif [ -n "${BEFORE:-}" ] && [ "${BEFORE}" != "0000000000000000000000000000000000000000" ]; then
+            RANGE="${BEFORE}..${HEAD_SHA:-HEAD}"
+          else
+            # A brand new branch, or a manual run: no range to narrow it to, so
+            # the honest answer is the whole history.
+            RANGE=""
+          fi
+          if [ -z "${RANGE}" ]; then
+            echo "no range (new branch or manual run): scanning all history"
+            "$G" git --redact --verbose --exit-code 1 .
+          else
+            echo "scanning ${RANGE}"
+            "$G" git --redact --verbose --exit-code 1 --log-opts="${RANGE}" .
+          fi
+
   # One required check to name in branch protection, instead of one per language.
   # `always()` so a red gate still produces a verdict line rather than a silent
   # skip: a required check that never reports blocks merges forever.
   gate:
     name: gate
-    needs: [detect, node, python]
+    needs: [detect, node, python, secrets]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -226,13 +288,14 @@ jobs:
           DETECT: ${{ needs.detect.result }}
           NODE: ${{ needs.node.result }}
           PYTHON: ${{ needs.python.result }}
+          SECRETS: ${{ needs.secrets.result }}
         run: |
-          echo "detect=$DETECT node=$NODE python=$PYTHON"
+          echo "detect=$DETECT node=$NODE python=$PYTHON secrets=$SECRETS"
           if [ "$DETECT" != "success" ]; then
             echo "::error::The repo scan failed, so no gate could be decided."
             exit 1
           fi
-          for r in "$NODE" "$PYTHON"; do
+          for r in "$NODE" "$PYTHON" "$SECRETS"; do
             case "$r" in
               failure|cancelled)
                 echo "::error::A gate job did not pass ($r) — see the failed job above."
