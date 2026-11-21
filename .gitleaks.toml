@@ -1,0 +1,16 @@
+# Gitleaks configuration — one file, six repositories, identical in each.
+#
+# It extends the default rule set and weakens nothing in it. Deliberately there is
+# no allowlist here: not a path, not a rule. An allowlist is how a live key gets
+# shipped inside a test fixture, because "tests/ are only fixtures" is true right
+# up until the day someone pastes a real key into one.
+#
+# A deliberate fake is marked on its own line instead:
+#
+#     const KEY = 'sk-live-not-a-real-key'; // gitleaks:allow
+#
+# A real leak in history is listed by fingerprint in .gitleaksignore, which names
+# the exact commit, file, rule and line — never a whole directory.
+
+[extend]
+useDefault = true

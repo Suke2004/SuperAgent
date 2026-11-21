@@ -1,0 +1,14 @@
+# pre-commit framework config (https://pre-commit.com) — optional.
+#
+# If you use `pre-commit`, run `pre-commit install` once and this runs gitleaks
+# before every commit. If you do not, .githooks/pre-commit does the same job with
+# plain git and no Python:
+#
+#     git config core.hooksPath .githooks
+#
+# Either way CI runs the identical scan and fails the gate on a match.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

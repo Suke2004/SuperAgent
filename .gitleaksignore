@@ -1,0 +1,9 @@
+# Three synthetic keys, not credentials. Verified by reading each line:
+#  - src/chat/backup.test.ts:13  `sk-live-9f8e...` fixture for the backup redaction test
+#  - src/lib/redact.test.ts:35   `sk-ant-api03-7Fq2...` "a realistic gateway key, shaped like the real thing"
+#  - docs/flaws.md:17            `Authorization: Bearer sk-invalid` in a curl example
+#
+# Fingerprints are commit:file:rule:line, from gitleaks v8.30.1.
+a30df82658973436be850ceb34edba3feda7ae58:src/chat/backup.test.ts:generic-api-key:13
+540b46b354116d005e8b60feaa39dba288d7e9af:docs/flaws.md:curl-auth-header:17
+9841d5c52fefa7f15b60885e2d7754276819d587:src/lib/redact.test.ts:generic-api-key:35
