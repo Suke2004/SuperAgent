@@ -1,0 +1,24 @@
+#!/bin/sh
+# Secret scan before every commit — the local half of the gate (CI is the other).
+#
+# Install once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# gitleaks is a single binary: github.com/gitleaks/gitleaks/releases. If it is not
+# on PATH this hook says so and steps out of the way instead of blocking commits
+# you cannot fix — the same scan runs in CI and fails the `gate` check there, so a
+# missing local binary narrows when a secret is caught, never whether.
+#
+# --staged scans only what this commit adds, which is the point: history is not
+# re-litigated on every save.
+
+set -e
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "gitleaks not installed — skipping the local secret scan (CI still runs it)." >&2
+  echo "Install: https://github.com/gitleaks/gitleaks/releases" >&2
+  exit 0
+fi
+
+exec gitleaks git --pre-commit --redact --staged --verbose .
